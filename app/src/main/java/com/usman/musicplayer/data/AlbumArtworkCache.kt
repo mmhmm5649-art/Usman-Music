@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.LruCache
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.InputStream
@@ -43,20 +44,32 @@ object AlbumArtworkCache {
 
         var resultBitmap: Bitmap? = null
 
-        // 1. Try loading from MediaStore albumArtUri if present
+        // 1. Try loading from MediaStore albumArtUri or Network URL if present
         if (!albumArtUri.isNullOrBlank()) {
             try {
-                val uri = Uri.parse(albumArtUri)
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    resultBitmap = decodeSampledBitmapFromStream(stream, targetWidth, targetHeight)
+                if (albumArtUri.startsWith("http://") || albumArtUri.startsWith("https://")) {
+                    val connection = java.net.URL(albumArtUri).openConnection().apply {
+                        connectTimeout = 6000
+                        readTimeout = 6000
+                    }
+                    connection.getInputStream().use { stream ->
+                        resultBitmap = decodeSampledBitmapFromStream(stream, targetWidth, targetHeight)
+                    }
+                } else {
+                    val uri = Uri.parse(albumArtUri)
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        resultBitmap = decodeSampledBitmapFromStream(stream, targetWidth, targetHeight)
+                    }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
-                // Artwork file might not exist or failed to load
+                // Artwork file/network failed or timed out
             }
         }
 
-        // 2. If MediaStore album art is null, extract embedded ID3 picture from file/contentUri
-        if (resultBitmap == null && filePath.isNotBlank()) {
+        // 2. If MediaStore album art is null, extract embedded ID3 picture from local file/contentUri
+        if (resultBitmap == null && filePath.isNotBlank() && !filePath.startsWith("http")) {
             try {
                 val mmr = MediaMetadataRetriever()
                 if (filePath.startsWith("content://")) {
@@ -69,6 +82,8 @@ object AlbumArtworkCache {
                     resultBitmap = decodeSampledBitmapFromByteArray(rawArt, targetWidth, targetHeight)
                 }
                 mmr.release()
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
                 // Metadata retrieval failed
             }
@@ -90,6 +105,8 @@ object AlbumArtworkCache {
         BitmapFactory.decodeByteArray(data, 0, data.size, options)
         options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
         options.inJustDecodeBounds = false
+        // Use preferred config for memory efficiency on low-end devices
+        options.inPreferredConfig = Bitmap.Config.RGB_565
         return BitmapFactory.decodeByteArray(data, 0, data.size, options)
     }
 
@@ -98,8 +115,24 @@ object AlbumArtworkCache {
         reqWidth: Int,
         reqHeight: Int
     ): Bitmap? {
-        val bytes = stream.readBytes()
-        return decodeSampledBitmapFromByteArray(bytes, reqWidth, reqHeight)
+        // Wrap in buffered stream to support mark/reset for two-pass decoding
+        val bufferedStream = stream.let { if (it is java.io.BufferedInputStream) it else java.io.BufferedInputStream(it) }
+        bufferedStream.mark(1024 * 1024) // 1MB buffer should be enough for metadata
+        
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeStream(bufferedStream, null, options)
+        
+        try {
+            bufferedStream.reset()
+        } catch (e: Exception) {
+            return null // Should not happen with BufferedInputStream and large enough mark
+        }
+        
+        options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
+        options.inJustDecodeBounds = false
+        options.inPreferredConfig = Bitmap.Config.RGB_565
+        
+        return BitmapFactory.decodeStream(bufferedStream, null, options)
     }
 
     private fun calculateInSampleSize(

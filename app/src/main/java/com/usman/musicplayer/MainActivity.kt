@@ -28,12 +28,14 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +45,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.haze
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +54,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -62,10 +67,12 @@ import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.components.AppDestination
 import com.usman.musicplayer.ui.components.CompactNowPlayingBar
 import com.usman.musicplayer.ui.components.UsmanGlassBottomNav
+import com.usman.musicplayer.ui.screens.EqualizerScreen
 import com.usman.musicplayer.ui.screens.HomeScreen
 import com.usman.musicplayer.ui.screens.LibraryScreen
 import com.usman.musicplayer.ui.screens.NowPlayingScreen
 import com.usman.musicplayer.ui.screens.SearchScreen
+import com.usman.musicplayer.ui.screens.YouTubeVideosScreen
 import com.usman.musicplayer.ui.screens.SettingsScreen
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
@@ -93,9 +100,11 @@ class MainActivity : ComponentActivity() {
 fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val playbackProgress by viewModel.playbackProgress.collectAsStateWithLifecycle()
 
     var currentDestination by remember { mutableStateOf(AppDestination.HOME) }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
+    var isEqualizerExpanded by remember { mutableStateOf(false) }
 
     // Cinematic App-Launch Motion Sequence
     var isAppLoaded by remember { mutableStateOf(false) }
@@ -186,14 +195,20 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     }
 
     // Predictive back gesture & modal back navigation
-    BackHandler(enabled = isNowPlayingExpanded) {
+    BackHandler(enabled = isEqualizerExpanded) {
+        isEqualizerExpanded = false
+    }
+
+    BackHandler(enabled = isNowPlayingExpanded && !isEqualizerExpanded) {
         isNowPlayingExpanded = false
     }
 
-    BackHandler(enabled = !isNowPlayingExpanded && currentDestination != AppDestination.HOME) {
+    BackHandler(enabled = !isNowPlayingExpanded && !isEqualizerExpanded && currentDestination != AppDestination.HOME) {
         viewModel.clearFilters()
         currentDestination = AppDestination.HOME
     }
+
+    val hazeState = remember { HazeState() }
 
     Box(
         modifier = Modifier
@@ -204,10 +219,13 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .scale(appScale)
-                .alpha(appAlpha)
+                .graphicsLayer {
+                    scaleX = appScale
+                    scaleY = appScale
+                    alpha = appAlpha
+                }
         ) {
-            // Screen-to-Screen Fluid Transition Container
+            // Screen-to-Screen Fluid Transition Container with Haze Backdrop Source
             AnimatedContent(
                 targetState = currentDestination,
                 transitionSpec = {
@@ -218,12 +236,20 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     scaleOut(targetScale = 1.02f, animationSpec = tween(220))
                         )
                 },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .haze(hazeState),
                 label = "ScreenTransition"
             ) { destination ->
                 when (destination) {
                     AppDestination.HOME -> HomeScreen(
                         uiState = uiState,
                         onNavigateToSearch = { currentDestination = AppDestination.SEARCH },
+                        onSearchCategory = { query ->
+                            viewModel.setSearchSource(com.usman.musicplayer.viewmodel.SearchSource.ONLINE)
+                            viewModel.updateSearchQuery(query)
+                            currentDestination = AppDestination.SEARCH
+                        },
                         onNavigateToLibrary = { tab ->
                             viewModel.clearFilters()
                             viewModel.setLibraryTab(tab)
@@ -234,16 +260,65 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             viewModel.playSong(song)
                             isNowPlayingExpanded = true
                         },
+                        onOpenService = { ctx, song, service ->
+                            viewModel.openInOfficialService(ctx, song, service)
+                        },
+                        onTabGenreSelected = { tab -> viewModel.setActiveHomeGenreTab(tab) },
+                        onSelectCategory = { cat -> viewModel.selectOnlineCategory(cat) },
+                        onClearCategory = { viewModel.clearSelectedCategory() },
                         onRescanClick = { viewModel.scanMusicLibrary() },
-                        onRequestPermissionClick = { requestRequiredPermissions() }
+                        onRequestPermissionClick = { requestRequiredPermissions() },
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
+                        onRetryJamendo = { viewModel.retryLoadJamendoMusic() }
+                    )
+
+                    AppDestination.NEW -> HomeScreen(
+                        uiState = uiState.copy(activeHomeGenreTab = "New Releases"),
+                        onNavigateToSearch = { currentDestination = AppDestination.SEARCH },
+                        onSearchCategory = { query ->
+                            viewModel.setSearchSource(com.usman.musicplayer.viewmodel.SearchSource.ONLINE)
+                            viewModel.updateSearchQuery(query)
+                            currentDestination = AppDestination.SEARCH
+                        },
+                        onNavigateToLibrary = { tab ->
+                            viewModel.clearFilters()
+                            viewModel.setLibraryTab(tab)
+                            currentDestination = AppDestination.LIBRARY
+                        },
+                        onNavigateToNowPlaying = { isNowPlayingExpanded = true },
+                        onPlaySong = { song ->
+                            viewModel.playSong(song)
+                            isNowPlayingExpanded = true
+                        },
+                        onOpenService = { ctx, song, service ->
+                            viewModel.openInOfficialService(ctx, song, service)
+                        },
+                        onTabGenreSelected = { tab -> viewModel.setActiveHomeGenreTab(tab) },
+                        onSelectCategory = { cat -> viewModel.selectOnlineCategory(cat) },
+                        onClearCategory = { viewModel.clearSelectedCategory() },
+                        onRescanClick = { viewModel.scanMusicLibrary() },
+                        onRequestPermissionClick = { requestRequiredPermissions() },
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
+                        onRetryJamendo = { viewModel.retryLoadJamendoMusic() }
+                    )
+
+                    AppDestination.VIDEOS -> YouTubeVideosScreen(
+                        uiState = uiState,
+                        onSearchVideos = { q -> viewModel.searchYouTubeVideos(q) },
+                        onVideoClick = { videoId -> viewModel.selectVideo(videoId) }
                     )
 
                     AppDestination.SEARCH -> SearchScreen(
                         uiState = uiState,
                         onSearchQueryChange = { q -> viewModel.updateSearchQuery(q) },
+                        onTriggerOnlineSearch = { q -> viewModel.searchOnline(q, debounceMs = 0L) },
+                        onSearchSourceChange = { src -> viewModel.setSearchSource(src) },
                         onPlaySong = { song ->
                             viewModel.playSong(song)
                             isNowPlayingExpanded = true
+                        },
+                        onOpenService = { ctx, song, service ->
+                            viewModel.openInOfficialService(ctx, song, service)
                         },
                         onAlbumClick = { album ->
                             viewModel.filterByAlbum(album.title)
@@ -267,7 +342,6 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onTabSelected = { tab -> viewModel.setLibraryTab(tab) },
                         onPlaySong = { song ->
                             viewModel.playSong(song)
-                            // Fluid Container Transform to Now Playing
                             isNowPlayingExpanded = true
                         },
                         onAlbumSelected = { album ->
@@ -282,22 +356,24 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             viewModel.filterByFolder(folder.name)
                             viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
                         },
+                        onSelectPlaylist = { playlist -> viewModel.selectPlaylist(playlist) },
+                        onCreatePlaylistClick = {
+                            viewModel.createPlaylist("New Playlist")
+                        },
+                        onDeletePlaylist = { playlistId -> viewModel.deletePlaylist(playlistId) },
+                        onRenamePlaylist = { playlistId, newName -> viewModel.renamePlaylist(playlistId, newName) },
+                        onRemoveSongFromPlaylist = { playlistId, songId -> viewModel.removeSongFromPlaylist(playlistId, songId) },
                         onNavigateToSearch = { currentDestination = AppDestination.SEARCH },
                         onOpenFolderPicker = { safFolderPicker.launch(null) },
                         onRescanLibrary = { viewModel.scanMusicLibrary() },
                         onClearFilter = { viewModel.clearFilters() }
-                    )
-
-                    AppDestination.SETTINGS -> SettingsScreen(
-                        uiState = uiState,
-                        onRescanClick = { viewModel.scanMusicLibrary() }
                     )
                 }
             }
 
             // Persistent Floating Liquid Glass Mini Player + Bottom Navigation Bar
             AnimatedVisibility(
-                visible = !isNowPlayingExpanded,
+                visible = !isNowPlayingExpanded && !isEqualizerExpanded,
                 enter = fadeIn(animationSpec = tween(300)) + slideInVertically(
                     initialOffsetY = { it / 2 },
                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
@@ -306,27 +382,41 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     targetOffsetY = { it / 2 },
                     animationSpec = tween(200)
                 ),
-                modifier = Modifier.align(Alignment.BottomCenter)
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 8.dp)
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // Mini Music Player Bar
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     if (uiState.currentSong != null) {
                         CompactNowPlayingBar(
                             currentSong = uiState.currentSong,
                             isPlaying = uiState.isPlaying,
+                            currentPositionMs = playbackProgress.currentPositionMs,
+                            durationMs = if (playbackProgress.durationMs > 0) playbackProgress.durationMs else (uiState.currentSong?.durationMs ?: 0L),
+                            hazeState = hazeState,
                             onBarClick = { isNowPlayingExpanded = true },
                             onPlayPauseToggle = { viewModel.togglePlayPause() },
                             onSkipPrevious = { viewModel.skipToPrevious() },
                             onSkipNext = { viewModel.skipToNext() },
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 16.dp)
                         )
                     }
 
-                    // Floating Liquid Glass Bottom Navigation
                     UsmanGlassBottomNav(
                         currentDestination = currentDestination,
+                        hazeState = hazeState,
                         onDestinationSelected = {
                             viewModel.clearFilters()
+                            val tab = when (it) {
+                                AppDestination.NEW -> "New Releases"
+                                AppDestination.VIDEOS -> "Videos"
+                                else -> "Trending"
+                            }
+                            viewModel.setActiveHomeGenreTab(tab)
                             currentDestination = it
                         }
                     )
@@ -336,7 +426,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
 
         // Shared-Element Container Transform into Fullscreen Now Playing Screen
         AnimatedVisibility(
-            visible = isNowPlayingExpanded,
+            visible = isNowPlayingExpanded && !isEqualizerExpanded,
             enter = slideInVertically(
                 initialOffsetY = { it },
                 animationSpec = spring(
@@ -357,6 +447,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         ) {
             NowPlayingScreen(
                 uiState = uiState,
+                playbackProgress = playbackProgress,
                 onBackClick = { isNowPlayingExpanded = false },
                 onPlayPauseToggle = { viewModel.togglePlayPause() },
                 onSkipNext = { viewModel.skipToNext() },
@@ -365,8 +456,31 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 onToggleShuffle = { viewModel.toggleShuffle() },
                 onToggleRepeat = { viewModel.toggleRepeat() },
                 onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
-                onVolumeChange = { vol -> viewModel.setVolume(vol) }
+                onVolumeChange = { vol -> viewModel.setVolume(vol) },
+                onOpenService = { ctx, song, service -> viewModel.openInOfficialService(ctx, song, service) },
+                onOpenEqualizer = { isEqualizerExpanded = true },
+                onAddToPlaylist = { playlistId, song, allowDup, callback ->
+                    viewModel.addSongToPlaylist(playlistId, song, allowDup, callback)
+                },
+                onCreatePlaylist = { name, song, callback ->
+                    viewModel.createPlaylist(name, song, callback)
+                },
+                onPlayNext = { song, callback ->
+                    viewModel.playNext(song, callback)
+                },
+                onAddToQueue = { song, callback ->
+                    viewModel.addToQueue(song, callback)
+                }
             )
+        }
+
+        // Equalizer Screen Slide-In Transition
+        AnimatedVisibility(
+            visible = isEqualizerExpanded,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            EqualizerScreen(onBackClick = { isEqualizerExpanded = false })
         }
 
         // Cinematic App-Opening Logo Flare Overlay (Fades out seamlessly)
@@ -406,3 +520,4 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         }
     }
 }
+

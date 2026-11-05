@@ -23,10 +23,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -38,6 +40,7 @@ import com.usman.musicplayer.R
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.theme.LiquidGlassBorderBrush
 import com.usman.musicplayer.ui.theme.PlayPauseButtonBrush
+import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.TextSecondary
 
@@ -49,119 +52,163 @@ fun CompactNowPlayingBar(
     onPlayPauseToggle: () -> Unit,
     onSkipPrevious: () -> Unit,
     onSkipNext: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentPositionMs: Long = 0L,
+    durationMs: Long = 0L,
+    hazeState: dev.chrisbanes.haze.HazeState? = null
 ) {
+    val progress = remember(currentPositionMs, durationMs) {
+        if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+    }
+
     LiquidGlassPanel(
         modifier = modifier
             .fillMaxWidth()
-            .shadow(elevation = 12.dp, shape = RoundedCornerShape(26.dp), spotColor = Color(0x66000000))
+            .shadow(elevation = 18.dp, shape = RoundedCornerShape(22.dp), spotColor = Color(0x73000000))
             .clickable(onClick = onBarClick)
             .testTag("compact_now_playing_bar"),
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(22.dp),
         borderBrush = LiquidGlassBorderBrush,
-        backgroundColor = Color(0x3514192E),
-        borderWidth = 1.dp
+        backgroundColor = Color(0x38121626),
+        borderWidth = 1.dp,
+        hazeState = hazeState,
+        hazeBlurRadius = 24.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Song or App Icon Thumbnail in Glass Frame
-            if (currentSong != null) {
-                SongAlbumArtwork(
-                    song = currentSong,
-                    modifier = Modifier.size(46.dp),
-                    cornerRadius = 14.dp,
-                    showGlowBorder = false
-                )
-            } else {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_app_logo),
-                    contentDescription = "USMAN Logo",
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Title and Artist / Status
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = currentSong?.title ?: "USMAN MUSIC PLAYER",
-                    color = TextPrimary,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = currentSong?.artist ?: "No song playing",
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Spacer(modifier = Modifier.width(6.dp))
-
-            // Previous Button
-            IconButton(
-                onClick = onSkipPrevious,
-                modifier = Modifier
-                    .size(36.dp)
-                    .testTag("compact_prev_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.SkipPrevious,
-                    contentDescription = "Previous Track",
-                    tint = TextPrimary.copy(alpha = 0.9f),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(4.dp))
-
-            // Floating Play/Pause Glass Orb Button with subtle specular reflection
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Sleek animated progress line across the top of the mini player
             Box(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(PlayPauseButtonBrush)
-                    .clickable(onClick = onPlayPauseToggle)
-                    .testTag("compact_play_pause_button"),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .height(2.5.dp)
+                    .background(Color(0x22FFFFFF))
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction = progress)
+                        .height(2.5.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color(0xFF00E5FF),
+                                    Color(0xFFA855F7),
+                                    Color(0xFFEC4899)
+                                )
+                            )
+                        )
                 )
             }
 
-            Spacer(modifier = Modifier.width(4.dp))
-
-            // Next Button
-            IconButton(
-                onClick = onSkipNext,
+            Row(
                 modifier = Modifier
-                    .size(36.dp)
-                    .testTag("compact_next_button")
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.SkipNext,
-                    contentDescription = "Next Track",
-                    tint = TextPrimary.copy(alpha = 0.9f),
-                    modifier = Modifier.size(22.dp)
-                )
+                // Song Artwork / App Icon Thumbnail in Glass Frame
+                if (currentSong != null) {
+                    SongAlbumArtwork(
+                        song = currentSong,
+                        modifier = Modifier.size(46.dp),
+                        cornerRadius = 14.dp,
+                        showGlowBorder = false
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_app_logo),
+                        contentDescription = "USMAN Logo",
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // Title and Artist / Status with clean clipping and high readability
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = currentSong?.title ?: "USMAN MUSIC PLAYER",
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = currentSong?.artist ?: "No song playing",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    if (currentSong != null && currentSong.isOnline && !currentSong.sourceProvider.isNullOrBlank()) {
+                        Text(
+                            text = "via ${currentSong.sourceProvider}",
+                            color = SoftCyan,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 1.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Previous Button with >= 48dp touch target
+                IconButton(
+                    onClick = onSkipPrevious,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("compact_prev_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Previous Track",
+                        tint = TextPrimary.copy(alpha = 0.92f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(2.dp))
+
+                // Floating Play/Pause Glass Orb Button with subtle specular reflection
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(PlayPauseButtonBrush)
+                        .clickable(onClick = onPlayPauseToggle)
+                        .testTag("compact_play_pause_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(2.dp))
+
+                // Next Button with >= 48dp touch target
+                IconButton(
+                    onClick = onSkipNext,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("compact_next_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next Track",
+                        tint = TextPrimary.copy(alpha = 0.92f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
         }
     }

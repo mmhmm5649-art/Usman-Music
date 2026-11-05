@@ -1,49 +1,25 @@
 package com.usman.musicplayer.ui.screens
 
+import android.content.Context
+import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.RepeatOne
-import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.VolumeDown
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,36 +28,34 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.usman.musicplayer.R
+import com.usman.musicplayer.data.repository.ExternalServiceType
+import com.usman.musicplayer.model.PlaybackType
+import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.RepeatMode
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.components.GlassButtonSurface
+import com.usman.musicplayer.ui.components.GlassSlider
 import com.usman.musicplayer.ui.components.LiquidGlassPanel
 import com.usman.musicplayer.ui.components.RainbowAudioVisualizer
 import com.usman.musicplayer.ui.components.SongAlbumArtwork
-import com.usman.musicplayer.ui.theme.AmoledBlack
-import com.usman.musicplayer.ui.theme.ElectricBlue
-import com.usman.musicplayer.ui.theme.LiquidGlassBorderBrush
-import com.usman.musicplayer.ui.theme.LiquidGlassButtonBorder
-import com.usman.musicplayer.ui.theme.NeonCyan
-import com.usman.musicplayer.ui.theme.NeonPink
-import com.usman.musicplayer.ui.theme.NeonPurple
-import com.usman.musicplayer.ui.theme.PlayPauseButtonBrush
-import com.usman.musicplayer.ui.theme.SoftCyan
-import com.usman.musicplayer.ui.theme.SoftPurple
-import com.usman.musicplayer.ui.theme.TextPrimary
-import com.usman.musicplayer.ui.theme.TextSecondary
+import com.usman.musicplayer.ui.theme.*
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
+import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NowPlayingScreen(
     uiState: MusicPlayerUiState,
+    playbackProgress: com.usman.musicplayer.model.PlaybackProgress,
     onBackClick: () -> Unit,
     onPlayPauseToggle: () -> Unit,
     onSkipNext: () -> Unit,
@@ -91,19 +65,41 @@ fun NowPlayingScreen(
     onToggleRepeat: () -> Unit,
     onToggleFavorite: (Song) -> Unit,
     onVolumeChange: (Float) -> Unit,
+    onOpenService: (Context, Song, ExternalServiceType) -> Unit = { _, _, _ -> },
+    onOpenEqualizer: () -> Unit = {},
+    onAddToPlaylist: (Long, Song, Boolean, (Boolean, String) -> Unit) -> Unit = { _, _, _, _ -> },
+    onCreatePlaylist: (String, Song?, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
+    onPlayNext: (Song, (String) -> Unit) -> Unit = { _, _ -> },
+    onAddToQueue: (Song, (String) -> Unit) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val song = uiState.currentSong
-    val durationMs = if (uiState.durationMs > 0) uiState.durationMs else (song?.durationMs ?: 0L)
-    val positionMs = uiState.currentPositionMs
+    val durationMs = if (playbackProgress.durationMs > 0) playbackProgress.durationMs else (song?.durationMs ?: 0L)
+    val positionMs = playbackProgress.currentPositionMs
 
     var isDraggingSlider by remember { mutableStateOf(false) }
     var sliderTempPosition by remember { mutableFloatStateOf(0f) }
+
+    var showThreeDotSheet by remember { mutableStateOf(false) }
+    var showAddToPlaylistSheet by remember { mutableStateOf(false) }
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showSongInfoDialog by remember { mutableStateOf(false) }
+    var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var newPlaylistName by remember { mutableStateOf("") }
 
     val currentSliderVal = if (isDraggingSlider) {
         sliderTempPosition
     } else {
         if (durationMs > 0) positionMs.toFloat() / durationMs.toFloat() else 0f
+    }
+
+    // Auto-dismiss feedback snackbar
+    LaunchedEffect(feedbackMessage) {
+        if (feedbackMessage != null) {
+            delay(3000L)
+            feedbackMessage = null
+        }
     }
 
     Box(
@@ -144,7 +140,6 @@ fun NowPlayingScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Floating Glass Back Button
                 GlassButtonSurface(
                     modifier = Modifier
                         .size(44.dp)
@@ -191,7 +186,7 @@ fun NowPlayingScreen(
                     )
                 }
 
-                // Floating Glass More Button
+                // Floating Glass More Button (Three-Dot Menu)
                 GlassButtonSurface(
                     modifier = Modifier
                         .size(44.dp)
@@ -199,7 +194,7 @@ fun NowPlayingScreen(
                     shape = RoundedCornerShape(16.dp),
                     backgroundColor = Color(0x221E2338)
                 ) {
-                    IconButton(onClick = {}, modifier = Modifier.size(44.dp)) {
+                    IconButton(onClick = { showThreeDotSheet = true }, modifier = Modifier.size(44.dp)) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Options",
@@ -212,7 +207,7 @@ fun NowPlayingScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Large Album Artwork in a realistic Liquid Glass Frame with reflection
+            // Large Album Artwork in a realistic Liquid Glass Frame
             Box(
                 modifier = Modifier
                     .size(268.dp)
@@ -236,7 +231,6 @@ fun NowPlayingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Floating Glass Playlist Queue Button
                 GlassButtonSurface(
                     modifier = Modifier
                         .size(44.dp)
@@ -244,10 +238,10 @@ fun NowPlayingScreen(
                     shape = RoundedCornerShape(16.dp),
                     backgroundColor = Color(0x201A1E32)
                 ) {
-                    IconButton(onClick = {}, modifier = Modifier.size(44.dp)) {
+                    IconButton(onClick = { showAddToPlaylistSheet = true }, modifier = Modifier.size(44.dp)) {
                         Icon(
-                            imageVector = Icons.Default.QueueMusic,
-                            contentDescription = "Queue",
+                            imageVector = Icons.Default.PlaylistAdd,
+                            contentDescription = "Add to Playlist",
                             tint = TextSecondary,
                             modifier = Modifier.size(20.dp)
                         )
@@ -279,7 +273,6 @@ fun NowPlayingScreen(
                     )
                 }
 
-                // Floating Glass Favorite Heart Button
                 GlassButtonSurface(
                     modifier = Modifier
                         .size(44.dp)
@@ -303,18 +296,19 @@ fun NowPlayingScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Real-time colorful rainbow audio visualization with mirror reflection (Reference 3 & 5)
+            // Real-time colorful full-width rainbow audio visualization
             RainbowAudioVisualizer(
                 isPlaying = uiState.isPlaying,
-                barCount = 48,
-                height = 70.dp,
-                modifier = Modifier.testTag("audio_rainbow_visualizer")
+                height = 76.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("audio_rainbow_visualizer")
             )
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Music Progress Bar with Apple-style Liquid Glass slider
-            com.usman.musicplayer.ui.components.GlassSlider(
+            // Music Progress Bar
+            GlassSlider(
                 value = currentSliderVal,
                 onValueChange = {
                     isDraggingSlider = true
@@ -332,7 +326,6 @@ fun NowPlayingScreen(
                 testTag = "song_progress_slider"
             )
 
-            // Current Position on Left vs Remaining Duration on Right
             val currentDisplayedMs = if (isDraggingSlider) (sliderTempPosition * durationMs).toLong() else positionMs
             val remainingMs = (durationMs - currentDisplayedMs).coerceAtLeast(0L)
 
@@ -365,7 +358,6 @@ fun NowPlayingScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Floating Glass Shuffle Button
                 GlassButtonSurface(
                     modifier = Modifier.size(48.dp),
                     shape = RoundedCornerShape(16.dp),
@@ -387,7 +379,6 @@ fun NowPlayingScreen(
                     }
                 }
 
-                // Floating Glass Previous Button
                 GlassButtonSurface(
                     modifier = Modifier.size(54.dp),
                     shape = RoundedCornerShape(18.dp),
@@ -408,7 +399,7 @@ fun NowPlayingScreen(
                     }
                 }
 
-                // Central Play/Pause Liquid Glass Orb Button with Ambient Glow
+                // Central Play/Pause Liquid Glass Orb Button
                 Box(
                     modifier = Modifier
                         .size(76.dp)
@@ -417,7 +408,6 @@ fun NowPlayingScreen(
                         .background(PlayPauseButtonBrush)
                         .clickable(onClick = onPlayPauseToggle)
                         .drawBehind {
-                            // Top specular catch on glass sphere
                             drawCircle(
                                 brush = Brush.radialGradient(
                                     colors = listOf(Color(0x55FFFFFF), Color.Transparent),
@@ -437,7 +427,6 @@ fun NowPlayingScreen(
                     )
                 }
 
-                // Floating Glass Next Button
                 GlassButtonSurface(
                     modifier = Modifier.size(54.dp),
                     shape = RoundedCornerShape(18.dp),
@@ -458,7 +447,6 @@ fun NowPlayingScreen(
                     }
                 }
 
-                // Floating Glass Repeat Button
                 val isRepeatActive = uiState.repeatMode != RepeatMode.OFF
                 GlassButtonSurface(
                     modifier = Modifier.size(48.dp),
@@ -484,7 +472,7 @@ fun NowPlayingScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Volume Control with Floating Glass Slider
+            // Volume Control
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -498,7 +486,7 @@ fun NowPlayingScreen(
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                com.usman.musicplayer.ui.components.GlassSlider(
+                GlassSlider(
                     value = uiState.volume,
                     onValueChange = onVolumeChange,
                     onValueChangeFinished = {},
@@ -517,6 +505,392 @@ fun NowPlayingScreen(
                 )
             }
         }
+
+        // Floating Liquid Glass Feedback Toast Banner
+        AnimatedVisibility(
+            visible = feedbackMessage != null,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(start = 24.dp, top = 12.dp, end = 24.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xE61E2544))
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
+                Text(
+                    text = feedbackMessage ?: "",
+                    color = NeonCyan,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        // --- Three-Dot Menu Bottom Sheet ---
+        if (showThreeDotSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showThreeDotSheet = false },
+                containerColor = Color(0xF10F1322),
+                scrimColor = Color.Black.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                ) {
+                    // Header with Song Info Summary
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SongAlbumArtwork(
+                            song = song,
+                            modifier = Modifier.size(48.dp),
+                            cornerRadius = 12.dp
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = song?.title ?: "Unknown Track",
+                                color = TextPrimary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = song?.artist ?: "Unknown Artist",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = Color(0x22FFFFFF))
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Menu Options
+                    MenuOptionRow(
+                        icon = Icons.Default.PlaylistAdd,
+                        title = "Add to Playlist",
+                        tint = NeonCyan,
+                        onClick = {
+                            showThreeDotSheet = false
+                            showAddToPlaylistSheet = true
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.QueuePlayNext,
+                        title = "Play Next",
+                        tint = ElectricBlue,
+                        onClick = {
+                            showThreeDotSheet = false
+                            song?.let {
+                                onPlayNext(it) { msg -> feedbackMessage = msg }
+                            }
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.QueueMusic,
+                        title = "Add to Queue",
+                        tint = SoftCyan,
+                        onClick = {
+                            showThreeDotSheet = false
+                            song?.let {
+                                onAddToQueue(it) { msg -> feedbackMessage = msg }
+                            }
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.Equalizer,
+                        title = "Equalizer",
+                        tint = NeonPurple,
+                        onClick = {
+                            showThreeDotSheet = false
+                            onOpenEqualizer()
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.Info,
+                        title = "Song Information",
+                        tint = SoftPurple,
+                        onClick = {
+                            showThreeDotSheet = false
+                            showSongInfoDialog = true
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.Share,
+                        title = "Share Song",
+                        tint = NeonMagenta,
+                        onClick = {
+                            showThreeDotSheet = false
+                            song?.let { s ->
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, "Listening to \"${s.title}\" by ${s.artist} on USMAN MUSIC PLAYER!")
+                                    type = "text/plain"
+                                }
+                                context.startActivity(Intent.createChooser(sendIntent, "Share Song"))
+                            }
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+                }
+            }
+        }
+
+        // --- Add to Playlist Bottom Sheet ---
+        if (showAddToPlaylistSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showAddToPlaylistSheet = false },
+                containerColor = Color(0xF10F1322),
+                scrimColor = Color.Black.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Add to Playlist",
+                        color = TextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Create New Playlist Card
+                    LiquidGlassPanel(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable {
+                                showAddToPlaylistSheet = false
+                                showCreatePlaylistDialog = true
+                            },
+                        shape = RoundedCornerShape(16.dp),
+                        backgroundColor = Color(0x331E2544)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(NeonCyan, ElectricBlue))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Add, null, tint = Color.White)
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Text(
+                                text = "Create New Playlist",
+                                color = NeonCyan,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    if (uiState.playlists.isEmpty()) {
+                        Text(
+                            text = "No playlists created yet. Create your first playlist above!",
+                            color = TextMuted,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(uiState.playlists) { playlist ->
+                                LiquidGlassPanel(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .clickable {
+                                            song?.let { s ->
+                                                onAddToPlaylist(playlist.id, s, false) { success, msg ->
+                                                    feedbackMessage = msg
+                                                }
+                                            }
+                                            showAddToPlaylistSheet = false
+                                        },
+                                    shape = RoundedCornerShape(16.dp),
+                                    backgroundColor = Color(0x1F14182E)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(42.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color(0x337C3AED)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.QueueMusic, null, tint = SoftCyan)
+                                        }
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = playlist.name,
+                                                color = TextPrimary,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = "${playlist.songCount} songs",
+                                                color = TextSecondary,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+
+        // --- Create Playlist Dialog ---
+        if (showCreatePlaylistDialog) {
+            AlertDialog(
+                onDismissRequest = { showCreatePlaylistDialog = false },
+                containerColor = Color(0xF10F1322),
+                title = {
+                    Text("Create New Playlist", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column {
+                        Text("Enter a name for your playlist:", color = TextSecondary, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = newPlaylistName,
+                            onValueChange = { newPlaylistName = it },
+                            placeholder = { Text("My Favorite Tracks", color = TextMuted) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = Color(0x33FFFFFF),
+                                focusedContainerColor = Color(0x1AFFFFFF),
+                                unfocusedContainerColor = Color(0x0DFFFFFF)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (newPlaylistName.isNotBlank()) {
+                                onCreatePlaylist(newPlaylistName, song) { success, msg ->
+                                    feedbackMessage = msg
+                                }
+                                newPlaylistName = ""
+                                showCreatePlaylistDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White)
+                    ) {
+                        Text("Create & Add")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                        Text("Cancel", color = TextMuted)
+                    }
+                }
+            )
+        }
+
+        // --- Song Info Dialog ---
+        if (showSongInfoDialog && song != null) {
+            AlertDialog(
+                onDismissRequest = { showSongInfoDialog = false },
+                containerColor = Color(0xF10F1322),
+                title = {
+                    Text("Song Details", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InfoRow("Title", song.title)
+                        InfoRow("Artist", song.artist)
+                        InfoRow("Album", song.album)
+                        InfoRow("Duration", song.formattedDuration)
+                        InfoRow("Source", if (song.isOnline) "Online Stream" else "Local Storage")
+                        InfoRow("Path/URL", song.filePath)
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showSongInfoDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black)
+                    ) {
+                        Text("Close", fontWeight = FontWeight.Bold)
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MenuOptionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(imageVector = icon, contentDescription = title, tint = tint, modifier = Modifier.size(22.dp))
+        Spacer(modifier = Modifier.width(16.dp))
+        Text(text = title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Column {
+        Text(text = label.uppercase(), color = SoftCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        Text(text = value, color = TextPrimary, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 

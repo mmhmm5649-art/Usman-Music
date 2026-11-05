@@ -30,25 +30,23 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Real-time Rainbow Audio Visualizer inspired by Reference Images #3, #4, and #5:
+ * Real-time Full-Width Rainbow Audio Waveform Visualizer
  *
  * Requirements:
- * - Reacts to actual audio playback.
- * - Uses real audio frequency FFT data where supported by hardware.
- * - Displays colorful vertical frequency bars.
- * - Exact ordered gradient: cyan, blue, purple, pink, red, orange, yellow, and green.
- * - Reflective glow beneath the frequency bars (mirror reflection with vertical falloff).
- * - Smooth transitions, subtle neon lighting, and resting state when paused.
- * - Zero CPU/GPU waste when idle.
+ * - Uses the entire available horizontal width inside NowPlayingScreen and HomeScreen.
+ * - Displays 48–80 frequency bars adapting seamlessly to screen width.
+ * - Every part from far-left (bass) to center (mids/vocals) to far-right (treble/air) responds to real music.
+ * - Continuous rainbow spectrum: Cyan -> Blue -> Purple -> Magenta -> Pink -> Orange -> Yellow -> Green -> Cyan.
+ * - Glowing baseline and mirror reflection with vertical falloff.
+ * - Smooth attack/release transitions and natural resting state when paused.
  */
 @Composable
 fun RainbowAudioVisualizer(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
-    barCount: Int = 48,
     height: Dp = 80.dp
 ) {
-    // Collect real-time FFT spectrum data from AudioSpectrumManager
+    // Collect real-time FFT spectrum data from AudioSpectrumManager (64 bins)
     val spectrumData by AudioSpectrumManager.spectrumFlow.collectAsState()
 
     // Smooth resting animation transition when pausing/resuming
@@ -60,39 +58,47 @@ fun RainbowAudioVisualizer(
         )
     }
 
-    // Dynamic wave phase for natural audio rhythm interpolation
-    val infiniteTransition = rememberInfiniteTransition(label = "audio_anim")
+    // Dynamic wave phase for natural audio rhythm interpolation across resting & active states
+    val infiniteTransition = rememberInfiniteTransition(label = "audio_wave_anim")
     val wavePhase by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2200, easing = LinearEasing),
+            animation = tween(durationMillis = 2400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "wavePhase"
     )
 
-    // Pulse rhythm for subtle neon glow diffusion
+    // Pulse rhythm for glowing baseline
     val pulseGlow by infiniteTransition.animateFloat(
-        initialValue = 0.75f,
+        initialValue = 0.80f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 750, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "pulseGlow"
     )
 
-    // Exact required order: cyan, blue, purple, pink, red, orange, yellow, and green
+    // Control FFT processing based on visualizer visibility to save CPU/Battery
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        AudioSpectrumManager.isProcessingEnabled = true
+        onDispose {
+            AudioSpectrumManager.isProcessingEnabled = false
+        }
+    }
+
+    // Complete continuous rainbow color palette across the full visualizer width
     val rainbowColors = remember {
         listOf(
             Color(0xFF00E5FF), // Cyan
-            Color(0xFF2979FF), // Blue
-            Color(0xFFA855F7), // Purple
-            Color(0xFFFF2A85), // Pink / Magenta
-            Color(0xFFFF1744), // Red
-            Color(0xFFFF9100), // Orange
-            Color(0xFFFFEA00), // Yellow
+            Color(0xFF2563EB), // Blue
+            Color(0xFF7C3AED), // Purple
+            Color(0xFFA855F7), // Magenta
+            Color(0xFFEC4899), // Pink
+            Color(0xFFFF5722), // Orange
+            Color(0xFFFFD600), // Yellow
             Color(0xFF00E676), // Green
             Color(0xFF00E5FF)  // Smooth wrap back to Cyan
         )
@@ -106,40 +112,27 @@ fun RainbowAudioVisualizer(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val canvasWidth = size.width
             val canvasHeight = size.height
-            val midY = canvasHeight * 0.48f // Horizon line separating upper bars from reflection
-            val barSpacing = canvasWidth / (barCount + 1)
-            val barWidth = (barSpacing * 0.46f).coerceIn(2.5f, 6.0f)
-            val maxBarHeight = canvasHeight * 0.42f
+            if (canvasWidth <= 0 || canvasHeight <= 0) return@Canvas
 
-            val hasRealFft = spectrumData.any { it > 0.01f }
             val currentActive = activeRatio.value
+            if (currentActive <= 0f && !isPlaying) return@Canvas
 
-            for (i in 0 until barCount) {
-                val x = barSpacing * (i + 1)
-                val normX = i.toFloat() / barCount.toFloat()
+            val midY = canvasHeight * 0.50f
+            val maxBarHeight = canvasHeight * 0.44f
 
-                // 1. Read real FFT magnitude if supported on device
-                val rawFft = if (hasRealFft && i < spectrumData.size) {
-                    spectrumData[i]
-                } else 0f
+            // Adapt bar count to available screen width (between 48 and 72 bars)
+            val barSpacingTarget = 7.0f 
+            val computedBars = (canvasWidth / barSpacingTarget).toInt().coerceIn(48, 72)
+            val stepX = canvasWidth / (computedBars + 1)
+            val barWidth = (stepX * 0.52f).coerceIn(2.5f, 5.0f)
 
-                // 2. Harmonic waveform simulation synced to playback state
-                // (bell-curve frequency distribution: sub-bass & mids higher, treble tapering)
-                val bellCurve = sin(normX * Math.PI).toFloat()
-                val wave1 = sin(normX * 9.0 + wavePhase).toFloat() * 0.18f
-                val wave2 = cos(normX * 15.0 - wavePhase * 1.4).toFloat() * 0.12f
-                val acousticMagnitude = (0.22f + bellCurve * 0.60f + wave1 + wave2).coerceIn(0.08f, 1.0f)
+            val isAmbientOnly = !spectrumData.any { it > 0.01f }
 
-                // Combine real FFT frequency data with fluid motion when playing
-                val barMagnitude = if (hasRealFft) {
-                    (rawFft * 0.78f + acousticMagnitude * 0.22f) * currentActive
-                } else {
-                    acousticMagnitude * currentActive
-                }.coerceIn(0.03f, 1.0f)
+            for (i in 0 until computedBars) {
+                val normX = i.toFloat() / (computedBars - 1).toFloat().coerceAtLeast(1f)
+                val x = stepX * (i + 1)
 
-                val barHalfHeight = maxBarHeight * barMagnitude
-
-                // 3. Interpolate the exact color along the rainbow spectrum
+                // 1. Color calculation (optimized interpolation)
                 val colorPos = normX * (rainbowColors.size - 1)
                 val colorIdx = colorPos.toInt().coerceIn(0, rainbowColors.size - 2)
                 val fraction = colorPos - colorIdx
@@ -149,44 +142,64 @@ fun RainbowAudioVisualizer(
                     fraction
                 )
 
-                // 4. Draw primary vertical frequency bar
+                // 2. Magnitude calculation (Real FFT + Ambient idle)
+                val fftPos = normX * (spectrumData.size - 1)
+                val fftIndex = fftPos.toInt().coerceIn(0, spectrumData.size - 2)
+                val fftFract = fftPos - fftIndex
+                val realFftVal = spectrumData[fftIndex] * (1f - fftFract) + spectrumData[fftIndex + 1] * fftFract
+
+                val bassHarmonic = sin(normX * Math.PI).toFloat()
+                val midHarmonic = sin(normX * 8.0 + wavePhase).toFloat() * 0.12f
+                val trebleHarmonic = cos(normX * 14.0 - wavePhase * 1.5).toFloat() * 0.10f
+                val ambientIdle = (0.12f + bassHarmonic * 0.28f + midHarmonic + trebleHarmonic).coerceIn(0.05f, 0.65f)
+
+                val combinedMagnitude = if (isAmbientOnly) {
+                    ambientIdle * currentActive
+                } else {
+                    (realFftVal * 0.94f + ambientIdle * 0.06f) * currentActive
+                }.coerceIn(0.04f, 1.0f)
+
+                val barHalfHeight = maxBarHeight * combinedMagnitude
+
+                // 3. Draw upper vertical frequency bar
                 drawLine(
                     color = barColor,
                     start = Offset(x, midY - barHalfHeight),
-                    end = Offset(x, midY + (barHalfHeight * 0.08f)),
+                    end = Offset(x, midY + 1f),
                     strokeWidth = barWidth,
                     cap = StrokeCap.Round
                 )
 
-                // 5. Draw reflective glow beneath the horizon line (mirror reflection)
-                val reflectHeight = barHalfHeight * 0.68f
+                // 4. Draw reflective glowing mirror (Simplified to solid color with alpha gradient to avoid allocations)
+                val reflectHeight = barHalfHeight * 0.65f
                 val topAlpha = (0.35f * currentActive * pulseGlow).coerceIn(0f, 0.45f)
-
+                
+                // Reflection - Draw 3 segments with decreasing alpha to simulate gradient without allocating Brush
+                // This is much faster than Brush.verticalGradient in a loop
                 drawLine(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            barColor.copy(alpha = topAlpha),
-                            barColor.copy(alpha = topAlpha * 0.35f),
-                            Color.Transparent
-                        ),
-                        startY = midY + 1.5f,
-                        endY = midY + reflectHeight + 4f
-                    ),
-                    start = Offset(x, midY + 1.5f),
+                    color = barColor.copy(alpha = topAlpha),
+                    start = Offset(x, midY + 1f),
+                    end = Offset(x, midY + reflectHeight * 0.5f),
+                    strokeWidth = barWidth,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = barColor.copy(alpha = topAlpha * 0.4f),
+                    start = Offset(x, midY + reflectHeight * 0.5f),
                     end = Offset(x, midY + reflectHeight),
                     strokeWidth = barWidth,
                     cap = StrokeCap.Round
                 )
             }
 
-            // 6. Horizon line with soft neon glow diffusion
+            // Glowing baseline spanning the entire width (One allocation per frame is acceptable)
             val horizonBrush = Brush.horizontalGradient(rainbowColors)
             drawLine(
                 brush = horizonBrush,
                 start = Offset(0f, midY),
                 end = Offset(canvasWidth, midY),
-                strokeWidth = 1.2f,
-                alpha = (0.32f * currentActive * pulseGlow).coerceIn(0f, 0.4f)
+                strokeWidth = 1.5f,
+                alpha = (0.40f * currentActive * pulseGlow).coerceIn(0.08f, 0.50f)
             )
         }
     }

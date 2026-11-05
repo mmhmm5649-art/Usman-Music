@@ -4,43 +4,20 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CreateNewFolder
-import androidx.compose.material.icons.filled.Equalizer
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,22 +32,13 @@ import com.usman.musicplayer.model.Album
 import com.usman.musicplayer.model.Artist
 import com.usman.musicplayer.model.LibraryTab
 import com.usman.musicplayer.model.MusicFolder
+import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.components.GlassButtonSurface
 import com.usman.musicplayer.ui.components.LiquidGlassPanel
 import com.usman.musicplayer.ui.components.SongAlbumArtwork
 import com.usman.musicplayer.ui.components.UsmanHeader
-import com.usman.musicplayer.ui.theme.ActivePillBrush
-import com.usman.musicplayer.ui.theme.AmoledBlack
-import com.usman.musicplayer.ui.theme.ElectricBlue
-import com.usman.musicplayer.ui.theme.GlassBorderSubtle
-import com.usman.musicplayer.ui.theme.NeonCyan
-import com.usman.musicplayer.ui.theme.NeonMagenta
-import com.usman.musicplayer.ui.theme.NeonPurple
-import com.usman.musicplayer.ui.theme.SoftCyan
-import com.usman.musicplayer.ui.theme.TextMuted
-import com.usman.musicplayer.ui.theme.TextPrimary
-import com.usman.musicplayer.ui.theme.TextSecondary
+import com.usman.musicplayer.ui.theme.*
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 
 @Composable
@@ -81,13 +49,22 @@ fun LibraryScreen(
     onAlbumSelected: (Album) -> Unit,
     onArtistSelected: (Artist) -> Unit,
     onFolderSelected: (MusicFolder) -> Unit,
+    onSelectPlaylist: (Playlist?) -> Unit = {},
+    onCreatePlaylistClick: () -> Unit = {},
+    onDeletePlaylist: (Long) -> Unit = {},
+    onRenamePlaylist: (Long, String) -> Unit = { _, _ -> },
+    onRemoveSongFromPlaylist: (Long, Long) -> Unit = { _, _ -> },
     onNavigateToSearch: () -> Unit,
     onOpenFolderPicker: () -> Unit,
     onRescanLibrary: () -> Unit,
     onClearFilter: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Determine active filter banner
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var playlistNameInput by remember { mutableStateOf("") }
+    var playlistToRename by remember { mutableStateOf<Playlist?>(null) }
+    var renameInput by remember { mutableStateOf("") }
+
     val activeFilterTitle = when {
         uiState.selectedAlbumFilter != null -> "Album: ${uiState.selectedAlbumFilter}"
         uiState.selectedArtistFilter != null -> "Artist: ${uiState.selectedArtistFilter}"
@@ -95,7 +72,6 @@ fun LibraryScreen(
         else -> null
     }
 
-    // Filter displayed songs if a specific album, artist or folder was clicked
     val displayedSongs = remember(
         uiState.songs,
         uiState.selectedAlbumFilter,
@@ -115,7 +91,7 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(AmoledBlack)
     ) {
-        // Neon ambient wave gradient across the top matching reference image #2
+        // Ambient glow
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -132,13 +108,11 @@ fun LibraryScreen(
         )
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // USMAN Top Header
             UsmanHeader(
                 onSearchClick = onNavigateToSearch,
                 onMenuClick = onRescanLibrary
             )
 
-            // "Your Library" title with glowing subtitle and rescan status
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -191,8 +165,7 @@ fun LibraryScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Category Selector Tabs matching reference image 2:
-            // [All Songs] [Albums] [Artists] [Folders]
+            // Category Selector Tabs
             LibraryTabsRow(
                 activeTab = uiState.activeLibraryTab,
                 onTabSelected = {
@@ -201,7 +174,7 @@ fun LibraryScreen(
                 }
             )
 
-            // Active Filter Chip (if an album/artist/folder was drilled down)
+            // Active Filter Chip
             if (activeFilterTitle != null) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(
@@ -261,6 +234,32 @@ fun LibraryScreen(
                             onOpenFolderPicker = onOpenFolderPicker
                         )
                     }
+                    LibraryTab.PLAYLISTS -> {
+                        if (uiState.selectedPlaylist == null) {
+                            PlaylistsGrid(
+                                playlists = uiState.playlists,
+                                onCreatePlaylistClick = { showCreateDialog = true },
+                                onPlaylistClick = { onSelectPlaylist(it) },
+                                onDeletePlaylist = onDeletePlaylist,
+                                onRenamePlaylist = { pl ->
+                                    playlistToRename = pl
+                                    renameInput = pl.name
+                                }
+                            )
+                        } else {
+                            PlaylistDetailView(
+                                playlist = uiState.selectedPlaylist,
+                                songs = uiState.selectedPlaylistSongs,
+                                currentSong = uiState.currentSong,
+                                isPlaying = uiState.isPlaying,
+                                onBackClick = { onSelectPlaylist(null) },
+                                onSongClick = onPlaySong,
+                                onRemoveSong = { songId ->
+                                    onRemoveSongFromPlaylist(uiState.selectedPlaylist.id, songId)
+                                }
+                            )
+                        }
+                    }
                     LibraryTab.ALBUMS -> {
                         AlbumsGrid(
                             albums = uiState.albums,
@@ -282,6 +281,90 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+
+        // Create Playlist Dialog
+        if (showCreateDialog) {
+            AlertDialog(
+                onDismissRequest = { showCreateDialog = false },
+                containerColor = Color(0xF10F1322),
+                title = { Text("Create Playlist", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("Enter playlist name:", color = TextSecondary, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = playlistNameInput,
+                            onValueChange = { playlistNameInput = it },
+                            placeholder = { Text("Workout Hits", color = TextMuted) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = Color(0x33FFFFFF),
+                                focusedContainerColor = Color(0x1AFFFFFF),
+                                unfocusedContainerColor = Color(0x0DFFFFFF)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (playlistNameInput.isNotBlank()) {
+                                onCreatePlaylistClick()
+                                playlistNameInput = ""
+                                showCreateDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White)
+                    ) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCreateDialog = false }) { Text("Cancel", color = TextMuted) }
+                }
+            )
+        }
+
+        // Rename Playlist Dialog
+        if (playlistToRename != null) {
+            AlertDialog(
+                onDismissRequest = { playlistToRename = null },
+                containerColor = Color(0xF10F1322),
+                title = { Text("Rename Playlist", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        OutlinedTextField(
+                            value = renameInput,
+                            onValueChange = { renameInput = it },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonCyan,
+                                unfocusedBorderColor = Color(0x33FFFFFF)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            playlistToRename?.let { pl ->
+                                onRenamePlaylist(pl.id, renameInput)
+                            }
+                            playlistToRename = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black)
+                    ) {
+                        Text("Save", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { playlistToRename = null }) { Text("Cancel", color = TextMuted) }
+                }
+            )
         }
     }
 }
@@ -326,6 +409,7 @@ private fun LibraryTabsRow(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val icon = when (tab) {
                         LibraryTab.ALL_SONGS -> Icons.Default.MusicNote
+                        LibraryTab.PLAYLISTS -> Icons.Default.QueueMusic
                         LibraryTab.ALBUMS -> Icons.Default.Album
                         LibraryTab.ARTISTS -> Icons.Default.Person
                         LibraryTab.FOLDERS -> Icons.Default.Folder
@@ -350,6 +434,224 @@ private fun LibraryTabsRow(
 }
 
 @Composable
+private fun PlaylistsGrid(
+    playlists: List<Playlist>,
+    onCreatePlaylistClick: () -> Unit,
+    onPlaylistClick: (Playlist) -> Unit,
+    onDeletePlaylist: (Long) -> Unit,
+    onRenamePlaylist: (Playlist) -> Unit
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Create Playlist Action Card
+        item {
+            LiquidGlassPanel(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable(onClick = onCreatePlaylistClick),
+                shape = RoundedCornerShape(20.dp),
+                backgroundColor = Color(0x331E2544),
+                borderBrush = Brush.linearGradient(listOf(NeonCyan, ElectricBlue)),
+                borderWidth = 1.dp
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(Brush.linearGradient(listOf(NeonCyan, ElectricBlue))),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Create Playlist", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text("Build custom vibe", color = SoftCyan, fontSize = 11.sp)
+                }
+            }
+        }
+
+        items(playlists, key = { "playlist_${it.id}" }) { playlist ->
+            var showMenu by remember { mutableStateOf(false) }
+
+            LiquidGlassPanel(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable { onPlaylistClick(playlist) },
+                shape = RoundedCornerShape(20.dp),
+                backgroundColor = Color(0x2614182E)
+            ) {
+                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(100.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Brush.linearGradient(listOf(Color(0xFF1E1B4B), Color(0xFF0F172A)))),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QueueMusic,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(42.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = playlist.name,
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${playlist.songCount} tracks",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        IconButton(onClick = { showMenu = true }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Default.MoreVert, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier.background(Color(0xFF14182E))
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rename", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Edit, null, tint = NeonCyan) },
+                                onClick = {
+                                    showMenu = false
+                                    onRenamePlaylist(playlist)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = Color.Red) },
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = Color.Red) },
+                                onClick = {
+                                    showMenu = false
+                                    onDeletePlaylist(playlist.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetailView(
+    playlist: Playlist,
+    songs: List<Song>,
+    currentSong: Song?,
+    isPlaying: Boolean,
+    onBackClick: () -> Unit,
+    onSongClick: (Song) -> Unit,
+    onRemoveSong: (Long) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBackClick) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextPrimary)
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = playlist.name, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(text = "${songs.size} tracks", color = SoftCyan, fontSize = 12.sp)
+            }
+            if (songs.isNotEmpty()) {
+                Button(
+                    onClick = { onSongClick(songs.first()) },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Play All", fontSize = 12.sp)
+                }
+            }
+        }
+
+        if (songs.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.QueueMusic, null, tint = SoftCyan, modifier = Modifier.size(48.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("No songs in this playlist yet.", color = TextSecondary, fontSize = 14.sp)
+                    Text("Tap three-dot menu on any song to add it here!", color = TextMuted, fontSize = 12.sp)
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp)
+            ) {
+                items(songs, key = { "pl_song_${it.id}_${it.filePath}" }) { song ->
+                    val isCurrent = currentSong?.id == song.id
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { onSongClick(song) }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SongAlbumArtwork(song = song, modifier = Modifier.size(48.dp), cornerRadius = 12.dp)
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = song.title,
+                                color = if (isCurrent) NeonCyan else TextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = song.artist,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(onClick = { onRemoveSong(song.id) }) {
+                            Icon(Icons.Default.Delete, "Remove", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AllSongsList(
     songs: List<Song>,
     currentSong: Song?,
@@ -361,11 +663,7 @@ private fun AllSongsList(
 ) {
     if (songs.isEmpty()) {
         EmptyLibraryState(
-            message = if (!hasPermission) {
-                "Storage permission is required to discover audio files."
-            } else {
-                "No audio files found. Supported formats include MP3, AAC, M4A, FLAC, WAV, and OGG."
-            },
+            message = if (!hasPermission) "Storage permission is required to discover audio files." else "No audio files found. Supported formats include MP3, AAC, M4A, FLAC, WAV, and OGG.",
             showRescan = hasPermission,
             onRescan = onRescan,
             onOpenFolderPicker = onOpenFolderPicker
@@ -373,7 +671,7 @@ private fun AllSongsList(
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 140.dp)
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp)
         ) {
             items(songs, key = { "all_song_${it.id}_${it.filePath}" }) { song ->
                 val isCurrent = currentSong?.id == song.id
@@ -435,17 +733,14 @@ private fun AllSongsList(
 }
 
 @Composable
-private fun AlbumsGrid(
-    albums: List<Album>,
-    onAlbumClick: (Album) -> Unit
-) {
+private fun AlbumsGrid(albums: List<Album>, onAlbumClick: (Album) -> Unit) {
     if (albums.isEmpty()) {
         EmptyLibraryState(message = "No albums found in local storage.")
     } else {
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 140.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -476,22 +771,9 @@ private fun AlbumsGrid(
                             )
                         }
                         Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = album.title,
-                            color = TextPrimary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(text = album.title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${album.artist} • ${album.songCount} songs",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(text = "${album.artist} • ${album.songCount} songs", color = TextSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -500,16 +782,13 @@ private fun AlbumsGrid(
 }
 
 @Composable
-private fun ArtistsList(
-    artists: List<Artist>,
-    onArtistClick: (Artist) -> Unit
-) {
+private fun ArtistsList(artists: List<Artist>, onArtistClick: (Artist) -> Unit) {
     if (artists.isEmpty()) {
         EmptyLibraryState(message = "No artists found in local storage.")
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 140.dp)
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp)
         ) {
             items(artists, key = { "artist_${it.name}" }) { artist ->
                 Row(
@@ -529,29 +808,13 @@ private fun ArtistsList(
                             .border(1.dp, NeonMagenta.copy(alpha = 0.5f), RoundedCornerShape(26.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = artist.name,
-                            tint = NeonMagenta,
-                            modifier = Modifier.size(26.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Person, contentDescription = artist.name, tint = NeonMagenta, modifier = Modifier.size(26.dp))
                     }
-
                     Spacer(modifier = Modifier.width(16.dp))
-
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = artist.name,
-                            color = TextPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Text(text = artist.name, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${artist.songCount} songs • ${artist.albumCount} albums",
-                            color = TextSecondary,
-                            fontSize = 12.sp
-                        )
+                        Text(text = "${artist.songCount} songs • ${artist.albumCount} albums", color = TextSecondary, fontSize = 12.sp)
                     }
                 }
             }
@@ -560,16 +823,11 @@ private fun ArtistsList(
 }
 
 @Composable
-private fun FoldersList(
-    folders: List<MusicFolder>,
-    onFolderClick: (MusicFolder) -> Unit,
-    onAddSafFolder: () -> Unit
-) {
+private fun FoldersList(folders: List<MusicFolder>, onFolderClick: (MusicFolder) -> Unit, onAddSafFolder: () -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 140.dp)
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp)
     ) {
-        // Storage Access Framework (SAF) folder browsing button
         item {
             LiquidGlassPanel(
                 modifier = Modifier
@@ -589,35 +847,19 @@ private fun FoldersList(
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CreateNewFolder,
-                        contentDescription = "Browse Folder",
-                        tint = NeonCyan,
-                        modifier = Modifier.size(26.dp)
-                    )
+                    Icon(imageVector = Icons.Default.CreateNewFolder, contentDescription = "Browse Folder", tint = NeonCyan, modifier = Modifier.size(26.dp))
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Browse Device Folder (SAF)",
-                            color = TextPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Text(text = "Browse Device Folder (SAF)", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Pick specific music folder or SD card directory",
-                            color = TextSecondary,
-                            fontSize = 12.sp
-                        )
+                        Text(text = "Pick specific music folder or SD card directory", color = TextSecondary, fontSize = 12.sp)
                     }
                 }
             }
         }
 
         if (folders.isEmpty()) {
-            item {
-                EmptyLibraryState(message = "No music folders detected.")
-            }
+            item { EmptyLibraryState(message = "No music folders detected.") }
         } else {
             items(folders, key = { "folder_${it.path}_${it.name}" }) { folder ->
                 Row(
@@ -637,31 +879,13 @@ private fun FoldersList(
                             .border(1.dp, ElectricBlue.copy(alpha = 0.5f), RoundedCornerShape(14.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = folder.name,
-                            tint = if (folder.isSafFolder) NeonCyan else ElectricBlue,
-                            modifier = Modifier.size(26.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Folder, contentDescription = folder.name, tint = if (folder.isSafFolder) NeonCyan else ElectricBlue, modifier = Modifier.size(26.dp))
                     }
-
                     Spacer(modifier = Modifier.width(16.dp))
-
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = folder.name,
-                            color = TextPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Text(text = folder.name, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${folder.songCount} songs • ${folder.path}",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(text = "${folder.songCount} songs • ${folder.path}", color = TextSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -683,62 +907,32 @@ private fun EmptyLibraryState(
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Default.MusicNote,
-                contentDescription = null,
-                tint = SoftCyan,
-                modifier = Modifier.size(52.dp)
-            )
+            Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = SoftCyan, modifier = Modifier.size(52.dp))
             Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                text = message,
-                color = TextSecondary,
-                fontSize = 14.sp,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
+            Text(text = message, color = TextSecondary, fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             Spacer(modifier = Modifier.height(20.dp))
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (showRescan) {
                     Button(
                         onClick = onRescan,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NeonPurple,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.testTag("empty_library_rescan_btn")
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Scan Again")
+                        Text("Scan Again")
                     }
                 }
-
                 if (onOpenFolderPicker != null) {
                     Button(
                         onClick = onOpenFolderPicker,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElectricBlue,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.testTag("empty_library_saf_btn")
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Open Folder (SAF)")
+                        Text("Open Folder (SAF)")
                     }
                 }
             }

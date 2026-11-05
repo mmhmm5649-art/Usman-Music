@@ -34,6 +34,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import dev.chrisbanes.haze.HazeDefaults
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeChild
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,7 +77,7 @@ import com.skydoves.cloudy.cloudy
  */
 
 /**
- * Core Liquid Glass Panel / Card
+ * Core Liquid Glass Panel / Card with real backdrop blur support via Haze
  */
 @Composable
 fun GlassCard(
@@ -84,24 +87,42 @@ fun GlassCard(
     borderBrush: Brush = LiquidGlassBorderBrush,
     borderWidth: Dp = 1.dp,
     showSpecularHighlight: Boolean = true,
-    blurRadius: Int = 20,
+    hazeState: HazeState? = null,
+    hazeBlurRadius: Dp = 28.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val hazeStyle = remember(backgroundColor, hazeBlurRadius) {
+        HazeDefaults.style(
+            backgroundColor = Color.Transparent,
+            tint = HazeDefaults.tint(backgroundColor.copy(alpha = 0.55f)),
+            blurRadius = hazeBlurRadius,
+            noiseFactor = 0.05f
+        )
+    }
+
     Box(
         modifier = modifier
             .clip(shape)
+            .then(
+                if (hazeState != null) {
+                    Modifier.hazeChild(
+                        state = hazeState,
+                        shape = shape,
+                        style = hazeStyle
+                    )
+                } else Modifier
+            )
             .border(borderWidth, borderBrush, shape)
     ) {
-        // 1. Background Liquid Glass Layer with Cloudy blur & translucent material refraction
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clip(shape)
-                .cloudy(radius = 25) // Increased blur for better effect
-                .background(
-                    backgroundColor.copy(alpha = 0.20f) // Simplified solid translucent color
-                )
-        )
+        // Fallback translucent layer only if hazeState is not available
+        if (hazeState == null) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(shape)
+                    .background(backgroundColor.copy(alpha = 0.40f))
+            )
+        }
 
         // 2. Specular reflection and chromatic rim refraction
         if (showSpecularHighlight) {
@@ -116,9 +137,9 @@ fun GlassCard(
                             brush = Brush.horizontalGradient(
                                 colors = listOf(
                                     Color.Transparent,
-                                    Color(0x40FFFFFF),
-                                    Color(0x90FFFFFF),
-                                    Color(0x40FFFFFF),
+                                    Color(0x55FFFFFF),
+                                    Color(0xA0FFFFFF),
+                                    Color(0x55FFFFFF),
                                     Color.Transparent
                                 ),
                                 startX = startX,
@@ -134,7 +155,7 @@ fun GlassCard(
                             brush = Brush.verticalGradient(
                                 colors = listOf(
                                     Color(0x60FFFFFF),
-                                    Color(0x2038BDF8),
+                                    Color(0x2538BDF8),
                                     Color.Transparent
                                 ),
                                 startY = 2f,
@@ -164,6 +185,8 @@ fun LiquidGlassPanel(
     borderBrush: Brush = LiquidGlassBorderBrush,
     borderWidth: Dp = 1.dp,
     showTopSpecularGleam: Boolean = true,
+    hazeState: HazeState? = null,
+    hazeBlurRadius: Dp = 25.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
     GlassCard(
@@ -173,6 +196,8 @@ fun LiquidGlassPanel(
         borderBrush = borderBrush,
         borderWidth = borderWidth,
         showSpecularHighlight = showTopSpecularGleam,
+        hazeState = hazeState,
+        hazeBlurRadius = hazeBlurRadius,
         content = content
     )
 }
@@ -424,7 +449,6 @@ fun GlassBottomSheet(
             backgroundColor = Color(0xDC0C0E1B),
             borderBrush = LiquidGlassBorderBrush,
             borderWidth = 1.dp,
-            blurRadius = 25,
             content = content
         )
     }
