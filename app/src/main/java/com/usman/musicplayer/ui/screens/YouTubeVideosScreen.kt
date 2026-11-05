@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -347,15 +348,15 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
     var playerStateText by remember { mutableStateOf("Initializing YouTube Player...") }
     var retryTrigger by remember { mutableIntStateOf(0) }
 
-    // Timeout Safeguard: If player remains in loading state for > 12 seconds, display timeout error with Retry
+    // Timeout Safeguard: If iframe initialization stalls for > 5 seconds, inform user and highlight Official App launch
     LaunchedEffect(cleanVideoId, retryTrigger) {
         playerError = null
         isPlayerLoading = true
         playerStateText = "Initializing YouTube Player..."
-        delay(12000L)
+        delay(5000L)
         if (isPlayerLoading && playerError == null) {
-            Log.w("YouTubePlayer", "Player initialization timed out after 12s for video ID: $cleanVideoId")
-            playerError = "Playback initialization timed out. Please check your internet connection or tap Retry below."
+            Log.w("YouTubePlayer", "Iframe initialization delayed after 5s for video ID: $cleanVideoId")
+            playerError = "In-app embedded engine is delayed in cloud preview. Tap 'Watch on YouTube App' for instant playback."
             isPlayerLoading = false
         }
     }
@@ -438,20 +439,42 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(14.dp))
-                        Button(
-                            onClick = {
-                                Log.d("YouTubePlayer", "User tapped Retry button for video ID: $cleanVideoId")
-                                retryTrigger++
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = NeonCyan,
-                                contentColor = Color.Black
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Retry Playback", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = {
+                                    Log.d("YouTubePlayer", "User tapped Retry button for video ID: $cleanVideoId")
+                                    retryTrigger++
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NeonCyan,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Retry", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            val context = LocalContext.current
+                            Button(
+                                onClick = {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse("https://www.youtube.com/watch?v=$cleanVideoId")
+                                    ).apply { flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK }
+                                    try { context.startActivity(intent) } catch (e: Exception) { }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFFF0000),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Open App", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 } else {
@@ -460,41 +483,7 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                             factory = { ctx ->
                                 Log.d("YouTubePlayer", "Creating YouTubePlayerView for video ID: $cleanVideoId (attempt #$retryTrigger)")
                                 YouTubePlayerView(ctx).apply {
-                                    // Disable automatic initialization to bypass NetworkObserver deadlock
                                     enableAutomaticInitialization = false
-
-                                    // Register lifecycle observer for ON_RESUME / ON_STOP / ON_DESTROY
-                                    lifecycleOwner.lifecycle.addObserver(this)
-
-                                    // Locate underlying WebView and configure for software rendering to prevent Chromium aw_browser_terminator SIGKILL crash on emulators
-                                    val childWebView = findWebViewInView(this)
-                                    childWebView?.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-                                    childWebView?.settings?.apply {
-                                        javaScriptEnabled = true
-                                        domStorageEnabled = true
-                                        mediaPlaybackRequiresUserGesture = false
-                                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                    }
-
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        childWebView?.webViewClient = object : WebViewClient() {
-                                            override fun onRenderProcessGone(
-                                                view: WebView?,
-                                                detail: RenderProcessGoneDetail?
-                                            ): Boolean {
-                                                Log.e("YouTubePlayer", "Chromium render process terminated. Did crash: ${detail?.didCrash()}")
-                                                playerError = "Video engine process restarted. Tap Retry to reload."
-                                                isPlayerLoading = false
-                                                try {
-                                                    view?.stopLoading()
-                                                    view?.loadUrl("about:blank")
-                                                } catch (e: Exception) {
-                                                    // Ignore cleanup exception
-                                                }
-                                                return true // Prevents host Android app crash
-                                            }
-                                        }
-                                    }
 
                                     val options = IFramePlayerOptions.Builder()
                                         .controls(1)
@@ -502,7 +491,6 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                         .rel(0)
                                         .ivLoadPolicy(3)
                                         .ccLoadPolicy(0)
-                                        .origin("https://www.youtube.com")
                                         .build()
 
                                     initialize(
@@ -528,7 +516,7 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                                     PlayerConstants.PlayerError.HTML_5_PLAYER ->
                                                         "YouTube HTML5 player error"
                                                     else ->
-                                                        "YouTube Playback Error: $error"
+                                                        "YouTube Playback Error: ${error.name}"
                                                 }
                                                 isPlayerLoading = false
                                             }
@@ -540,14 +528,13 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                                 Log.d("YouTubePlayer", "onStateChange: $state for video ID: $cleanVideoId")
                                                 playerStateText = "State: ${state.name}"
                                                 when (state) {
-                                                    PlayerConstants.PlayerState.PLAYING -> {
-                                                        Log.d("YouTubePlayer", "SUCCESS: Video started playing for video ID: $cleanVideoId")
+                                                    PlayerConstants.PlayerState.PLAYING,
+                                                    PlayerConstants.PlayerState.PAUSED,
+                                                    PlayerConstants.PlayerState.ENDED,
+                                                    PlayerConstants.PlayerState.VIDEO_CUED -> {
+                                                        Log.d("YouTubePlayer", "State reached $state for video ID: $cleanVideoId")
                                                         isPlayerLoading = false
                                                         playerError = null
-                                                    }
-                                                    PlayerConstants.PlayerState.PAUSED,
-                                                    PlayerConstants.PlayerState.ENDED -> {
-                                                        isPlayerLoading = false
                                                     }
                                                     PlayerConstants.PlayerState.BUFFERING -> {
                                                         playerStateText = "Buffering video stream..."
@@ -556,9 +543,43 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                                 }
                                             }
                                         },
-                                        handleNetworkEvents = false, // Prevents NetworkObserver from hanging on emulator
+                                        handleNetworkEvents = false,
                                         playerOptions = options
                                     )
+
+                                    // Add lifecycle observer after initialization
+                                    lifecycleOwner.lifecycle.addObserver(this)
+
+                                    // Post-configuration of inner WebView (enabling hardware decoding)
+                                    post {
+                                        val childWebView = findWebViewInView(this)
+                                        childWebView?.settings?.apply {
+                                            javaScriptEnabled = true
+                                            domStorageEnabled = true
+                                            mediaPlaybackRequiresUserGesture = false
+                                            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                        }
+
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            childWebView?.webViewClient = object : WebViewClient() {
+                                                override fun onRenderProcessGone(
+                                                    view: WebView?,
+                                                    detail: RenderProcessGoneDetail?
+                                                ): Boolean {
+                                                    Log.e("YouTubePlayer", "Chromium render process terminated. Did crash: ${detail?.didCrash()}")
+                                                    playerError = "Video engine process restarted. Tap Retry to reload."
+                                                    isPlayerLoading = false
+                                                    try {
+                                                        view?.stopLoading()
+                                                        view?.loadUrl("about:blank")
+                                                    } catch (e: Exception) {
+                                                        // Ignore cleanup exception
+                                                    }
+                                                    return true
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             },
                             modifier = Modifier.fillMaxSize(),
