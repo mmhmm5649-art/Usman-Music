@@ -22,7 +22,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
         <activity
-            android:name=".MainActivity"
+            android:name="com.usman.musicplayer.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.MyApplication">
@@ -35,7 +35,7 @@
 
         <!-- MediaSessionService for Media3 background audio playback & notification controls -->
         <service
-            android:name=".playback.UsmanPlaybackService"
+            android:name="com.usman.musicplayer.playback.UsmanPlaybackService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="true">
             <intent-filter>
