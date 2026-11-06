@@ -78,23 +78,33 @@ android {
   }
 }
 
-// Ensure environment variables from AI Studio build environment populate .env for Secrets plugin
-val envFile = file("${rootDir}/.env")
+// Ensure environment variables from AI Studio build environment populate .env & local.properties for Secrets plugin
 val youtubeEnvKey = System.getenv("YOUTUBE_API_KEY")
 if (!youtubeEnvKey.isNullOrBlank() && youtubeEnvKey != "YOUR_YOUTUBE_API_KEY") {
-  if (!envFile.exists()) {
-    envFile.writeText("YOUTUBE_API_KEY=$youtubeEnvKey\n")
-  } else {
-    val currentContent = envFile.readText()
-    if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
-      val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
-      envFile.writeText(lines.joinToString("\n"))
+  val targetFiles = listOf(
+    file("${rootDir}/.env"),
+    file("${projectDir}/.env"),
+    file("${rootDir}/local.properties"),
+    file("${projectDir}/local.properties")
+  )
+  targetFiles.forEach { targetFile ->
+    try {
+      if (!targetFile.exists()) {
+        targetFile.writeText("YOUTUBE_API_KEY=$youtubeEnvKey\n")
+      } else {
+        val currentContent = targetFile.readText()
+        if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
+          val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
+          targetFile.writeText(lines.joinToString("\n"))
+        }
+      }
+    } catch (e: Exception) {
+      // Ignore write errors
     }
   }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
-// to match the convention used in Web projects.
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"

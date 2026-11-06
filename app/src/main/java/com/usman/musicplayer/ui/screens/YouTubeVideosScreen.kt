@@ -348,15 +348,15 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
     var playerStateText by remember { mutableStateOf("Initializing YouTube Player...") }
     var retryTrigger by remember { mutableIntStateOf(0) }
 
-    // Timeout Safeguard: If iframe initialization stalls for > 5 seconds, inform user and highlight Official App launch
+    // Timeout Safeguard: If iframe initialization stalls for > 10 seconds, inform user and highlight Official App launch
     LaunchedEffect(cleanVideoId, retryTrigger) {
         playerError = null
         isPlayerLoading = true
-        playerStateText = "Initializing YouTube Player..."
-        delay(5000L)
+        playerStateText = "Initializing USMAN AI Video Engine..."
+        delay(10000L)
         if (isPlayerLoading && playerError == null) {
-            Log.w("YouTubePlayer", "Iframe initialization delayed after 5s for video ID: $cleanVideoId")
-            playerError = "In-app embedded engine is delayed in cloud preview. Tap 'Watch on YouTube App' for instant playback."
+            Log.w("YouTubePlayer", "Iframe initialization delayed after 10s for video ID: $cleanVideoId")
+            playerError = "In-app playback engine is taking longer than expected. You can wait or tap 'Watch on YouTube App' for instant playback."
             isPlayerLoading = false
         }
     }
@@ -374,6 +374,7 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                 .padding(horizontal = 16.dp)
                 .clickable(enabled = false) { }
         ) {
+            // Top Action Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -381,12 +382,40 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "ID: $cleanVideoId",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    maxLines = 1
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val context = LocalContext.current
+                    Button(
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://www.youtube.com/watch?v=$cleanVideoId")
+                            ).apply { flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK }
+                            try { context.startActivity(intent) } catch (e: Exception) { }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFF0000),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open YouTube", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Text(
+                        text = "ID: $cleanVideoId",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                }
+
                 GlassButtonSurface(
                     modifier = Modifier.size(40.dp),
                     shape = CircleShape,
@@ -550,7 +579,7 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                     // Add lifecycle observer after initialization
                                     lifecycleOwner.lifecycle.addObserver(this)
 
-                                    // Post-configuration of inner WebView (enabling hardware decoding)
+                                    // Safely configure inner WebView settings WITHOUT overwriting library's internal WebViewClient bridge
                                     post {
                                         val childWebView = findWebViewInView(this)
                                         childWebView?.settings?.apply {
@@ -558,26 +587,6 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                             domStorageEnabled = true
                                             mediaPlaybackRequiresUserGesture = false
                                             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                        }
-
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                            childWebView?.webViewClient = object : WebViewClient() {
-                                                override fun onRenderProcessGone(
-                                                    view: WebView?,
-                                                    detail: RenderProcessGoneDetail?
-                                                ): Boolean {
-                                                    Log.e("YouTubePlayer", "Chromium render process terminated. Did crash: ${detail?.didCrash()}")
-                                                    playerError = "Video engine process restarted. Tap Retry to reload."
-                                                    isPlayerLoading = false
-                                                    try {
-                                                        view?.stopLoading()
-                                                        view?.loadUrl("about:blank")
-                                                    } catch (e: Exception) {
-                                                        // Ignore cleanup exception
-                                                    }
-                                                    return true
-                                                }
-                                            }
                                         }
                                     }
                                 }
@@ -624,7 +633,7 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
             Spacer(modifier = Modifier.height(18.dp))
 
             Text(
-                text = "Playing in USMAN Video Engine",
+                text = "Powered by USMAN AI Video Engine",
                 color = SoftCyan.copy(alpha = 0.7f),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
