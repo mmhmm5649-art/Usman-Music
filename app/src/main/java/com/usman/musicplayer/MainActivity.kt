@@ -75,6 +75,7 @@ import com.usman.musicplayer.ui.screens.SearchScreen
 
 import com.usman.musicplayer.ui.screens.SettingsScreen
 import com.usman.musicplayer.ui.screens.PluginManagerScreen
+import com.usman.musicplayer.ui.screens.ExtensionsMusicScreen
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
@@ -342,6 +343,14 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
                             currentDestination = AppDestination.LIBRARY
                         }
+                    )
+
+                    AppDestination.EXTENSIONS -> ExtensionsMusicScreen(
+                        onPlaySong = { song ->
+                            viewModel.playSong(song)
+                            isNowPlayingExpanded = true
+                        },
+                        onOpenPluginManager = { isPluginManagerExpanded = true }
                     )
 
                     AppDestination.LIBRARY -> LibraryScreen(

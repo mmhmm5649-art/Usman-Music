@@ -24,11 +24,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.NewReleases
@@ -65,6 +67,7 @@ enum class AppDestination(
 ) {
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home, "home"),
     NEW("New", Icons.Filled.NewReleases, Icons.Outlined.NewReleases, "new"),
+    EXTENSIONS("Extensions", Icons.Filled.Extension, Icons.Outlined.Extension, "extensions"),
     LIBRARY("Library", Icons.Filled.LibraryMusic, Icons.Outlined.LibraryMusic, "library"),
     SEARCH("Search", Icons.Filled.Search, Icons.Outlined.Search, "search")
 }
