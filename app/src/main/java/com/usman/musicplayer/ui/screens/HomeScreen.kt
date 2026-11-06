@@ -69,6 +69,7 @@ fun HomeScreen(
     onRequestPermissionClick: () -> Unit,
     onRetryTelugu: () -> Unit = {},
     onRetryJamendo: () -> Unit = {},
+    onOpenSettings: () -> Unit = onRescanClick,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -118,7 +119,7 @@ fun HomeScreen(
                 else -> {
                     // 1. Premium Home Header
                     item {
-                        HomeHeader(onProfileClick = onRescanClick)
+                        HomeHeader(onProfileClick = onOpenSettings)
                     }
 
                     // 2. Top Picks for You (Hero Carousel)

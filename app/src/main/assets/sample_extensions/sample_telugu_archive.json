@@ -1,0 +1,30 @@
+{
+  "manifest": {
+    "id": "usman.ext.telugu.archive",
+    "name": "Telugu Audio Archive",
+    "version": "1.0.0",
+    "author": "Open Audio Community",
+    "description": "Authentic Telugu classical music and public domain broadcasts provider",
+    "license": "Public Domain / CC0",
+    "permissions": ["INTERNET", "STREAMING"],
+    "supportedLanguages": ["Telugu", "Hindi", "English"],
+    "playbackType": "FULL",
+    "type": "CONTENT_RESOLVER"
+  },
+  "searchConfig": {
+    "urlTemplate": "https://archive.org/advancedsearch.php?q={query}&output=json",
+    "httpMethod": "GET",
+    "headers": {
+      "User-Agent": "USMAN-Music-Extension/1.0"
+    },
+    "tracksJsonPath": "response.docs",
+    "idField": "identifier",
+    "titleField": "title",
+    "artistField": "creator",
+    "albumField": "collection",
+    "durationField": "length",
+    "durationUnit": "seconds",
+    "streamUrlTemplate": "https://archive.org/download/{id}/{id}.mp3",
+    "artworkUrlField": "identifier"
+  }
+}

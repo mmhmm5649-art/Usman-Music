@@ -22,6 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
@@ -78,6 +80,7 @@ import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 fun SettingsScreen(
     uiState: MusicPlayerUiState,
     onRescanClick: () -> Unit,
+    onOpenExtensions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var highQualityVisualizer by remember { mutableStateOf(true) }
@@ -225,7 +228,94 @@ fun SettingsScreen(
                     }
                 }
 
-                // Section 4: App Information
+                // Section: Music Extensions & GitHub Plugins
+                item {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    SettingsSectionHeader(title = "MUSIC EXTENSIONS & PLUGINS")
+                    LiquidGlassPanel(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        backgroundColor = Color(0x2614182E)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            // Row 1: Manage Extensions
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(onClick = onOpenExtensions)
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Extension,
+                                    contentDescription = null,
+                                    tint = NeonCyan,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Manage Music Extensions",
+                                        color = TextPrimary,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "GitHub & Bloomee ecosystem • Active streaming sources",
+                                        color = SoftCyan,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Row 2: Import Provider Package
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(onClick = onOpenExtensions)
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileOpen,
+                                    contentDescription = null,
+                                    tint = SoftPurple,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Import Provider Package",
+                                        color = TextPrimary,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "Browse device storage for .eapk, .epk, .json, .zip or APK packages",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Section 5: App Information
                 item {
                     Spacer(modifier = Modifier.height(20.dp))
                     SettingsSectionHeader(title = "APP INFORMATION")

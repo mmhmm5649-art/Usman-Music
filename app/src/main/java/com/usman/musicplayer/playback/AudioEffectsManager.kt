@@ -173,7 +173,7 @@ object AudioEffectsManager {
                 _effectsState.update { it.copy(isEqualizerSupported = true) }
                 setupEqualizerBands(eq)
             } catch (e: Throwable) {
-                Log.d(TAG, "Equalizer not supported on session $audioSessionId", e)
+                Log.d(TAG, "Equalizer not supported on session $audioSessionId (${e.message})")
                 equalizer = null
                 _effectsState.update { it.copy(isEqualizerSupported = false) }
                 failedEffects.add("Equalizer")
@@ -193,7 +193,7 @@ object AudioEffectsManager {
                 bassBoost = bb
                 _effectsState.update { it.copy(isBassBoostSupported = true) }
             } catch (e: Throwable) {
-                Log.d(TAG, "BassBoost not supported on session $audioSessionId", e)
+                Log.d(TAG, "BassBoost not supported on session $audioSessionId (${e.message})")
                 bassBoost = null
                 _effectsState.update { it.copy(isBassBoostSupported = false) }
                 failedEffects.add("BassBoost")
@@ -213,7 +213,7 @@ object AudioEffectsManager {
                 virtualizer = virt
                 _effectsState.update { it.copy(isVirtualizerSupported = true) }
             } catch (e: Throwable) {
-                Log.d(TAG, "Virtualizer not supported on session $audioSessionId", e)
+                Log.d(TAG, "Virtualizer not supported on session $audioSessionId (${e.message})")
                 virtualizer = null
                 _effectsState.update { it.copy(isVirtualizerSupported = false) }
                 failedEffects.add("Virtualizer")
@@ -244,7 +244,7 @@ object AudioEffectsManager {
             Log.d(TAG, "EnvironmentalReverb initialized on session $audioSessionId (active=$shouldEnable)")
             return
         } catch (e: Throwable) {
-            Log.w(TAG, "EnvironmentalReverb unsupported on session $audioSessionId, trying PresetReverb fallback", e)
+            Log.d(TAG, "EnvironmentalReverb unsupported on session $audioSessionId (${e.message}), trying PresetReverb fallback")
             environmentalReverb = null
         }
 
@@ -264,7 +264,7 @@ object AudioEffectsManager {
             }
             Log.d(TAG, "PresetReverb fallback initialized on session $audioSessionId (preset=${pReverb.preset})")
         } catch (e2: Throwable) {
-            Log.e(TAG, "Neither EnvironmentalReverb nor PresetReverb supported on session $audioSessionId", e2)
+            Log.d(TAG, "Neither EnvironmentalReverb nor PresetReverb supported on session $audioSessionId (${e2.message})")
             presetReverb = null
             _effectsState.update {
                 it.copy(

@@ -20,4 +20,8 @@ interface MusicProvider {
     
     suspend fun search(query: String, limit: Int = 30): Result<List<Song>>
     suspend fun getStreamUrl(song: Song): Result<String>
+    
+    // Optional settings for Echo extensions
+    suspend fun getSettingItems(): List<dev.brahmkshatriya.echo.common.settings.Setting> = emptyList()
+    fun updateSetting(key: String, value: Any) {}
 }

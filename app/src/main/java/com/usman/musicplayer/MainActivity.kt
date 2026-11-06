@@ -74,6 +74,7 @@ import com.usman.musicplayer.ui.screens.NowPlayingScreen
 import com.usman.musicplayer.ui.screens.SearchScreen
 
 import com.usman.musicplayer.ui.screens.SettingsScreen
+import com.usman.musicplayer.ui.screens.PluginManagerScreen
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
@@ -105,6 +106,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     var currentDestination by remember { mutableStateOf(AppDestination.HOME) }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
     var isEqualizerExpanded by remember { mutableStateOf(false) }
+    var isSettingsExpanded by remember { mutableStateOf(false) }
+    var isPluginManagerExpanded by remember { mutableStateOf(false) }
 
     // Cinematic App-Launch Motion Sequence
     var isAppLoaded by remember { mutableStateOf(false) }
@@ -195,15 +198,23 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     }
 
     // Predictive back gesture & modal back navigation
-    BackHandler(enabled = isEqualizerExpanded) {
+    BackHandler(enabled = isPluginManagerExpanded) {
+        isPluginManagerExpanded = false
+    }
+
+    BackHandler(enabled = isSettingsExpanded && !isPluginManagerExpanded) {
+        isSettingsExpanded = false
+    }
+
+    BackHandler(enabled = isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         isEqualizerExpanded = false
     }
 
-    BackHandler(enabled = isNowPlayingExpanded && !isEqualizerExpanded) {
+    BackHandler(enabled = isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         isNowPlayingExpanded = false
     }
 
-    BackHandler(enabled = !isNowPlayingExpanded && !isEqualizerExpanded && currentDestination != AppDestination.HOME) {
+    BackHandler(enabled = !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded && currentDestination != AppDestination.HOME) {
         viewModel.clearFilters()
         currentDestination = AppDestination.HOME
     }
@@ -268,7 +279,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onClearCategory = { viewModel.clearSelectedCategory() },
                         onRescanClick = { viewModel.scanMusicLibrary() },
                         onRequestPermissionClick = { requestRequiredPermissions() },
-                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() }
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
+                        onOpenSettings = { isSettingsExpanded = true }
                     )
 
                     AppDestination.NEW -> HomeScreen(
@@ -297,7 +309,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onClearCategory = { viewModel.clearSelectedCategory() },
                         onRescanClick = { viewModel.scanMusicLibrary() },
                         onRequestPermissionClick = { requestRequiredPermissions() },
-                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() }
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
+                        onOpenSettings = { isSettingsExpanded = true }
                     )
 
 
@@ -367,7 +380,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
 
             // Persistent Floating Liquid Glass Mini Player + Bottom Navigation Bar
             AnimatedVisibility(
-                visible = !isNowPlayingExpanded && !isEqualizerExpanded,
+                visible = !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded,
                 enter = fadeIn(animationSpec = tween(300)) + slideInVertically(
                     initialOffsetY = { it / 2 },
                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
@@ -474,6 +487,28 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
             EqualizerScreen(onBackClick = { isEqualizerExpanded = false })
+        }
+
+        // Settings Screen Slide-In Transition
+        AnimatedVisibility(
+            visible = isSettingsExpanded && !isPluginManagerExpanded,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            SettingsScreen(
+                uiState = uiState,
+                onRescanClick = { viewModel.scanMusicLibrary() },
+                onOpenExtensions = { isPluginManagerExpanded = true }
+            )
+        }
+
+        // Plugin Manager Screen Slide-In Transition
+        AnimatedVisibility(
+            visible = isPluginManagerExpanded,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            PluginManagerScreen(onBackClick = { isPluginManagerExpanded = false })
         }
 
         // Cinematic App-Opening Logo Flare Overlay (Fades out seamlessly)

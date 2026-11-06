@@ -28,8 +28,18 @@ class UsmanPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        // Configure HTTP DataSource factory with browser User-Agent and Referer to support ccMixter and CDN audio streams
+        val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14) USMAN_MUSIC_PLAYER/1.0")
+            .setDefaultRequestProperties(mapOf("Referer" to "https://ccmixter.org/"))
+            .setAllowCrossProtocolRedirects(true)
+
+        val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
+        val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
+
         // 1. Build ExoPlayer with automatic audio focus handling and audio attributes
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -49,8 +59,38 @@ class UsmanPlaybackService : MediaSessionService() {
                 currentAudioSessionId = audioSessionId
             }
 
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val stateName = when (playbackState) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> "UNKNOWN"
+                }
+                Log.d("Media3Validation", "Playback State: $stateName")
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                Log.d("Media3Validation", "Is Playing: $isPlaying")
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                Log.d("Media3Validation", "Media Item Transition: ${mediaItem?.mediaMetadata?.title} (Reason: $reason)")
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    Log.d("Media3Validation", "Seek detected: ${oldPosition.positionMs}ms -> ${newPosition.positionMs}ms")
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("UsmanPlaybackService", "MediaCodec / Player error: ${error.message}", error)
+                Log.e("UsmanPlaybackService", "MediaCodec / Player error: ${error.message} (Code: ${error.errorCode})", error)
+                Log.e("Media3Validation", "Playback Failure: ${error.localizedMessage}")
                 try {
                     player.prepare()
                 } catch (e: Exception) {

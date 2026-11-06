@@ -44,9 +44,10 @@ media3 = "1.5.1"
 cloudy = "0.2.7"
 haze = "1.0.0"
 androidYoutubePlayer = "12.1.1"
-
+kotlinxSerialization = "1.7.3"
 
 [libraries]
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
@@ -102,6 +103,7 @@ androidx-media3-session = { group = "androidx.media3", name = "media3-session", 
 androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 compose-cloudy = { group = "com.github.skydoves", name = "cloudy", version.ref = "cloudy" }
 haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
+mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 android-youtube-player = { group = "com.pierfrancescosoffritti.androidyoutubeplayer", name = "core", version.ref = "androidYoutubePlayer" }
 
 
