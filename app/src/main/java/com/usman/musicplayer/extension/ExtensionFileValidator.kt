@@ -49,13 +49,43 @@ object ExtensionFileValidator {
             return ExtensionValidationResult.Invalid(filename = filename, error = "Selected file is empty (0 bytes).")
         }
 
-        // ... [DEX/BEX/WASM checks remain same, but using bytes] ...
-        // (Skipping to point of usage)
+        // 1. DEX Bytecode check (DCL policy block)
+        if (filename.endsWith(".dex", ignoreCase = true) || (bytes.size >= 4 && bytes[0] == 0x64.toByte() && bytes[1] == 0x65.toByte() && bytes[2] == 0x78.toByte() && bytes[3] == 0x0A.toByte())) {
+            return ExtensionValidationResult.UnsupportedFormat(
+                filename = filename,
+                formatName = "Dalvik Executable (.dex)",
+                detectedProvider = filename.substringBeforeLast("."),
+                detectedVersion = "1.0",
+                reason = "Direct execution of raw DEX bytecode is blocked by Google Play policy and Dynamic Code Loading (DCL) security restrictions. Use declarative JSON or EAPK packages."
+            )
+        }
+
+        // 2. WASM Binary check
+        if (filename.endsWith(".wasm", ignoreCase = true) || (bytes.size >= 4 && bytes[0] == 0x00.toByte() && bytes[1] == 0x61.toByte() && bytes[2] == 0x73.toByte() && bytes[3] == 0x6D.toByte())) {
+            return ExtensionValidationResult.UnsupportedFormat(
+                filename = filename,
+                formatName = "WebAssembly Binary (.wasm)",
+                detectedProvider = filename.substringBeforeLast("."),
+                detectedVersion = "1.0",
+                reason = "WebAssembly (.wasm) binary modules are not supported in the native Android music runtime."
+            )
+        }
+
+        // 3. Bloomee BEX check (Zstandard magic: 0x28, 0xB5, 0x2F, 0xFD)
+        if (filename.endsWith(".bex", ignoreCase = true) || (bytes.size >= 4 && bytes[0] == 0x28.toByte() && bytes[1] == 0xB5.toByte() && bytes[2] == 0x2F.toByte() && bytes[3] == 0xFD.toByte())) {
+            return ExtensionValidationResult.UnsupportedFormat(
+                filename = filename,
+                formatName = "Bloomee Extension Package (.bex)",
+                detectedProvider = filename.substringBeforeLast("."),
+                detectedVersion = "1.0",
+                reason = "Bloomee compressed BEX (Zstandard) packages are not supported by USMAN native runtime. Please use declarative JSON or Echo EAPK packages."
+            )
+        }
 
         // 4. EAPK Echo Android Extension Package (.eapk)
-        if (filename.endsWith(".eapk", ignoreCase = true) || filename.endsWith(".apk", ignoreCase = true)) {
+        if (filename.endsWith(".eapk", ignoreCase = true)) {
             val result = EapkPackageParser.parseEapk(context, filename, bytes, tempFile)
-            if (result !is ExtensionValidationResult.GenuineEcho) {
+            if (result !is ExtensionValidationResult.GenuineEcho && result !is ExtensionValidationResult.Supported) {
                  tempFile.delete()
             }
             return result
