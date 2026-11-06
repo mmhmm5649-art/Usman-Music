@@ -140,6 +140,9 @@ object AudioEffectsManager {
         }
     }
 
+    // Session-specific cache for failed effect types to prevent repeated crashes/logs
+    private val failedEffects = mutableSetOf<String>()
+
     /**
      * Attach all audio effects to the active audio session ID from ExoPlayer
      */
@@ -158,53 +161,63 @@ object AudioEffectsManager {
 
         releaseEffects()
         currentAudioSessionId = audioSessionId
+        failedEffects.clear() // Reset failed cache for new session
 
         // 1. Equalizer Setup
-        try {
-            val eq = Equalizer(0, audioSessionId).apply {
-                enabled = _effectsState.value.masterEnabled && _effectsState.value.equalizerEnabled
+        if (!failedEffects.contains("Equalizer")) {
+            try {
+                val eq = Equalizer(0, audioSessionId).apply {
+                    enabled = _effectsState.value.masterEnabled && _effectsState.value.equalizerEnabled
+                }
+                equalizer = eq
+                _effectsState.update { it.copy(isEqualizerSupported = true) }
+                setupEqualizerBands(eq)
+            } catch (e: Throwable) {
+                Log.d(TAG, "Equalizer not supported on session $audioSessionId", e)
+                equalizer = null
+                _effectsState.update { it.copy(isEqualizerSupported = false) }
+                failedEffects.add("Equalizer")
             }
-            equalizer = eq
-            _effectsState.update { it.copy(isEqualizerSupported = true) }
-            setupEqualizerBands(eq)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Equalizer unsupported on session $audioSessionId", e)
-            equalizer = null
-            _effectsState.update { it.copy(isEqualizerSupported = false) }
         }
 
         // 2. Bass Boost Setup
-        try {
-            val bb = BassBoost(0, audioSessionId).apply {
-                val state = _effectsState.value
-                enabled = state.masterEnabled && state.bassBoostEnabled
-                if (strengthSupported) {
-                    setStrength(state.bassBoostStrength)
+        if (!failedEffects.contains("BassBoost")) {
+            try {
+                val bb = BassBoost(0, audioSessionId).apply {
+                    val state = _effectsState.value
+                    enabled = state.masterEnabled && state.bassBoostEnabled
+                    if (strengthSupported) {
+                        setStrength(state.bassBoostStrength)
+                    }
                 }
+                bassBoost = bb
+                _effectsState.update { it.copy(isBassBoostSupported = true) }
+            } catch (e: Throwable) {
+                Log.d(TAG, "BassBoost not supported on session $audioSessionId", e)
+                bassBoost = null
+                _effectsState.update { it.copy(isBassBoostSupported = false) }
+                failedEffects.add("BassBoost")
             }
-            bassBoost = bb
-            _effectsState.update { it.copy(isBassBoostSupported = true) }
-        } catch (e: Throwable) {
-            Log.e(TAG, "BassBoost unsupported on session $audioSessionId", e)
-            bassBoost = null
-            _effectsState.update { it.copy(isBassBoostSupported = false) }
         }
 
         // 3. Virtualizer Setup (Spatial Width)
-        try {
-            val virt = Virtualizer(0, audioSessionId).apply {
-                val state = _effectsState.value
-                enabled = state.masterEnabled && state.virtualizerEnabled
-                if (strengthSupported) {
-                    setStrength(state.virtualizerStrength)
+        if (!failedEffects.contains("Virtualizer")) {
+            try {
+                val virt = Virtualizer(0, audioSessionId).apply {
+                    val state = _effectsState.value
+                    enabled = state.masterEnabled && state.virtualizerEnabled
+                    if (strengthSupported) {
+                        setStrength(state.virtualizerStrength)
+                    }
                 }
+                virtualizer = virt
+                _effectsState.update { it.copy(isVirtualizerSupported = true) }
+            } catch (e: Throwable) {
+                Log.d(TAG, "Virtualizer not supported on session $audioSessionId", e)
+                virtualizer = null
+                _effectsState.update { it.copy(isVirtualizerSupported = false) }
+                failedEffects.add("Virtualizer")
             }
-            virtualizer = virt
-            _effectsState.update { it.copy(isVirtualizerSupported = true) }
-        } catch (e: Throwable) {
-            Log.e(TAG, "Virtualizer unsupported on session $audioSessionId", e)
-            virtualizer = null
-            _effectsState.update { it.copy(isVirtualizerSupported = false) }
         }
 
         // 4. Concert Hall Reverb (Parametric EnvironmentalReverb with PresetReverb fallback)

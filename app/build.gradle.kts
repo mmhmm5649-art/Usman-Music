@@ -5,7 +5,6 @@ plugins {
   alias(libs.plugins.kotlin.android)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
-  alias(libs.plugins.secrets)
   alias(libs.plugins.google.services)
 }
 
@@ -78,38 +77,10 @@ android {
   }
 }
 
-// Ensure environment variables from AI Studio build environment populate .env for Secrets plugin
-tasks.register("prepareYoutubeApiKey") {
-    val apiKeyProvider = providers.environmentVariable("YOUTUBE_API_KEY")
-    val envFile = layout.projectDirectory.file(".env").asFile
 
-    // Use orElse to ensure the property always has a value for Gradle validation
-    inputs.property("apiKey", apiKeyProvider.orElse("NONE"))
-    outputs.file(envFile)
-
-    doLast {
-        val youtubeEnvKey = apiKeyProvider.orNull
-        if (!youtubeEnvKey.isNullOrBlank() && youtubeEnvKey != "YOUR_YOUTUBE_API_KEY") {
-            try {
-                val currentContent = if (envFile.exists()) envFile.readText() else ""
-                if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
-                    val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
-                    envFile.writeText(lines.joinToString("\n"))
-                }
-            } catch (e: Exception) {
-                // Ignore write errors
-            }
-        }
-    }
-}
-tasks.named("preBuild").configure { dependsOn("prepareYoutubeApiKey") }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
-secrets {
-  propertiesFileName = ".env"
-  defaultPropertiesFileName = ".env.example"
-  ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-}
+
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
 
@@ -179,5 +150,4 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
-  implementation(libs.android.youtube.player)
 }

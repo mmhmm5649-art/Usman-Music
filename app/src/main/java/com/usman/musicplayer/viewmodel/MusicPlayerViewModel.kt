@@ -18,9 +18,9 @@ import com.usman.musicplayer.data.LocalMusicScanner
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.data.repository.MusicGenreCategory
 import com.usman.musicplayer.data.repository.OnlineMusicRepository
-import com.usman.musicplayer.data.repository.YouTubeRepository
 import com.usman.musicplayer.data.repository.PlaylistRepository
-import com.usman.musicplayer.data.remote.YouTubeSearchResult
+import com.usman.musicplayer.data.repository.UnifiedMusicRepository
+
 import com.usman.musicplayer.model.Album
 import com.usman.musicplayer.model.Artist
 import com.usman.musicplayer.model.CuratedPlaylist
@@ -97,9 +97,6 @@ data class MusicPlayerUiState(
     val onlinePhonkSongs: List<Song> = emptyList(),
     val onlineEnglishSongs: List<Song> = emptyList(),
     val onlineGlobalSongs: List<Song> = emptyList(),
-    val onlineJamendoSongs: List<Song> = emptyList(),
-    val isJamendoLoading: Boolean = false,
-    val onlineJamendoError: String? = null,
     val curatedPlaylists: List<CuratedPlaylist> = emptyList(),
     val selectedCuratedPlaylist: CuratedPlaylist? = null,
     val isOnlineLoading: Boolean = false,
@@ -107,12 +104,6 @@ data class MusicPlayerUiState(
     val selectedCategory: MusicGenreCategory? = null,
     val categorySongs: List<Song> = emptyList(),
     val isCategoryLoading: Boolean = false,
-
-    // YouTube Music Videos State
-    val youtubeSearchResults: List<YouTubeSearchResult> = emptyList(),
-    val isYouTubeSearching: Boolean = false,
-    val youtubeSearchError: String? = null,
-    val selectedVideoId: String? = null
 )
 
 @UnstableApi
@@ -120,6 +111,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val scanner = LocalMusicScanner(application)
     private val playlistRepository = PlaylistRepository(application)
+    private val musicRepository = UnifiedMusicRepository(application)
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var categoryFetchJob: Job? = null
@@ -229,7 +221,6 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                                     ?: state.onlinePhonkSongs.find { it.id == songId }
                                     ?: state.onlineEnglishSongs.find { it.id == songId }
                                     ?: state.onlineGlobalSongs.find { it.id == songId }
-                                    ?: state.onlineJamendoSongs.find { it.id == songId }
                                     ?: state.currentSong
                                 
                                 if (song != null) {
@@ -363,30 +354,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     }
             }
 
-            // 7. Jamendo Creative Commons Music
-            val jamendoJob = launch {
-                _uiState.update { it.copy(isJamendoLoading = true, onlineJamendoError = null) }
-                OnlineMusicRepository.fetchJamendoTrending(limit = 25)
-                    .onSuccess { list ->
-                        _uiState.update {
-                            it.copy(
-                                onlineJamendoSongs = list,
-                                isJamendoLoading = false,
-                                onlineJamendoError = if (list.isEmpty()) "No Jamendo tracks available" else null
-                            )
-                        }
-                    }
-                    .onFailure { err ->
-                        _uiState.update {
-                            it.copy(
-                                isJamendoLoading = false,
-                                onlineJamendoError = "Jamendo catalog unavailable"
-                            )
-                        }
-                    }
-            }
-
-            joinAll(trendingJob, teluguJob, bollywoodJob, phonkJob, englishJob, globalJob, jamendoJob)
+            joinAll(trendingJob, teluguJob, bollywoodJob, phonkJob, englishJob, globalJob)
 
             buildCuratedPlaylists()
             _uiState.update { it.copy(isOnlineLoading = false) }
@@ -418,46 +386,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun retryLoadJamendoMusic() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isJamendoLoading = true, onlineJamendoError = null) }
-            OnlineMusicRepository.fetchJamendoTrending(limit = 25)
-                .onSuccess { list ->
-                    _uiState.update {
-                        it.copy(
-                            onlineJamendoSongs = list,
-                            isJamendoLoading = false,
-                            onlineJamendoError = if (list.isEmpty()) "No Jamendo tracks available" else null
-                        )
-                    }
-                    buildCuratedPlaylists()
-                }
-                .onFailure {
-                    _uiState.update {
-                        it.copy(
-                            isJamendoLoading = false,
-                            onlineJamendoError = "Failed to fetch Jamendo tracks"
-                        )
-                    }
-                }
-        }
-    }
+
 
     private fun buildCuratedPlaylists() {
         val state = _uiState.value
         val list = mutableListOf<CuratedPlaylist>()
 
-        if (state.onlineJamendoSongs.isNotEmpty()) {
-            list.add(
-                CuratedPlaylist(
-                    id = "curated_jamendo_cc",
-                    title = "Jamendo CC Spotlight",
-                    description = "Full-length royalty-free & Creative Commons tracks",
-                    coverArtUri = state.onlineJamendoSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlineJamendoSongs
-                )
-            )
-        }
+
 
         if (state.onlineTrendingSongs.isNotEmpty()) {
             list.add(
@@ -600,24 +535,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
             _uiState.update { it.copy(isOnlineSearching = true, onlineSearchError = null) }
             try {
-                val result = OnlineMusicRepository.searchOnline(trimmed, limit = 35)
-                result.onSuccess { songs ->
-                    _uiState.update {
-                        it.copy(
-                            onlineSearchResults = songs,
-                            isOnlineSearching = false,
-                            onlineSearchError = if (songs.isEmpty()) "No tracks found for \"$trimmed\"" else null
-                        )
-                    }
-                }.onFailure { err ->
-                    if (err !is CancellationException) {
-                        _uiState.update {
-                            it.copy(
-                                isOnlineSearching = false,
-                                onlineSearchError = "Network error searching catalog. Please check connection."
-                            )
-                        }
-                    }
+                val songs = musicRepository.searchAll(trimmed, limit = 35)
+                _uiState.update {
+                    it.copy(
+                        onlineSearchResults = songs,
+                        isOnlineSearching = false,
+                        onlineSearchError = if (songs.isEmpty()) "No tracks found for \"$trimmed\"" else null
+                    )
                 }
             } catch (ce: CancellationException) {
                 // Cooperative coroutine cancellation during debounce or query typing
@@ -630,33 +554,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         OnlineMusicRepository.openInOfficialService(context, song, serviceType)
     }
 
-    // --- YouTube Music Videos ---
 
-    fun searchYouTubeVideos(query: String) {
-        val trimmed = query.trim()
-        if (trimmed.isBlank()) {
-            _uiState.update { it.copy(youtubeSearchResults = emptyList(), isYouTubeSearching = false, youtubeSearchError = null) }
-            return
-        }
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(isYouTubeSearching = true, youtubeSearchError = null) }
-            YouTubeRepository.searchMusicVideos(trimmed)
-                .onSuccess { results ->
-                    _uiState.update { it.copy(youtubeSearchResults = results, isYouTubeSearching = false) }
-                }
-                .onFailure { err ->
-                    _uiState.update { it.copy(isYouTubeSearching = false, youtubeSearchError = err.message ?: "Failed to find videos") }
-                }
-        }
-    }
-
-    fun selectVideo(videoId: String?) {
-        _uiState.update { it.copy(selectedVideoId = videoId) }
-        if (videoId != null && _uiState.value.isPlaying) {
-            togglePlayPause() // Pause audio when video starts
-        }
-    }
 
     // --- Local Device Scanner ---
 
@@ -754,7 +652,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             // If song requires external playback only
             if (song.playbackType == PlaybackType.EXTERNAL_SERVICE && song.contentUriString.isNullOrBlank()) {
-                OnlineMusicRepository.openInOfficialService(getApplication(), song, ExternalServiceType.YOUTUBE)
+                // OnlineMusicRepository.openInOfficialService(getApplication(), song, ExternalServiceType.YOUTUBE)
                 return@launch
             }
 
@@ -788,7 +686,6 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     _uiState.value.onlinePhonkSongs.any { it.id == song.id } -> _uiState.value.onlinePhonkSongs
                     _uiState.value.onlineEnglishSongs.any { it.id == song.id } -> _uiState.value.onlineEnglishSongs
                     _uiState.value.onlineGlobalSongs.any { it.id == song.id } -> _uiState.value.onlineGlobalSongs
-                    _uiState.value.onlineJamendoSongs.any { it.id == song.id } -> _uiState.value.onlineJamendoSongs
                     _uiState.value.songs.any { it.id == song.id } -> _uiState.value.songs
                     else -> listOf(song)
                 }

@@ -65,7 +65,6 @@ enum class AppDestination(
 ) {
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home, "home"),
     NEW("New", Icons.Filled.NewReleases, Icons.Outlined.NewReleases, "new"),
-    VIDEOS("Videos", Icons.Filled.VideoLibrary, Icons.Outlined.VideoLibrary, "videos"),
     LIBRARY("Library", Icons.Filled.LibraryMusic, Icons.Outlined.LibraryMusic, "library"),
     SEARCH("Search", Icons.Filled.Search, Icons.Outlined.Search, "search")
 }

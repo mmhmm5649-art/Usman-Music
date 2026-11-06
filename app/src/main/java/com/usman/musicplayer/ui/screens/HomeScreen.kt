@@ -184,20 +184,7 @@ fun HomeScreen(
                         )
                     }
 
-                    // 8. Jamendo Royalty-Free & Creative Commons Catalog
-                    item {
-                        SectionHeader(
-                            title = "Jamendo CC Catalog",
-                            subtitle = "Full-length royalty-free & Creative Commons independent music"
-                        )
-                        MusicGenreCarousel(
-                            songs = uiState.onlineJamendoSongs,
-                            isLoading = uiState.isJamendoLoading,
-                            errorMessage = uiState.onlineJamendoError,
-                            onPlay = onPlaySong,
-                            onRetry = onRetryJamendo
-                        )
-                    }
+
 
                     // 9. English Hits
                     item {

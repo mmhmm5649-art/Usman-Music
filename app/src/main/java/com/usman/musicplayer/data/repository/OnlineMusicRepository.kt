@@ -9,8 +9,6 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.usman.musicplayer.data.remote.AudiusApiService
 import com.usman.musicplayer.data.remote.AudiusTrackDto
 import com.usman.musicplayer.data.remote.ITunesTrackDto
-import com.usman.musicplayer.data.remote.JamendoApiService
-import com.usman.musicplayer.data.remote.JamendoTrackDto
 import com.usman.musicplayer.data.remote.MusicApiService
 import com.usman.musicplayer.model.PlaybackType
 import com.usman.musicplayer.model.Song
@@ -28,10 +26,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 enum class ExternalServiceType(val displayName: String) {
-    YOUTUBE("YouTube"),
     SPOTIFY("Spotify"),
-    APPLE_MUSIC("Apple Music"),
-    JAMENDO("Jamendo")
+    APPLE_MUSIC("Apple Music")
 }
 
 data class MusicGenreCategory(
@@ -46,18 +42,6 @@ object OnlineMusicRepository {
     private const val TAG = "OnlineMusicRepo"
     private const val BASE_URL = "https://itunes.apple.com/"
     private const val AUDIUS_BASE_URL = "https://discoveryprovider.audius.co/v1/"
-    private const val JAMENDO_BASE_URL = "https://api.jamendo.com/"
-
-    // Default public developer client ID for Jamendo API testing & non-commercial discovery
-    private val jamendoClientId: String by lazy {
-        try {
-            val field = com.usman.musicplayer.BuildConfig::class.java.getField("JAMENDO_CLIENT_ID")
-            val key = field.get(null) as? String
-            if (!key.isNullOrBlank() && key != "YOUR_JAMENDO_CLIENT_ID") key else "56b41279"
-        } catch (e: Exception) {
-            "56b41279"
-        }
-    }
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -84,13 +68,6 @@ object OnlineMusicRepository {
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
         .create(AudiusApiService::class.java)
-
-    private val jamendoApiService: JamendoApiService = Retrofit.Builder()
-        .baseUrl(JAMENDO_BASE_URL)
-        .client(okHttpClient)
-        .addConverterFactory(MoshiConverterFactory.create(moshi))
-        .build()
-        .create(JamendoApiService::class.java)
 
     // Predefined curated categories requested by user
     val INDIAN_CATEGORIES = listOf(
@@ -176,10 +153,10 @@ object OnlineMusicRepository {
         }
 
         try {
-            // Parallel search across iTunes, Audius, and Jamendo
+            // Parallel search across iTunes and Audius
             val iTunesDeferred = async {
                 try {
-                    apiService.searchTracks(term = query, limit = limit / 3, country = country).results
+                    apiService.searchTracks(term = query, limit = limit / 2, country = country).results
                 } catch (e: Exception) {
                     emptyList()
                 }
@@ -187,15 +164,7 @@ object OnlineMusicRepository {
 
             val audiusDeferred = async {
                 try {
-                    audiusApiService.searchTracks(query = query, limit = limit / 3).data
-                } catch (e: Exception) {
-                    emptyList()
-                }
-            }
-
-            val jamendoDeferred = async {
-                try {
-                    jamendoApiService.searchTracks(clientId = jamendoClientId, search = query, limit = limit / 3).results
+                    audiusApiService.searchTracks(query = query, limit = limit / 2).data
                 } catch (e: Exception) {
                     emptyList()
                 }
@@ -203,10 +172,8 @@ object OnlineMusicRepository {
 
             val iTunesResults = iTunesDeferred.await()
             val audiusResults = audiusDeferred.await()
-            val jamendoResults = jamendoDeferred.await()
 
             val songs = (
-                jamendoResults.map { mapJamendoDtoToSong(it) } +
                 audiusResults.map { mapAudiusDtoToSong(it) } +
                 iTunesResults.map { mapDtoToSong(it) }
             ).distinctBy { "${it.title}_${it.artist}".lowercase() }
@@ -236,32 +203,6 @@ object OnlineMusicRepository {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "fetchAudiusTrending failed", e)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun fetchJamendoTrending(limit: Int = 25): Result<List<Song>> = withContext(Dispatchers.IO) {
-        try {
-            val response = jamendoApiService.getTrendingTracks(clientId = jamendoClientId, limit = limit)
-            val songs = response.results.map { mapJamendoDtoToSong(it) }
-            Result.success(songs)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchJamendoTrending failed", e)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun searchJamendoTracks(query: String, limit: Int = 25): Result<List<Song>> = withContext(Dispatchers.IO) {
-        try {
-            val response = jamendoApiService.searchTracks(clientId = jamendoClientId, search = query, limit = limit)
-            val songs = response.results.map { mapJamendoDtoToSong(it) }
-            Result.success(songs)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "searchJamendoTracks failed for query '$query'", e)
             Result.failure(e)
         }
     }
@@ -329,36 +270,6 @@ object OnlineMusicRepository {
         )
     }
 
-    private fun mapJamendoDtoToSong(dto: JamendoTrackDto): Song {
-        val songId = dto.id?.toLongOrNull() ?: abs((dto.name ?: "Jamendo").hashCode().toLong())
-        val streamUrl = dto.audio ?: dto.audioDownload ?: ""
-        val artwork = dto.albumImage ?: dto.image
-
-        return Song(
-            id = songId,
-            title = dto.name ?: "Unknown Track",
-            artist = dto.artistName ?: "Jamendo Artist",
-            album = dto.albumName ?: "Jamendo Collection",
-            durationMs = (dto.duration ?: 180).toLong() * 1000L,
-            filePath = streamUrl,
-            folderName = "Jamendo Discovery",
-            albumArtUri = artwork,
-            contentUriString = streamUrl,
-            mimeType = "audio/mpeg",
-            sizeBytes = 0L,
-            isFavorite = false,
-            isOnline = true,
-            playbackType = PlaybackType.FULL,
-            externalUrl = dto.shareUrl ?: dto.shortUrl ?: "https://www.jamendo.com",
-            genre = "Creative Commons",
-            sourceProvider = "Jamendo",
-            licenseCcUrl = dto.licenseCcUrl
-        )
-    }
-
-    /**
-     * Seamlessly launches full song playback on official services (YouTube, Spotify, Apple Music, Jamendo)
-     */
     fun openInOfficialService(context: Context, song: Song, serviceType: ExternalServiceType) {
         val query = "${song.title} ${song.artist}".trim()
         val encoded = try {
@@ -368,33 +279,6 @@ object OnlineMusicRepository {
         }
 
         when (serviceType) {
-            ExternalServiceType.JAMENDO -> {
-                val targetUrl = song.externalUrl ?: "https://www.jamendo.com/search?q=$encoded"
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                try {
-                    context.startActivity(intent)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Cannot launch Jamendo web intent", e)
-                }
-            }
-
-            ExternalServiceType.YOUTUBE -> {
-                // Try official YouTube app URI first, fallback to browser search
-                val appIntent = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube://results?q=$encoded")).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$encoded")).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                try {
-                    context.startActivity(appIntent)
-                } catch (e: Exception) {
-                    try { context.startActivity(webIntent) } catch (e2: Exception) { /* Ignore */ }
-                }
-            }
-
             ExternalServiceType.SPOTIFY -> {
                 val appIntent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK

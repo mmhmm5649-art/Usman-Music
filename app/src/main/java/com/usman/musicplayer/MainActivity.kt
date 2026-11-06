@@ -72,7 +72,7 @@ import com.usman.musicplayer.ui.screens.HomeScreen
 import com.usman.musicplayer.ui.screens.LibraryScreen
 import com.usman.musicplayer.ui.screens.NowPlayingScreen
 import com.usman.musicplayer.ui.screens.SearchScreen
-import com.usman.musicplayer.ui.screens.YouTubeVideosScreen
+
 import com.usman.musicplayer.ui.screens.SettingsScreen
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
@@ -268,8 +268,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onClearCategory = { viewModel.clearSelectedCategory() },
                         onRescanClick = { viewModel.scanMusicLibrary() },
                         onRequestPermissionClick = { requestRequiredPermissions() },
-                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
-                        onRetryJamendo = { viewModel.retryLoadJamendoMusic() }
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() }
                     )
 
                     AppDestination.NEW -> HomeScreen(
@@ -298,15 +297,10 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onClearCategory = { viewModel.clearSelectedCategory() },
                         onRescanClick = { viewModel.scanMusicLibrary() },
                         onRequestPermissionClick = { requestRequiredPermissions() },
-                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
-                        onRetryJamendo = { viewModel.retryLoadJamendoMusic() }
+                        onRetryTelugu = { viewModel.retryLoadTeluguMusic() }
                     )
 
-                    AppDestination.VIDEOS -> YouTubeVideosScreen(
-                        uiState = uiState,
-                        onSearchVideos = { q -> viewModel.searchYouTubeVideos(q) },
-                        onVideoClick = { videoId -> viewModel.selectVideo(videoId) }
-                    )
+
 
                     AppDestination.SEARCH -> SearchScreen(
                         uiState = uiState,
@@ -413,7 +407,6 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             viewModel.clearFilters()
                             val tab = when (it) {
                                 AppDestination.NEW -> "New Releases"
-                                AppDestination.VIDEOS -> "Videos"
                                 else -> "Trending"
                             }
                             viewModel.setActiveHomeGenreTab(tab)

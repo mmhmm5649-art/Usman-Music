@@ -651,22 +651,6 @@ fun OnlineSongResultRow(
                         onPlay()
                     }
                 )
-                if (song.sourceProvider == "Jamendo" || !song.externalUrl.isNullOrBlank()) {
-                    DropdownMenuItem(
-                        text = { Text("Open on Jamendo (Track Page)", color = Color.White) },
-                        onClick = {
-                            showMenu = false
-                            onOpenService(ExternalServiceType.JAMENDO)
-                        }
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("Open on YouTube", color = Color.White) },
-                    onClick = {
-                        showMenu = false
-                        onOpenService(ExternalServiceType.YOUTUBE)
-                    }
-                )
                 DropdownMenuItem(
                     text = { Text("Open on Spotify", color = Color.White) },
                     onClick = {
