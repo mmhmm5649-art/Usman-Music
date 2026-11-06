@@ -1,5 +1,7 @@
 package com.usman.musicplayer.ui.screens
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.util.Log
 import android.view.View
@@ -19,6 +21,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -341,18 +345,42 @@ private fun VideoCard(video: YouTubeSearchResult, onClick: () -> Unit) {
 @Composable
 private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+    val activity = context as? Activity
     val cleanVideoId = remember(videoId) { extractYouTubeVideoId(videoId) }
 
     var playerError by remember { mutableStateOf<String?>(null) }
     var isPlayerLoading by remember { mutableStateOf(true) }
     var playerStateText by remember { mutableStateOf("Initializing YouTube Player...") }
     var retryTrigger by remember { mutableIntStateOf(0) }
+    var isFullscreen by remember { mutableStateOf(false) }
+
+    // Intercept Back button: Exit fullscreen first if in fullscreen, else close overlay
+    androidx.activity.compose.BackHandler {
+        if (isFullscreen) {
+            isFullscreen = false
+        } else {
+            onClose()
+        }
+    }
+
+    // Orientation management when toggling fullscreen
+    DisposableEffect(isFullscreen) {
+        if (isFullscreen) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     // Timeout Safeguard: If iframe initialization stalls for > 10 seconds, inform user and highlight Official App launch
     LaunchedEffect(cleanVideoId, retryTrigger) {
         playerError = null
         isPlayerLoading = true
-        playerStateText = "Initializing USMAN AI Video Engine..."
+        playerStateText = "Initializing USMAN Music Player Video Engine..."
         delay(10000L)
         if (isPlayerLoading && playerError == null) {
             Log.w("YouTubePlayer", "Iframe initialization delayed after 10s for video ID: $cleanVideoId")
@@ -364,76 +392,100 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.92f))
-            .clickable { onClose() },
+            .background(Color.Black.copy(alpha = if (isFullscreen) 1.0f else 0.92f))
+            .clickable(enabled = !isFullscreen) { onClose() },
         contentAlignment = Alignment.Center
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clickable(enabled = false) { }
-        ) {
-            // Top Action Row
-            Row(
-                modifier = Modifier
+            modifier = if (isFullscreen) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+                    .padding(horizontal = 16.dp)
+                    .clickable(enabled = false) { }
+            }
+        ) {
+            if (!isFullscreen) {
+                // Top Action Row (when not in fullscreen)
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val context = LocalContext.current
-                    Button(
-                        onClick = {
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://www.youtube.com/watch?v=$cleanVideoId")
-                            ).apply { flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK }
-                            try { context.startActivity(intent) } catch (e: Exception) { }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFFF0000),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(20.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        modifier = Modifier.height(36.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Open YouTube", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = {
+                                val intent = android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse("https://www.youtube.com/watch?v=$cleanVideoId")
+                                ).apply { flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK }
+                                try { context.startActivity(intent) } catch (e: Exception) { }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFF0000),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Open YouTube", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Text(
+                            text = "ID: $cleanVideoId",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
                     }
 
-                    Text(
-                        text = "ID: $cleanVideoId",
-                        color = TextMuted,
-                        fontSize = 11.sp,
-                        maxLines = 1
-                    )
-                }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GlassButtonSurface(
+                            modifier = Modifier.size(40.dp),
+                            shape = CircleShape,
+                            backgroundColor = Color(0x33FFFFFF)
+                        ) {
+                            IconButton(onClick = { isFullscreen = true }) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Default.Fullscreen,
+                                    contentDescription = "Fullscreen",
+                                    tint = Color.White
+                                )
+                            }
+                        }
 
-                GlassButtonSurface(
-                    modifier = Modifier.size(40.dp),
-                    shape = CircleShape,
-                    backgroundColor = Color(0x33FFFFFF)
-                ) {
-                    IconButton(onClick = onClose) {
-                        Icon(Icons.Default.Close, null, tint = Color.White)
+                        GlassButtonSurface(
+                            modifier = Modifier.size(40.dp),
+                            shape = CircleShape,
+                            backgroundColor = Color(0x33FFFFFF)
+                        ) {
+                            IconButton(onClick = onClose) {
+                                Icon(Icons.Default.Close, null, tint = Color.White)
+                            }
+                        }
                     }
                 }
             }
 
             // Player Container
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.Black),
+                modifier = if (isFullscreen) {
+                    Modifier.fillMaxSize()
+                } else {
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(16.dp))
+                }.background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
                 if (cleanVideoId.isBlank()) {
@@ -485,7 +537,6 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                 Text("Retry", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
 
-                            val context = LocalContext.current
                             Button(
                                 onClick = {
                                     val intent = android.content.Intent(
@@ -576,6 +627,16 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                                         playerOptions = options
                                     )
 
+                                    addFullscreenListener(object : com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.FullscreenListener {
+                                        override fun onEnterFullscreen(fullscreenView: View, exitFullscreen: () -> Unit) {
+                                            isFullscreen = true
+                                        }
+
+                                        override fun onExitFullscreen() {
+                                            isFullscreen = false
+                                        }
+                                    })
+
                                     // Add lifecycle observer after initialization
                                     lifecycleOwner.lifecycle.addObserver(this)
 
@@ -628,17 +689,41 @@ private fun YouTubePlayerOverlay(videoId: String, onClose: () -> Unit) {
                         )
                     }
                 }
+
+                // Fullscreen Exit Overlay Button
+                if (isFullscreen) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(16.dp)
+                    ) {
+                        IconButton(
+                            onClick = { isFullscreen = false },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Default.FullscreenExit,
+                                contentDescription = "Exit Fullscreen",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            if (!isFullscreen) {
+                Spacer(modifier = Modifier.height(18.dp))
 
-            Text(
-                text = "Powered by USMAN AI Video Engine",
-                color = SoftCyan.copy(alpha = 0.7f),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            )
+                Text(
+                    text = "Powered by USMAN Music Player Video Engine",
+                    color = SoftCyan.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
+            }
         }
     }
 }

@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "USMAN AI"
+rootProject.name = "USMAN Music Player"
 
 include(":app")

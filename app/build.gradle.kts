@@ -78,31 +78,31 @@ android {
   }
 }
 
-// Ensure environment variables from AI Studio build environment populate .env & local.properties for Secrets plugin
-val youtubeEnvKey = System.getenv("YOUTUBE_API_KEY")
-if (!youtubeEnvKey.isNullOrBlank() && youtubeEnvKey != "YOUR_YOUTUBE_API_KEY") {
-  val targetFiles = listOf(
-    file("${rootDir}/.env"),
-    file("${projectDir}/.env"),
-    file("${rootDir}/local.properties"),
-    file("${projectDir}/local.properties")
-  )
-  targetFiles.forEach { targetFile ->
-    try {
-      if (!targetFile.exists()) {
-        targetFile.writeText("YOUTUBE_API_KEY=$youtubeEnvKey\n")
-      } else {
-        val currentContent = targetFile.readText()
-        if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
-          val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
-          targetFile.writeText(lines.joinToString("\n"))
+// Ensure environment variables from AI Studio build environment populate local.properties for Secrets plugin
+tasks.register("prepareYoutubeApiKey") {
+    val apiKeyProvider = providers.environmentVariable("YOUTUBE_API_KEY")
+    val localProperties = layout.projectDirectory.file("local.properties").asFile
+
+    // Use orElse to ensure the property always has a value for Gradle validation
+    inputs.property("apiKey", apiKeyProvider.orElse("NONE"))
+    outputs.file(localProperties)
+
+    doLast {
+        val youtubeEnvKey = apiKeyProvider.orNull
+        if (!youtubeEnvKey.isNullOrBlank() && youtubeEnvKey != "YOUR_YOUTUBE_API_KEY") {
+            try {
+                val currentContent = if (localProperties.exists()) localProperties.readText() else ""
+                if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
+                    val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
+                    localProperties.writeText(lines.joinToString("\n"))
+                }
+            } catch (e: Exception) {
+                // Ignore write errors
+            }
         }
-      }
-    } catch (e: Exception) {
-      // Ignore write errors
     }
-  }
 }
+tasks.named("preBuild").configure { dependsOn("prepareYoutubeApiKey") }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
 secrets {
