@@ -78,23 +78,23 @@ android {
   }
 }
 
-// Ensure environment variables from AI Studio build environment populate local.properties for Secrets plugin
+// Ensure environment variables from AI Studio build environment populate .env for Secrets plugin
 tasks.register("prepareYoutubeApiKey") {
     val apiKeyProvider = providers.environmentVariable("YOUTUBE_API_KEY")
-    val localProperties = layout.projectDirectory.file("local.properties").asFile
+    val envFile = layout.projectDirectory.file(".env").asFile
 
     // Use orElse to ensure the property always has a value for Gradle validation
     inputs.property("apiKey", apiKeyProvider.orElse("NONE"))
-    outputs.file(localProperties)
+    outputs.file(envFile)
 
     doLast {
         val youtubeEnvKey = apiKeyProvider.orNull
         if (!youtubeEnvKey.isNullOrBlank() && youtubeEnvKey != "YOUR_YOUTUBE_API_KEY") {
             try {
-                val currentContent = if (localProperties.exists()) localProperties.readText() else ""
+                val currentContent = if (envFile.exists()) envFile.readText() else ""
                 if (!currentContent.contains("YOUTUBE_API_KEY=") || currentContent.contains("YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY")) {
                     val lines = currentContent.lines().filterNot { it.startsWith("YOUTUBE_API_KEY=") } + "YOUTUBE_API_KEY=$youtubeEnvKey"
-                    localProperties.writeText(lines.joinToString("\n"))
+                    envFile.writeText(lines.joinToString("\n"))
                 }
             } catch (e: Exception) {
                 // Ignore write errors
