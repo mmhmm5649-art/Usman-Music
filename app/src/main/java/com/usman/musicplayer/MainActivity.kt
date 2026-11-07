@@ -77,6 +77,7 @@ import com.usman.musicplayer.ui.screens.SearchScreen
 import com.usman.musicplayer.ui.screens.SettingsScreen
 import com.usman.musicplayer.ui.screens.PluginManagerScreen
 import com.usman.musicplayer.ui.screens.ExtensionsMusicScreen
+import com.usman.musicplayer.ui.screens.PlaybackDiagnosticScreen
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
@@ -494,13 +495,13 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             )
         }
 
-        // Equalizer Screen Slide-In Transition
+        // Diagnostic Screen Slide-In Transition
         AnimatedVisibility(
-            visible = isEqualizerExpanded,
+            visible = isDiagnosticExpanded,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
-            EqualizerScreen(onBackClick = { isEqualizerExpanded = false })
+            PlaybackDiagnosticScreen(onDismiss = { isDiagnosticExpanded = false })
         }
 
         // Settings Screen Slide-In Transition
