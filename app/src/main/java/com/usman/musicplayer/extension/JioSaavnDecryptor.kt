@@ -37,7 +37,7 @@ object JioSaavnDecryptor {
             // 5. Convert bytes back to standard UTF-8 string
             String(decryptedBytes, Charsets.UTF_8).trim()
         } catch (e: Exception) {
-            android.util.Log.e("USMAN_PLAYBACK", "Decryption failed for input: ${encryptedMediaUrl.take(20)}...", e)
+            android.util.Log.e("USMAN_PLAYBACK", "Decryption failed for input: ${encryptedMediaUrl.take(20)}..., error: ${e.message}", e)
             null
         }
     }

@@ -7,6 +7,7 @@ import com.squareup.moshi.Types
 import com.usman.musicplayer.data.remote.JioSaavnApiService
 import com.usman.musicplayer.data.remote.JioSaavnSong
 import com.usman.musicplayer.extension.JioSaavnDecryptor
+import com.usman.musicplayer.playback.PlaybackErrorRepository
 import com.usman.musicplayer.sdk.MusicProvider
 import com.usman.musicplayer.sdk.PlaybackType
 import com.usman.musicplayer.sdk.ProviderMetadata
@@ -101,11 +102,13 @@ class JioSaavnMusicProvider(
 
                 if (!decryptedUrl.isNullOrBlank()) {
                     val sanitizedHost = runCatching { Uri.parse(decryptedUrl).host }.getOrNull() ?: "unknown"
-                    Log.d(TAG, "[Stage 4] Stream resolution success for '${song.title}', host: $sanitizedHost")
+                    Log.d(TAG, "[Stage 4] Stream resolution success for '${song.title}', host: $sanitizedHost, URL: $decryptedUrl")
                     Result.success(decryptedUrl)
                 } else {
-                    Log.e(TAG, "Failed to decrypt or resolve stream URL for '${song.title}'. Encrypted: $encryptedUrl, Media: $mediaUrl")
-                    Result.failure(Exception("Failed to decrypt stream URL for ${song.title}"))
+                    val errorMsg = "Failed to decrypt or resolve stream URL for '${song.title}'. Encrypted: ${encryptedUrl?.take(20)}, Media: ${mediaUrl?.take(20)}"
+                    Log.e(TAG, errorMsg)
+                    PlaybackErrorRepository.setError(errorMsg)
+                    Result.failure(Exception(errorMsg))
                 }
             } else {
                 Log.e(TAG, "JioSaavn API details failed for '${song.title}' with code: ${response.code()}")
