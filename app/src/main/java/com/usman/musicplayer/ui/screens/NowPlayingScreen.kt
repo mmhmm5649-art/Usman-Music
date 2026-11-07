@@ -50,6 +50,7 @@ import com.usman.musicplayer.ui.components.SongAlbumArtwork
 import com.usman.musicplayer.ui.theme.*
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,10 +72,15 @@ fun NowPlayingScreen(
     onCreatePlaylist: (String, Song?, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
     onPlayNext: (Song, (String) -> Unit) -> Unit = { _, _ -> },
     onAddToQueue: (Song, (String) -> Unit) -> Unit = { _, _ -> },
+    onFetchLyrics: suspend (Song) -> String? = { null },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val song = uiState.currentSong
+    LaunchedEffect(song) {
+        android.util.Log.d("USMAN_PLAYBACK", "[Stage 8: Now Playing UI] CurrentSong ID: ${song?.id}, Title: '${song?.title}', Artist: '${song?.artist}', Album: '${song?.album}', Artwork: '${song?.albumArtUri}'")
+    }
     val durationMs = if (playbackProgress.durationMs > 0) playbackProgress.durationMs else (song?.durationMs ?: 0L)
     val positionMs = playbackProgress.currentPositionMs
 
@@ -85,6 +91,9 @@ fun NowPlayingScreen(
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showSongInfoDialog by remember { mutableStateOf(false) }
+    var showLyricsDialog by remember { mutableStateOf(false) }
+    var lyricsText by remember { mutableStateOf<String?>(null) }
+    var isFetchingLyrics by remember { mutableStateOf(false) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var newPlaylistName by remember { mutableStateOf("") }
 
@@ -635,6 +644,23 @@ fun NowPlayingScreen(
                     )
 
                     MenuOptionRow(
+                        icon = Icons.Default.TextSnippet,
+                        title = "Lyrics",
+                        tint = NeonCyan,
+                        onClick = {
+                            showThreeDotSheet = false
+                            showLyricsDialog = true
+                            if (song != null) {
+                                isFetchingLyrics = true
+                                scope.launch {
+                                    lyricsText = onFetchLyrics(song)
+                                    isFetchingLyrics = false
+                                }
+                            }
+                        }
+                    )
+
+                    MenuOptionRow(
                         icon = Icons.Default.Share,
                         title = "Share Song",
                         tint = NeonMagenta,
@@ -855,6 +881,59 @@ fun NowPlayingScreen(
                 confirmButton = {
                     Button(
                         onClick = { showSongInfoDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black)
+                    ) {
+                        Text("Close", fontWeight = FontWeight.Bold)
+                    }
+                }
+            )
+        }
+
+        // --- Lyrics Dialog ---
+        if (showLyricsDialog && song != null) {
+            AlertDialog(
+                onDismissRequest = { showLyricsDialog = false },
+                containerColor = Color(0xF10F1322),
+                title = {
+                    Column {
+                        Text("Lyrics", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text("${song.title} - ${song.artist}", color = SoftCyan, fontSize = 11.sp)
+                    }
+                },
+                text = {
+                    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                        if (isFetchingLyrics) {
+                            CircularProgressIndicator(color = NeonCyan, modifier = Modifier.align(Alignment.Center))
+                        } else {
+                            val text = lyricsText
+                            if (text != null) {
+                                LazyColumn {
+                                    item {
+                                        Text(
+                                            text = text,
+                                            color = TextPrimary,
+                                            fontSize = 14.sp,
+                                            lineHeight = 20.sp,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    "No lyrics found for this track.",
+                                    color = TextMuted,
+                                    fontSize = 13.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showLyricsDialog = false },
                         colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black)
                     ) {
                         Text("Close", fontWeight = FontWeight.Bold)

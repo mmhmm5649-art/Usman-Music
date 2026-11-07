@@ -39,6 +39,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,6 +106,10 @@ data class MusicPlayerUiState(
     val selectedCategory: MusicGenreCategory? = null,
     val categorySongs: List<Song> = emptyList(),
     val isCategoryLoading: Boolean = false,
+
+    // Music Sources & Providers
+    val musicProviders: List<com.usman.musicplayer.sdk.MusicProvider> = emptyList(),
+    val enabledProviders: Map<String, Boolean> = emptyMap()
 )
 
 @UnstableApi
@@ -114,6 +120,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val musicRepository = UnifiedMusicRepository(application)
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
+    private var searchExecutionJob: Job? = null
+    private var latestSearchQuery: String = ""
     private var categoryFetchJob: Job? = null
     private var playlistSongsJob: Job? = null
 
@@ -132,6 +140,45 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         initializeMedia3Controller()
         loadInitialOnlineMusic()
         observePlaylists()
+        updateProviderStates()
+    }
+
+    private fun updateProviderStates() {
+        val providers = com.usman.musicplayer.sdk.ProviderRegistry.providers
+        val enabledMap = providers.associate { it.metadata.id to com.usman.musicplayer.sdk.ProviderRegistry.isProviderEnabled(it.metadata.id) }
+        _uiState.update { it.copy(musicProviders = providers, enabledProviders = enabledMap) }
+    }
+
+    fun toggleProvider(providerId: String, enabled: Boolean) {
+        com.usman.musicplayer.sdk.ProviderRegistry.setProviderEnabled(providerId, enabled)
+        updateProviderStates()
+        // If we are on Search screen, we might want to refresh results
+        if (_uiState.value.searchQuery.isNotBlank() && _uiState.value.searchSource == SearchSource.ONLINE) {
+            searchOnline(_uiState.value.searchQuery, debounceMs = 0L)
+        }
+    }
+
+    suspend fun fetchLyrics(song: Song): String? {
+        val providers = com.usman.musicplayer.sdk.ProviderRegistry.activeProviders
+        // Try to find the provider that served this song first
+        val matchingProvider = providers.find {
+            it.metadata.name.equals(song.sourceProvider, ignoreCase = true) ||
+            it.metadata.id.equals(song.sourceProvider, ignoreCase = true)
+        }
+
+        if (matchingProvider != null) {
+            val result = matchingProvider.getLyrics(song)
+            if (result.isSuccess) return result.getOrNull()
+        }
+
+        // Fallback: try all active providers
+        for (provider in providers) {
+            if (provider.metadata.id == matchingProvider?.metadata?.id) continue
+            val result = provider.getLyrics(song)
+            if (result.isSuccess && result.getOrNull() != null) return result.getOrNull()
+        }
+
+        return null
     }
 
     private fun observePlaylists() {
@@ -561,10 +608,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun searchOnline(query: String, debounceMs: Long = 350L) {
+    fun searchOnline(query: String, debounceMs: Long = 300L) {
         val trimmed = query.trim()
+        latestSearchQuery = trimmed
         if (trimmed.isBlank()) {
             searchDebounceJob?.cancel()
+            searchExecutionJob?.cancel()
             _uiState.update {
                 it.copy(
                     onlineSearchResults = emptyList(),
@@ -576,23 +625,44 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
 
         searchDebounceJob?.cancel()
+        searchExecutionJob?.cancel()
         searchDebounceJob = viewModelScope.launch {
             if (debounceMs > 0L) {
                 delay(debounceMs)
             }
+            if (trimmed != latestSearchQuery) return@launch
+
             _uiState.update { it.copy(isOnlineSearching = true, onlineSearchError = null) }
-            try {
-                val songs = musicRepository.searchAll(trimmed, limit = 35)
-                _uiState.update {
-                    it.copy(
-                        onlineSearchResults = songs,
-                        isOnlineSearching = false,
-                        onlineSearchError = if (songs.isEmpty()) "No tracks found for \"$trimmed\"" else null
-                    )
+            val startTime = System.currentTimeMillis()
+            
+            searchExecutionJob = launch {
+                try {
+                    val songs = musicRepository.searchAll(trimmed, limit = 35)
+                    val totalElapsed = System.currentTimeMillis() - startTime
+                    Log.d("SearchTiming", "Total search query '$trimmed' completed in ${totalElapsed}ms, returning ${songs.size} tracks")
+
+                    if (trimmed != latestSearchQuery) return@launch
+
+                    _uiState.update {
+                        it.copy(
+                            onlineSearchResults = songs,
+                            isOnlineSearching = false,
+                            onlineSearchError = if (songs.isEmpty()) "No tracks found for \"$trimmed\"" else null
+                        )
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Log.w("MusicPlayerVM", "Search failed for '$trimmed': ${e.message}")
+                    if (trimmed == latestSearchQuery) {
+                        _uiState.update {
+                            it.copy(
+                                isOnlineSearching = false,
+                                onlineSearchError = "Search failed: ${e.localizedMessage ?: "Unknown error"}"
+                            )
+                        }
+                    }
                 }
-            } catch (ce: CancellationException) {
-                // Cooperative coroutine cancellation during debounce or query typing
-                throw ce
             }
         }
     }
@@ -694,30 +764,75 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun playSong(song: Song) {
+        // [Stage 3: playSong() input]
+        Log.d("USMAN_PLAYBACK", "[Stage 3: playSong() input] ID: ${song.id}, Title: '${song.title}', Artist: '${song.artist}', Album: '${song.album}', Artwork: '${song.albumArtUri}', Duration: ${song.durationMs}")
+
+        // Immediately update UI state to avoid placeholders
+        _uiState.update {
+            it.copy(
+                currentSong = song,
+                isPlaying = true,
+                onlineSearchError = null
+            )
+        }
+
         viewModelScope.launch {
             val controller = mediaController
 
             // If song requires external playback only
             if (song.playbackType == PlaybackType.EXTERNAL_SERVICE && song.contentUriString.isNullOrBlank()) {
-                // OnlineMusicRepository.openInOfficialService(getApplication(), song, ExternalServiceType.YOUTUBE)
+                Log.w("USMAN_PLAYBACK", "Song requires external service playback handoff without direct stream URL")
                 return@launch
             }
 
-            var playableSong = song
-            if (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank() && playableSong.playbackType == PlaybackType.FULL) {
-                val streamResult = musicRepository.getStreamUrl(playableSong)
-                if (streamResult.isSuccess) {
-                    val resolvedUrl = streamResult.getOrNull().orEmpty()
-                    if (resolvedUrl.isNotBlank()) {
-                        playableSong = playableSong.copy(contentUriString = resolvedUrl, filePath = resolvedUrl)
+            // Identify the active playlist queue for next/previous navigation
+            val currentList = when {
+                _uiState.value.onlineSearchResults.any { it.id == song.id } -> _uiState.value.onlineSearchResults
+                _uiState.value.categorySongs.any { it.id == song.id } -> _uiState.value.categorySongs
+                _uiState.value.onlineTrendingSongs.any { it.id == song.id } -> _uiState.value.onlineTrendingSongs
+                _uiState.value.onlineIndianSongs.any { it.id == song.id } -> _uiState.value.onlineIndianSongs
+                _uiState.value.onlinePhonkSongs.any { it.id == song.id } -> _uiState.value.onlinePhonkSongs
+                _uiState.value.onlineEnglishSongs.any { it.id == song.id } -> _uiState.value.onlineEnglishSongs
+                _uiState.value.onlineGlobalSongs.any { it.id == song.id } -> _uiState.value.onlineGlobalSongs
+                _uiState.value.songs.any { it.id == song.id } -> _uiState.value.songs
+                else -> listOf(song)
+            }
+
+            // Resolve stream URLs concurrently for online songs in queue
+            val resolvedList = currentList.map { s ->
+                async {
+                    var updated = s
+                    if (updated.isOnline && updated.contentUriString.isNullOrBlank() && updated.playbackType == PlaybackType.FULL) {
+                        val streamResult = musicRepository.getStreamUrl(updated)
+                        if (streamResult.isSuccess) {
+                            val resolvedUrl = streamResult.getOrNull().orEmpty()
+                            if (resolvedUrl.isNotBlank()) {
+                                val sanitizedHost = runCatching { Uri.parse(resolvedUrl).host }.getOrNull() ?: "unknown"
+                                Log.d("USMAN_PLAYBACK", "[Stage 4: After stream URL resolution] ID: ${updated.id}, Title: '${updated.title}', StreamUrl: $resolvedUrl (host: $sanitizedHost)")
+                                updated = updated.copy(contentUriString = resolvedUrl)
+                            } else {
+                                Log.w("USMAN_PLAYBACK", "Stream resolution returned blank URL for '${updated.title}'")
+                            }
+                        } else {
+                            Log.e("USMAN_PLAYBACK", "Stream resolution failed for '${updated.title}': ${streamResult.exceptionOrNull()?.message}")
+                        }
                     }
+                    updated
+                }
+            }.awaitAll().filter { s ->
+                if (s.isOnline && s.contentUriString.isNullOrBlank()) {
+                    Log.w("USMAN_PLAYBACK", "Dropping unavailable online song from queue: '${s.title}'")
+                    false
+                } else {
+                    true
                 }
             }
 
-            val targetUri: Uri = when {
-                !playableSong.contentUriString.isNullOrBlank() -> Uri.parse(playableSong.contentUriString)
-                playableSong.filePath.startsWith("content://") || playableSong.filePath.startsWith("http://") || playableSong.filePath.startsWith("https://") -> Uri.parse(playableSong.filePath)
-                else -> Uri.parse("file://${playableSong.filePath}")
+            val playableSong = resolvedList.find { it.id == song.id } ?: resolvedList.firstOrNull()
+            if (playableSong == null || (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank())) {
+                Log.e("USMAN_PLAYBACK", "Playback failure: Could not resolve playable stream for '${song.title}'")
+                _uiState.update { it.copy(onlineSearchError = "Unable to play \"${song.title}\": Stream unavailable") }
+                return@launch
             }
 
             val updatedRecent = (_uiState.value.recentlyPlayed.filter { it.id != playableSong.id }
@@ -730,30 +845,20 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     durationMs = playableSong.durationMs,
                     currentPositionMs = 0L,
                     isFavorite = playableSong.isFavorite,
-                    recentlyPlayed = updatedRecent
+                    recentlyPlayed = updatedRecent,
+                    onlineSearchError = null
                 )
             }
 
             if (controller != null) {
-                // Identify the active playlist queue for next/previous navigation
-                val currentList = when {
-                    _uiState.value.onlineSearchResults.any { it.id == song.id } -> _uiState.value.onlineSearchResults
-                    _uiState.value.categorySongs.any { it.id == song.id } -> _uiState.value.categorySongs
-                    _uiState.value.onlineTrendingSongs.any { it.id == song.id } -> _uiState.value.onlineTrendingSongs
-                    _uiState.value.onlineIndianSongs.any { it.id == song.id } -> _uiState.value.onlineIndianSongs
-                    _uiState.value.onlinePhonkSongs.any { it.id == song.id } -> _uiState.value.onlinePhonkSongs
-                    _uiState.value.onlineEnglishSongs.any { it.id == song.id } -> _uiState.value.onlineEnglishSongs
-                    _uiState.value.onlineGlobalSongs.any { it.id == song.id } -> _uiState.value.onlineGlobalSongs
-                    _uiState.value.songs.any { it.id == song.id } -> _uiState.value.songs
-                    else -> listOf(song)
-                }
-
-                val queue = currentList.map { s ->
+                val queue = resolvedList.map { s ->
+                    Log.d("USMAN_PLAYBACK", "[Stage 5: Active queue item] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ContentUri: ${s.contentUriString}")
+                    val uriString = s.contentUriString?.takeIf { it.isNotBlank() } ?: s.filePath
                     val uri = when {
-                        !s.contentUriString.isNullOrBlank() -> Uri.parse(s.contentUriString)
-                        s.filePath.startsWith("content://") || s.filePath.startsWith("http://") || s.filePath.startsWith("https://") -> Uri.parse(s.filePath)
-                        else -> Uri.parse("file://${s.filePath}")
+                        uriString.startsWith("content://") || uriString.startsWith("http://") || uriString.startsWith("https://") -> Uri.parse(uriString)
+                        else -> Uri.parse("file://$uriString")
                     }
+                    Log.d("USMAN_PLAYBACK", "[Stage 6: MediaItem.MediaMetadata] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ArtworkUri: ${s.albumArtUri}, URI Scheme: ${uri.scheme}, Host: ${uri.host}")
                     MediaItem.Builder()
                         .setMediaId(s.id.toString())
                         .setUri(uri)
@@ -768,17 +873,11 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         .build()
                 }
 
-                val startIndex = queue.indexOfFirst { it.mediaId == song.id.toString() }
+                val startIndex = queue.indexOfFirst { it.mediaId == playableSong.id.toString() }
                 controller.setMediaItems(queue, startIndex.coerceAtLeast(0), 0L)
                 controller.prepare()
                 controller.play()
                 controller.volume = _uiState.value.volume
-
-                val sId = UsmanPlaybackService.currentAudioSessionId
-                if (sId > 0) {
-                    AudioSpectrumManager.attachAudioSession(getApplication(), sId)
-                    AudioEffectsManager.attachAudioSession(getApplication(), sId)
-                }
             }
 
             startProgressTracker()

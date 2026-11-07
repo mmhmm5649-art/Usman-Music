@@ -81,6 +81,7 @@ fun SettingsScreen(
     uiState: MusicPlayerUiState,
     onRescanClick: () -> Unit,
     onOpenExtensions: () -> Unit = {},
+    onToggleProvider: (String, Boolean) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var highQualityVisualizer by remember { mutableStateOf(true) }
@@ -155,7 +156,43 @@ fun SettingsScreen(
                     }
                 }
 
-                // Section 2: Real-Time Audio Effects & Graphic Equalizer
+                // Section 2: Music Sources
+                item {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    SettingsSectionHeader(title = "MUSIC SOURCES")
+                    LiquidGlassPanel(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        backgroundColor = Color(0x2614182E)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            uiState.musicProviders.forEachIndexed { index, provider ->
+                                val isEnabled = uiState.enabledProviders[provider.metadata.id] ?: true
+                                val icon = when {
+                                    provider.metadata.name.contains("Local", ignoreCase = true) -> Icons.Default.FileOpen
+                                    provider.metadata.name.contains("Audius", ignoreCase = true) -> Icons.Default.MusicNote
+                                    provider.metadata.name.contains("JioSaavn", ignoreCase = true) -> Icons.Default.Audiotrack
+                                    else -> Icons.Default.Extension
+                                }
+
+                                SettingsToggleRow(
+                                    title = provider.metadata.name,
+                                    subtitle = "v${provider.metadata.version} • ${if (provider.metadata.isFullPlaybackSupported) "Full Streaming" else "Catalog Search"}",
+                                    icon = icon,
+                                    iconTint = if (isEnabled) NeonCyan else TextMuted,
+                                    isChecked = isEnabled,
+                                    onCheckedChange = { onToggleProvider(provider.metadata.id, it) }
+                                )
+
+                                if (index < uiState.musicProviders.size - 1) {
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Section 3: Real-Time Audio Effects & Graphic Equalizer
                 item {
                     Spacer(modifier = Modifier.height(20.dp))
                     SettingsSectionHeader(title = "AUDIO EFFECTS")

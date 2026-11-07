@@ -28,11 +28,13 @@ class UsmanPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        // Configure HTTP DataSource factory with browser User-Agent and Referer to support ccMixter and CDN audio streams
+        // Configure HTTP DataSource factory with modern browser User-Agent and Referer to support CDN audio streams
         val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14) USMAN_MUSIC_PLAYER/1.0")
-            .setDefaultRequestProperties(mapOf("Referer" to "https://ccmixter.org/"))
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .setDefaultRequestProperties(mapOf("Referer" to "https://www.jiosaavn.com/"))
             .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(15000)
 
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
@@ -76,6 +78,7 @@ class UsmanPlaybackService : MediaSessionService() {
 
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 Log.d("Media3Validation", "Media Item Transition: ${mediaItem?.mediaMetadata?.title} (Reason: $reason)")
+                Log.d("USMAN_PLAYBACK", "[Stage 7: MediaSession current metadata] Title: '${mediaItem?.mediaMetadata?.title}', Artist: '${mediaItem?.mediaMetadata?.artist}', Album: '${mediaItem?.mediaMetadata?.albumTitle}', ArtworkUri: ${mediaItem?.mediaMetadata?.artworkUri}")
             }
 
             override fun onPositionDiscontinuity(
@@ -89,12 +92,12 @@ class UsmanPlaybackService : MediaSessionService() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("UsmanPlaybackService", "MediaCodec / Player error: ${error.message} (Code: ${error.errorCode})", error)
+                Log.e("USMAN_PLAYBACK", "ExoPlayer playback error: ${error.message} (Code: ${error.errorCode}, ErrorName: ${error.errorCodeName})", error)
                 Log.e("Media3Validation", "Playback Failure: ${error.localizedMessage}")
                 try {
                     player.prepare()
                 } catch (e: Exception) {
-                    Log.e("UsmanPlaybackService", "Error recovering from decoder release", e)
+                    Log.e("USMAN_PLAYBACK", "Error recovering from player error", e)
                 }
             }
         })

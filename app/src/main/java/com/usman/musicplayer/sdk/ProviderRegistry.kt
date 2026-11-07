@@ -8,7 +8,8 @@ import com.usman.musicplayer.data.repository.LocalMusicProvider
 import com.usman.musicplayer.data.repository.providers.AudiusProvider
 import com.usman.musicplayer.data.repository.providers.CcMixterProvider
 import com.usman.musicplayer.data.repository.providers.InternetArchiveMusicProvider
-import com.usman.musicplayer.data.repository.providers.JioSaavnHubExtensionProvider
+import com.usman.musicplayer.data.remote.JioSaavnApiService
+import com.usman.musicplayer.data.repository.providers.JioSaavnMusicProvider
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -26,18 +27,36 @@ object ProviderRegistry {
     fun init(context: Context) {
         if (_providers.isNotEmpty()) return
 
+        val moshi = Moshi.Builder()
+            .add(KotlinJsonAdapterFactory())
+            .build()
+
+        val httpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+
+        val moshiConverter = MoshiConverterFactory.create(moshi)
+
         val audiusApiService = Retrofit.Builder()
             .baseUrl("https://discoveryprovider.audius.co/v1/")
-            .client(OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS).build())
-            .addConverterFactory(MoshiConverterFactory.create(Moshi.Builder().add(KotlinJsonAdapterFactory()).build()))
+            .client(httpClient)
+            .addConverterFactory(moshiConverter)
             .build()
             .create(AudiusApiService::class.java)
+
+        val jioSaavnApiService = Retrofit.Builder()
+            .baseUrl("https://www.jiosaavn.com/")
+            .client(httpClient)
+            .addConverterFactory(moshiConverter)
+            .build()
+            .create(JioSaavnApiService::class.java)
 
         registerProvider(LocalMusicProvider(context), enabled = true)
         registerProvider(AudiusProvider(audiusApiService), enabled = true)
         registerProvider(CcMixterProvider(), enabled = true)
         registerProvider(InternetArchiveMusicProvider(), enabled = true)
-        registerProvider(JioSaavnHubExtensionProvider(), enabled = true)
+        registerProvider(JioSaavnMusicProvider(jioSaavnApiService, moshi), enabled = true)
     }
 
     fun registerProvider(provider: MusicProvider, enabled: Boolean = true) {

@@ -485,7 +485,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 },
                 onAddToQueue = { song, callback ->
                     viewModel.addToQueue(song, callback)
-                }
+                },
+                onFetchLyrics = { song -> viewModel.fetchLyrics(song) }
             )
         }
 
@@ -504,11 +505,12 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
-            SettingsScreen(
-                uiState = uiState,
-                onRescanClick = { viewModel.scanMusicLibrary() },
-                onOpenExtensions = { isPluginManagerExpanded = true }
-            )
+                SettingsScreen(
+                    uiState = uiState,
+                    onRescanClick = { viewModel.scanMusicLibrary() },
+                    onOpenExtensions = { isPluginManagerExpanded = true },
+                    onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) }
+                )
         }
 
         // Plugin Manager Screen Slide-In Transition
