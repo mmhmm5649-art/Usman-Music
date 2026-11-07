@@ -36,3 +36,47 @@ data class JioSaavnLyricsResponse(
     @Json(name = "lyrics") val lyrics: String? = null,
     @Json(name = "script") val script: String? = null
 )
+
+// --- Models for sumitkolhe/jiosaavn-api (e.g. saavn.dev / vercel instances) ---
+
+@JsonClass(generateAdapter = true)
+data class SaavnDevSearchResponse(
+    @Json(name = "success") val success: Boolean = false,
+    @Json(name = "data") val data: SaavnDevSearchData? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SaavnDevSearchData(
+    @Json(name = "total") val total: Int? = null,
+    @Json(name = "start") val start: Int? = null,
+    @Json(name = "results") val results: List<SaavnDevSong> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class SaavnDevSongDetailsResponse(
+    @Json(name = "success") val success: Boolean = false,
+    @Json(name = "data") val data: List<SaavnDevSong> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class SaavnDevSong(
+    @Json(name = "id") val id: String? = null,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "title") val title: String? = null,
+    @Json(name = "type") val type: String? = null,
+    @Json(name = "year") val year: String? = null,
+    @Json(name = "duration") val duration: Any? = null,
+    @Json(name = "label") val label: String? = null,
+    @Json(name = "language") val language: String? = null,
+    @Json(name = "url") val url: String? = null,
+    @Json(name = "album") val album: Any? = null,
+    @Json(name = "artists") val artists: Any? = null,
+    @Json(name = "image") val image: Any? = null,
+    @Json(name = "downloadUrl") val downloadUrl: Any? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SaavnDevDownloadUrl(
+    @Json(name = "quality") val quality: String? = null,
+    @Json(name = "url") val url: String? = null
+)

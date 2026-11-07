@@ -39,7 +39,7 @@ class JioSaavnMusicProviderTest {
             .build()
             .create(JioSaavnApiService::class.java)
 
-        provider = JioSaavnMusicProvider(apiService, moshi)
+        provider = JioSaavnMusicProvider(apiService, moshi, publicApiBases = emptyList())
     }
 
     @After
@@ -111,41 +111,50 @@ class JioSaavnMusicProviderTest {
         assertEquals("https://example.com/500x500.jpg", songs[0].albumArtUri)
     }
 
-    /*
     @Test
-    fun testGetStreamUrlSuccess() = runBlocking {
+    fun testGetStreamUrlSuccessWithSongsArray() = runBlocking {
+        // Encrypted URL that decrypts to a valid saavncdn URL
         val detailsResponse = """
             {
-                "12345": {
-                    "id": "12345",
-                    "encrypted_media_url": "36vM6YgG1S6Z7Y3Z4Y6Z7Y3Z4Y6Z7Y3Z4Y6Z7Y3Z4Y6Z7Y3Z"
-                }
+                "songs": [
+                    {
+                        "id": "12345",
+                        "title": "Test Song",
+                        "more_info": {
+                            "encrypted_media_url": "ID2ieOjCrwfgWvL5sXl4B1ImC5QfbsDyhG7Q4EE4gXPUMxXBqCfbGqS2zdigiLU7KoeGK03QQiciQQvruZRn0hw7tS9a8Gtq"
+                        }
+                    }
+                ]
             }
         """.trimIndent()
         
         mockWebServer.enqueue(MockResponse().setBody(detailsResponse).setResponseCode(200))
 
         val song = Song(
-            id = 1L, title = "Test", artist = "Artist", album = "Album", durationMs = 240000L,
+            id = 1L, title = "Test Song", artist = "Artist", album = "Album", durationMs = 240000L,
             filePath = "12345", folderName = "JioSaavn", isOnline = true, 
             playbackType = PlaybackType.FULL, sourceProvider = "JioSaavn"
         )
 
         val result = provider.getStreamUrl(song)
         assertTrue(result.isSuccess)
+        val url = result.getOrNull()
+        assertNotNull(url)
+        assertTrue(url!!.contains("saavncdn.com"))
     }
-    */
 
     @Test
     fun testGetStreamUrlFailsWithEmptyResponseStructure() = runBlocking {
         val detailsResponse = """
             {
-                "12345": {
-                    "id": "12345",
-                    "more_info": {
-                        "something_else": "here"
+                "songs": [
+                    {
+                        "id": "12345",
+                        "more_info": {
+                            "something_else": "here"
+                        }
                     }
-                }
+                ]
             }
         """.trimIndent()
         
@@ -156,8 +165,103 @@ class JioSaavnMusicProviderTest {
             filePath = "12345", folderName = "JioSaavn", isOnline = true, 
             playbackType = PlaybackType.FULL, sourceProvider = "JioSaavn"
         )
-
         val result = provider.getStreamUrl(song)
         assertTrue(result.isFailure)
     }
+
+    @Test
+    fun testPreResolvedStreamFastPath() = runBlocking {
+        val song = Song(
+            id = 1L, title = "Test Song", artist = "Artist", album = "Album", durationMs = 240000L,
+            filePath = "12345", folderName = "JioSaavn", isOnline = true, 
+            contentUriString = "https://aac.saavncdn.com/177/sample_320.mp4",
+            playbackType = PlaybackType.FULL, sourceProvider = "JioSaavn"
+        )
+
+        // MockWebServer has NO requests enqueued; if it attempts network, it will fail
+        val result = provider.getStreamUrl(song)
+        assertTrue(result.isSuccess)
+        assertEquals("https://aac.saavncdn.com/177/sample_320.mp4", result.getOrNull())
+    }
+
+    @Test
+    fun testSaavnDevSearchSuccess() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val saavnDevProvider = JioSaavnMusicProvider(apiService, Moshi.Builder().add(KotlinJsonAdapterFactory()).build(), publicApiBases = listOf(mockBase))
+
+        val saavnDevJson = """
+            {
+                "success": true,
+                "data": {
+                    "total": 1,
+                    "start": 0,
+                    "results": [
+                        {
+                            "id": "abc123",
+                            "name": "Boom Boom",
+                            "album": { "name": "Boom Album" },
+                            "artists": { "primary": [ { "name": "Sai Abhyankkar" } ] },
+                            "duration": 180,
+                            "image": [
+                                { "quality": "500x500", "url": "https://example.com/art_500.jpg" }
+                            ],
+                            "downloadUrl": [
+                                { "quality": "160kbps", "url": "https://aac.saavncdn.com/160.mp4" },
+                                { "quality": "320kbps", "url": "https://aac.saavncdn.com/320.mp4" }
+                            ]
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(saavnDevJson).setResponseCode(200))
+
+        val result = saavnDevProvider.search("Boom Boom", 10)
+        assertTrue(result.isSuccess)
+        val songs = result.getOrNull()
+        assertNotNull(songs)
+        assertEquals(1, songs!!.size)
+        assertEquals("Boom Boom", songs[0].title)
+        assertEquals("Sai Abhyankkar", songs[0].artist)
+        assertEquals("Boom Album", songs[0].album)
+        assertEquals("https://example.com/art_500.jpg", songs[0].albumArtUri)
+        // Verify pre-resolved stream URL prefers 320kbps!
+        assertEquals("https://aac.saavncdn.com/320.mp4", songs[0].contentUriString)
+    }
+
+    @Test
+    fun testSaavnDevGetStreamUrlSuccess() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val saavnDevProvider = JioSaavnMusicProvider(apiService, Moshi.Builder().add(KotlinJsonAdapterFactory()).build(), publicApiBases = listOf(mockBase))
+
+        val detailsJson = """
+            {
+                "success": true,
+                "data": [
+                    {
+                        "id": "track_99",
+                        "name": "Track 99",
+                        "downloadUrl": [
+                            { "quality": "320kbps", "url": "https://aac.saavncdn.com/track_99_320.mp4" }
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(detailsJson).setResponseCode(200))
+
+        val song = Song(
+            id = 99L, title = "Track 99", artist = "Artist", album = "Album", durationMs = 180000L,
+            filePath = "track_99", folderName = "JioSaavn", isOnline = true, 
+            contentUriString = null, // not pre-resolved
+            playbackType = PlaybackType.FULL, sourceProvider = "JioSaavn"
+        )
+
+        val result = saavnDevProvider.getStreamUrl(song)
+        assertTrue(result.isSuccess)
+        assertEquals("https://aac.saavncdn.com/track_99_320.mp4", result.getOrNull())
+    }
 }
+

@@ -24,17 +24,23 @@ import kotlin.math.abs
  */
 class JioSaavnMusicProvider(
     private val apiService: JioSaavnApiService,
-    private val moshi: Moshi
+    private val moshi: Moshi,
+    private val publicApiBases: List<String> = PUBLIC_API_BASES
 ) : MusicProvider {
 
-    private companion object {
+    companion object {
         private const val TAG = "USMAN_PLAYBACK"
+        val PUBLIC_API_BASES = listOf(
+            "https://saavn-api-tau.vercel.app",
+            "https://jiosaavn-api-sage.vercel.app",
+            "https://saavn.dev"
+        )
     }
 
     override val metadata = ProviderMetadata(
         id = "jiosaavn_native_provider",
         name = "JioSaavn",
-        version = "2.0.0",
+        version = "2.1.0",
         isFullPlaybackSupported = true,
         authRequired = false
     )
@@ -43,13 +49,38 @@ class JioSaavnMusicProvider(
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext Result.success(emptyList())
 
+        Log.d(TAG, "JioSaavn search requested for query: '$trimmed'")
+
+        // Strategy 1: Try public REST API (saavn.dev / sumitkolhe API instances)
+        for (baseUrl in publicApiBases) {
+            try {
+                val encodedQuery = Uri.encode(trimmed)
+                val url = "$baseUrl/api/search/songs?query=$encodedQuery"
+                Log.d(TAG, "[Search Strategy 1] Trying public API: $url")
+                val response = apiService.searchSongsCustom(url)
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val results = response.body()?.data?.results.orEmpty()
+                    if (results.isNotEmpty()) {
+                        val songs = results.map { it.toSong() }
+                        Log.d(TAG, "[Search Strategy 1] Succeeded via $baseUrl, returned ${songs.size} tracks")
+                        return@withContext Result.success(songs)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "[Search Strategy 1] Error from $baseUrl: ${e.message}")
+            }
+        }
+
+        // Strategy 2: Official JioSaavn API fallback
         try {
-            Log.d(TAG, "JioSaavn search requested for query: '$trimmed'")
+            Log.d(TAG, "[Search Strategy 2] Falling back to official JioSaavn API")
             val response = apiService.searchSongs(query = trimmed, limit = limit)
             if (response.isSuccessful) {
                 val results = response.body()?.results ?: emptyList()
                 val songs = results.map { it.toSong() }
-                Log.d(TAG, "JioSaavn search succeeded, returned ${songs.size} tracks")
+                Log.d(TAG, "[Search Strategy 2] Succeeded, returned ${songs.size} tracks")
                 Result.success(songs)
             } else {
                 Log.e(TAG, "JioSaavn search failed with HTTP code: ${response.code()}")
@@ -65,20 +96,45 @@ class JioSaavnMusicProvider(
 
     override suspend fun getStreamUrl(song: Song): Result<String> = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Resolving stream URL for song: '${song.title}' (ID: ${song.id}, filePath: ${song.filePath})")
+            // Fast path 1: Check if contentUriString is already resolved and cached
             val cachedUrl = song.contentUriString
             if (!cachedUrl.isNullOrBlank()) {
                 val sanitizedHost = runCatching { Uri.parse(cachedUrl).host }.getOrNull() ?: "unknown"
-                Log.d(TAG, "Using cached stream URL for '${song.title}', host: $sanitizedHost")
+                Log.d(TAG, "[Stage 4] Using cached stream URL for '${song.title}', host: $sanitizedHost")
                 return@withContext Result.success(cachedUrl)
             }
 
             val songId = song.filePath ?: run {
-                Log.e(TAG, "Missing song ID (filePath) for '${song.title}'")
+                Log.e(TAG, "[Stage 4] Missing song ID (filePath) for '${song.title}'")
                 return@withContext Result.failure(Exception("Missing song ID for stream resolution"))
             }
 
-            val response = apiService.getSongDetails(pid = songId)
+            // Strategy 1: Resolve stream via public API details endpoint (/api/songs/{id})
+            for (baseUrl in publicApiBases) {
+                try {
+                    val url = "$baseUrl/api/songs/$songId"
+                    Log.d(TAG, "[Stage 4 Strategy 1] Requesting song details from $url")
+                    val resp = apiService.getSongDetailsCustom(url)
+                    if (resp.isSuccessful && resp.body()?.success == true) {
+                        val songData = resp.body()?.data.orEmpty()
+                        val firstSong = songData.firstOrNull()
+                        val resolvedUrl = firstSong?.let { extractHighestQualityUrl(it.downloadUrl) }
+                        if (!resolvedUrl.isNullOrBlank()) {
+                            val host = runCatching { Uri.parse(resolvedUrl).host }.getOrNull() ?: "unknown"
+                            Log.d(TAG, "[Stage 4 Strategy 1] Stream resolution success for '${song.title}' via $baseUrl, host: $host")
+                            return@withContext Result.success(resolvedUrl)
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Log.w(TAG, "[Stage 4 Strategy 1] Error from $baseUrl: ${e.message}")
+                }
+            }
+
+            // Strategy 2: Official JioSaavn details endpoint with pids and DES decryption
+            Log.d(TAG, "[Stage 4 Strategy 2] Requesting details from official JioSaavn API for songId: $songId")
+            val response = apiService.getSongDetailsWithReferer(pids = songId)
             if (response.isSuccessful) {
                 val responseBody = response.body()?.string()
                 if (responseBody.isNullOrBlank()) {
@@ -89,12 +145,10 @@ class JioSaavnMusicProvider(
                 val adapter = moshi.adapter<Map<String, Any>>(type)
                 val rawBody = adapter.fromJson(responseBody)
                 
-                // ADDED: Log top-level structure
                 Log.d(TAG, "[Stage 4: API Response] Top-level keys: ${rawBody?.keys}")
                 
                 val songDetailsMap = extractSongDetailsFromResponse(rawBody, songId)
                 
-                // ADDED: Log extracted map keys if details map is null or lacks URL fields
                 if (songDetailsMap == null) {
                     Log.e(TAG, "[Stage 4: API Response] Failed to extract details map for ID: $songId")
                 } else {
@@ -138,6 +192,7 @@ class JioSaavnMusicProvider(
         }
     }
 
+
     override suspend fun getLyrics(song: Song): Result<String?> = withContext(Dispatchers.IO) {
         val songId = song.filePath ?: return@withContext Result.success(null)
         try {
@@ -157,9 +212,25 @@ class JioSaavnMusicProvider(
     private fun extractSongDetailsFromResponse(body: Map<String, Any>?, songId: String): Map<String, Any?>? {
         if (body == null) return null
         
+        // 1. Direct songId key: { "oM52yM5X": { ... } }
         val direct = body[songId] as? Map<String, Any?>
         if (direct != null) return direct
 
+        // 2. "songs" list: { "songs": [ { "id": "oM52yM5X", ... } ] }
+        val songsList = body["songs"] as? List<*>
+        if (songsList != null) {
+            for (item in songsList) {
+                if (item is Map<*, *>) {
+                    val innerId = (item["id"] ?: item["song_id"])?.toString()
+                    if (innerId == songId || innerId != null) {
+                        @Suppress("UNCHECKED_CAST")
+                        return item as Map<String, Any?>
+                    }
+                }
+            }
+        }
+
+        // 3. Search within all map and list values
         for ((k, v) in body) {
             if (v is Map<*, *>) {
                 val innerId = (v["id"] ?: v["song_id"])?.toString()
@@ -181,7 +252,8 @@ class JioSaavnMusicProvider(
             }
         }
 
-        if (body["id"] != null || body["encrypted_media_url"] != null || body["encryptedMediaUrl"] != null) {
+        // 4. Root itself is the song object
+        if (body["id"] != null || body["encrypted_media_url"] != null || body["encryptedMediaUrl"] != null || body["more_info"] != null) {
             return body
         }
 
@@ -208,6 +280,22 @@ class JioSaavnMusicProvider(
             abs(songIdStr.hashCode().toLong())
         }
 
+        // Extract encrypted media URL if search result already returned it!
+        val searchEncryptedUrl = (encryptedMediaUrl
+            ?: moreInfo?.get("encrypted_media_url")?.toString()
+            ?: moreInfo?.get("encryptedMediaUrl")?.toString())?.takeIf { it.isNotBlank() }
+
+        val searchDecryptedUrl = if (!searchEncryptedUrl.isNullOrBlank()) {
+            JioSaavnDecryptor.decryptUrl(searchEncryptedUrl)
+        } else {
+            mediaUrl ?: moreInfo?.get("media_url")?.toString()
+        }
+
+        if (!searchDecryptedUrl.isNullOrBlank()) {
+            val sanitizedHost = runCatching { Uri.parse(searchDecryptedUrl).host }.getOrNull() ?: "unknown"
+            Log.d(TAG, "[Search Parse] Pre-resolved stream URL for '$titleName', host: $sanitizedHost")
+        }
+
         return Song(
             id = songIdLong,
             title = titleName,
@@ -217,7 +305,7 @@ class JioSaavnMusicProvider(
             filePath = songIdStr,
             folderName = "JioSaavn",
             albumArtUri = artwork,
-            contentUriString = null,
+            contentUriString = searchDecryptedUrl,
             isOnline = true,
             playbackType = PlaybackType.FULL,
             externalUrl = permaUrl,
@@ -296,4 +384,136 @@ class JioSaavnMusicProvider(
         }
         return seconds * 1000L
     }
+
+    private fun com.usman.musicplayer.data.remote.SaavnDevSong.toSong(): Song {
+        val songIdStr = id ?: "0"
+        val songIdLong = try {
+            songIdStr.toLong()
+        } catch (e: Exception) {
+            abs(songIdStr.hashCode().toLong())
+        }
+
+        val titleName = name?.takeIf { it.isNotBlank() }
+            ?: title?.takeIf { it.isNotBlank() }
+            ?: "Unknown Track"
+
+        val artistName = parseSaavnDevArtists(artists)
+        val albumName = parseSaavnDevAlbum(album)
+        val artwork = parseSaavnDevArtwork(image)
+        val streamUrl = extractHighestQualityUrl(downloadUrl)
+        val durationMs = when (duration) {
+            is Number -> duration.toLong() * 1000L
+            is String -> (duration.toLongOrNull() ?: 240L) * 1000L
+            else -> 240000L
+        }
+
+        if (!streamUrl.isNullOrBlank()) {
+            val host = runCatching { Uri.parse(streamUrl).host }.getOrNull() ?: "unknown"
+            Log.d(TAG, "[SaavnDev Parse] Pre-resolved stream URL for '$titleName', host: $host")
+        }
+
+        return Song(
+            id = songIdLong,
+            title = titleName,
+            artist = artistName,
+            album = albumName,
+            durationMs = durationMs,
+            filePath = songIdStr,
+            folderName = "JioSaavn",
+            albumArtUri = artwork,
+            contentUriString = streamUrl,
+            isOnline = true,
+            playbackType = PlaybackType.FULL,
+            externalUrl = url,
+            sourceProvider = "JioSaavn",
+            attribution = "$artistName • JioSaavn",
+            isStreamable = true,
+            isFullTrackVerified = true,
+            isRightsVerified = true
+        )
+    }
+
+    private fun parseSaavnDevArtists(artists: Any?): String {
+        if (artists == null) return "Unknown Artist"
+        if (artists is String) return artists
+        if (artists is Map<*, *>) {
+            val primary = artists["primary"] as? List<*>
+            if (!primary.isNullOrEmpty()) {
+                val names = primary.mapNotNull {
+                    when (it) {
+                        is Map<*, *> -> it["name"]?.toString()
+                        else -> it?.toString()
+                    }
+                }
+                if (names.isNotEmpty()) return names.joinToString(", ")
+            }
+            val all = artists["all"] as? List<*>
+            if (!all.isNullOrEmpty()) {
+                val names = all.mapNotNull {
+                    when (it) {
+                        is Map<*, *> -> it["name"]?.toString()
+                        else -> it?.toString()
+                    }
+                }
+                if (names.isNotEmpty()) return names.joinToString(", ")
+            }
+        }
+        return "Unknown Artist"
+    }
+
+    private fun parseSaavnDevAlbum(album: Any?): String {
+        return when (album) {
+            is String -> album.takeIf { it.isNotBlank() } ?: "Unknown Album"
+            is Map<*, *> -> album["name"]?.toString() ?: "Unknown Album"
+            else -> "Unknown Album"
+        }
+    }
+
+    private fun parseSaavnDevArtwork(image: Any?): String? {
+        if (image == null) return null
+        if (image is String && image.isNotBlank()) return image
+        if (image is List<*>) {
+            // Find highest quality e.g. 500x500
+            for (quality in listOf("500x500", "150x150", "50x50")) {
+                for (item in image) {
+                    if (item is Map<*, *>) {
+                        if (item["quality"] == quality) {
+                            val url = item["url"]?.toString()
+                            if (!url.isNullOrBlank()) return url
+                        }
+                    }
+                }
+            }
+            val first = image.lastOrNull()
+            if (first is Map<*, *>) return first["url"]?.toString()
+        }
+        return null
+    }
+
+    private fun extractHighestQualityUrl(downloadUrl: Any?): String? {
+        if (downloadUrl == null) return null
+        if (downloadUrl is String && downloadUrl.isNotBlank()) return downloadUrl
+        if (downloadUrl is List<*>) {
+            // Check qualities in preference order: 320kbps -> 160kbps -> 96kbps -> 48kbps -> 12kbps
+            val preferredQualities = listOf("320kbps", "160kbps", "96kbps", "48kbps", "12kbps")
+            for (q in preferredQualities) {
+                for (item in downloadUrl) {
+                    if (item is Map<*, *>) {
+                        if (item["quality"] == q) {
+                            val url = item["url"]?.toString()
+                            if (!url.isNullOrBlank()) return url
+                        }
+                    }
+                }
+            }
+            // Fallback: pick the last item in the list which is typically the highest quality
+            val lastItem = downloadUrl.lastOrNull()
+            if (lastItem is Map<*, *>) {
+                val url = lastItem["url"]?.toString()
+                if (!url.isNullOrBlank()) return url
+            }
+        }
+        return null
+    }
 }
+

@@ -21,13 +21,26 @@ interface JioSaavnApiService {
 
     @GET("api.php")
     suspend fun getSongDetails(
-        @Query("pid") pid: String,
+        @Query("pids") pids: String,
         @Query("__call") call: String = "song.getDetails",
         @Query("_format") format: String = "json",
         @Query("_marker") marker: Int = 0,
         @Query("ctx") context: String = "web6dot0",
         @Query("api_version") apiVersion: Int = 4
     ): Response<ResponseBody>
+
+    @GET("api.php")
+    suspend fun getSongDetailsWithReferer(
+        @retrofit2.http.Header("Referer") referer: String = "https://www.jiosaavn.com/",
+        @retrofit2.http.Header("User-Agent") userAgent: String = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        @Query("pids") pids: String,
+        @Query("__call") call: String = "song.getDetails",
+        @Query("_format") format: String = "json",
+        @Query("_marker") marker: Int = 0,
+        @Query("ctx") context: String = "web6dot0",
+        @Query("api_version") apiVersion: Int = 4
+    ): Response<ResponseBody>
+
 
     @GET("api.php")
     suspend fun getLyrics(
@@ -38,4 +51,16 @@ interface JioSaavnApiService {
         @Query("ctx") context: String = "web6dot0",
         @Query("api_version") apiVersion: Int = 4
     ): Response<JioSaavnLyricsResponse>
+
+    // --- sumitkolhe / saavn.dev API endpoints ---
+    @GET
+    suspend fun searchSongsCustom(
+        @retrofit2.http.Url url: String
+    ): Response<SaavnDevSearchResponse>
+
+    @GET
+    suspend fun getSongDetailsCustom(
+        @retrofit2.http.Url url: String
+    ): Response<SaavnDevSongDetailsResponse>
 }
+
