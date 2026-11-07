@@ -82,6 +82,9 @@ import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.UsmanMusicPlayerTheme
+import android.view.KeyEvent
+import com.usman.musicplayer.ui.tv.TvMainLayout
+import com.usman.musicplayer.util.DeviceUtils
 import com.usman.musicplayer.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.delay
 
@@ -94,8 +97,42 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             UsmanMusicPlayerTheme {
-                UsmanMusicApp(viewModel = musicViewModel)
+                val context = LocalContext.current
+                val isTv = remember { DeviceUtils.isTvDevice(context) }
+
+                if (isTv) {
+                    val uiState by musicViewModel.uiState.collectAsStateWithLifecycle()
+                    TvMainLayout(viewModel = musicViewModel, uiState = uiState)
+                } else {
+                    UsmanMusicApp(viewModel = musicViewModel)
+                }
             }
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_HEADSETHOOK -> {
+                musicViewModel.togglePlayPause()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                musicViewModel.togglePlayPause()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                musicViewModel.skipToNext()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                musicViewModel.skipToPrevious()
+                true
+            }
+            else -> super.onKeyDown(keyCode, event)
         }
     }
 }
@@ -348,14 +385,6 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             currentDestination = AppDestination.LIBRARY
                         },
                         onOpenDiagnostics = { isDiagnosticExpanded = true }
-                    )
-
-                    AppDestination.EXTENSIONS -> ExtensionsMusicScreen(
-                        onPlaySong = { song ->
-                            viewModel.playSong(song)
-                            isNowPlayingExpanded = true
-                        },
-                        onOpenPluginManager = { isPluginManagerExpanded = true }
                     )
 
                     AppDestination.LIBRARY -> LibraryScreen(

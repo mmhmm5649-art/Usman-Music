@@ -1,0 +1,148 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Deep Ambient Glow Background -->
+    <path
+        android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="320"
+                android:endY="180"
+                android:type="linear">
+                <item android:color="#FF060D1A" android:offset="0.0" />
+                <item android:color="#FF0B1528" android:offset="0.5" />
+                <item android:color="#FF030712" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Neon Cyan Glow Accent in Top-Right -->
+    <path
+        android:pathData="M180,0 L320,0 L320,140 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="260"
+                android:startY="20"
+                android:endX="320"
+                android:endY="140"
+                android:type="linear">
+                <item android:color="#3300E5FF" android:offset="0.0" />
+                <item android:color="#00000000" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glowing Disc Motif -->
+    <!-- Disc Outer Ring -->
+    <path
+        android:pathData="M65,90m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0"
+        android:strokeColor="#4D00E5FF"
+        android:strokeWidth="3" />
+
+    <!-- Disc Grooves -->
+    <path
+        android:pathData="M65,90m-32,0a32,32 0,1 1,64 0a32,32 0,1 1,-64 0"
+        android:strokeColor="#2600E5FF"
+        android:strokeWidth="1.5" />
+
+    <path
+        android:pathData="M65,90m-22,0a22,22 0,1 1,44 0a22,42 0,1 1,-44 0"
+        android:strokeColor="#3300E5FF"
+        android:strokeWidth="1.5" />
+
+    <!-- Disc Core Glow -->
+    <path
+        android:pathData="M65,90m-14,0a14,14 0,1 1,28 0a14,14 0,1 1,-28 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="51"
+                android:startY="76"
+                android:endX="79"
+                android:endY="104"
+                android:type="linear">
+                <item android:color="#FF00E5FF" android:offset="0.0" />
+                <item android:color="#FF0284C7" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Center Play Triangle -->
+    <path
+        android:pathData="M62,82 L72,90 L62,98 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Soundwave equalizer bars -->
+    <path android:pathData="M116,92 L116,88" android:strokeColor="#8000E5FF" android:strokeWidth="3" android:strokeLineCap="round"/>
+    <path android:pathData="M123,98 L123,82" android:strokeColor="#B300E5FF" android:strokeWidth="3" android:strokeLineCap="round"/>
+    <path android:pathData="M130,105 L130,75" android:strokeColor="#FF00E5FF" android:strokeWidth="3" android:strokeLineCap="round"/>
+    <path android:pathData="M137,97 L137,83" android:strokeColor="#FF38BDF8" android:strokeWidth="3" android:strokeLineCap="round"/>
+    <path android:pathData="M144,93 L144,87" android:strokeColor="#8000E5FF" android:strokeWidth="3" android:strokeLineCap="round"/>
+
+    <!-- Decorative Top Accent Line -->
+    <path
+        android:pathData="M0,0 L320,0"
+        android:strokeWidth="2">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="320"
+                android:endY="0"
+                android:type="linear">
+                <item android:color="#00000000" android:offset="0.0" />
+                <item android:color="#FF00E5FF" android:offset="0.5" />
+                <item android:color="#00000000" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- "USMAN" Letterforms as stylized crisp vector shapes -->
+    <!-- U -->
+    <path
+        android:pathData="M160,74 L160,94 C160,99 164,103 169,103 C174,103 178,99 178,94 L178,74 L173,74 L173,94 C173,96 171,98 169,98 C167,98 165,96 165,94 L165,74 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- S -->
+    <path
+        android:pathData="M185,78 C185,75.5 187,74 191,74 L199,74 L199,78 L191,78 C190,78 189.5,78.5 189.5,79 C189.5,79.5 190,80 191,80.5 L196,82 C199,83.5 200,85.5 200,88 C200,91 197.5,93 193.5,93 L185,93 L185,89 L193.5,89 C194.5,89 195.5,88.5 195.5,87.5 C195.5,86.5 194.5,86 193,85.5 L188.5,84 C186,83 185,81 185,78 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- M -->
+    <path
+        android:pathData="M205,74 L211,74 L215,86 L219,74 L225,74 L225,93 L220.5,93 L220.5,80 L216.5,93 L213.5,93 L209.5,80 L209.5,93 L205,93 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- A -->
+    <path
+        android:pathData="M233,74 L239,74 L244.5,93 L239.5,93 L238.5,89 L233.5,89 L232.5,93 L227.5,93 Z M234.5,85 L237.5,85 L236,79 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- N -->
+    <path
+        android:pathData="M249,74 L253.5,74 L260,86 L260,74 L264.5,74 L264.5,93 L260,93 L253.5,81 L253.5,93 L249,93 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- MUSIC PLAYER Subtitle Bar -->
+    <path
+        android:pathData="M160,108 L285,108"
+        android:strokeColor="#FF00E5FF"
+        android:strokeWidth="1.5" />
+
+    <!-- Hi-Res Audio Badge -->
+    <path
+        android:pathData="M272,73 L298,73 A3,3 0 0,1 301,76 L301,87 A3,3 0 0,1 298,90 L272,90 A3,3 0 0,1 269,87 L269,76 A3,3 0 0,1 272,73 Z"
+        android:strokeColor="#6600E5FF"
+        android:strokeWidth="1"
+        android:fillColor="#2200E5FF" />
+
+    <path
+        android:pathData="M272,77 L274,77 L274,81 L277,81 L277,77 L279,77 L279,86 L277,86 L277,82.5 L274,82.5 L274,86 L272,86 Z M281,77 L283,77 L283,86 L281,86 Z M287,77 L291,77 C293,77 294,78 294,79.5 C294,80.5 293.5,81.2 292.5,81.5 L294.5,86 L292.5,86 L290.8,82 L289,82 L289,86 L287,86 Z M289,80.5 L291,80.5 C291.8,80.5 292.2,80.1 292.2,79.5 C292.2,78.9 291.8,78.5 291,78.5 L289,78.5 Z"
+        android:fillColor="#FF00E5FF" />
+
+</vector>
