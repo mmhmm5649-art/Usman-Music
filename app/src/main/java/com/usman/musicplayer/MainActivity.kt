@@ -106,6 +106,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
 
     var currentDestination by remember { mutableStateOf(AppDestination.HOME) }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
+    var isDiagnosticExpanded by remember { mutableStateOf(false) }
     var isEqualizerExpanded by remember { mutableStateOf(false) }
     var isSettingsExpanded by remember { mutableStateOf(false) }
     var isPluginManagerExpanded by remember { mutableStateOf(false) }
@@ -342,7 +343,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             viewModel.filterByFolder(folder.name)
                             viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
                             currentDestination = AppDestination.LIBRARY
-                        }
+                        },
+                        onOpenDiagnostics = { isDiagnosticExpanded = true }
                     )
 
                     AppDestination.EXTENSIONS -> ExtensionsMusicScreen(

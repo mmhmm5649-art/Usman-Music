@@ -28,18 +28,30 @@ class UsmanPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        // Configure HTTP DataSource factory with modern browser User-Agent and Referer to support CDN audio streams
+        // 1. HTTP DataSource with Diagnostic TransferListener
+        val transferListener = object : androidx.media3.datasource.TransferListener {
+            override fun onTransferInitializing(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {
+            }
+            override fun onTransferStart(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {
+                Log.d("USMAN_PLAYBACK", "[Stage 9] HTTP Request Start: ${dataSpec.uri}")
+            }
+            override fun onBytesTransferred(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean, bytesTransferred: Int) {}
+            override fun onTransferEnd(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {
+                Log.d("USMAN_PLAYBACK", "[Stage 9] HTTP Request End: ${dataSpec.uri}")
+            }
+        }
         val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .setDefaultRequestProperties(mapOf("Referer" to "https://www.jiosaavn.com/"))
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
+            .setTransferListener(transferListener)
 
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
 
-        // 1. Build ExoPlayer with automatic audio focus handling and audio attributes
+        // 2. Build ExoPlayer
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(
@@ -47,10 +59,10 @@ class UsmanPlaybackService : MediaSessionService() {
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .setUsage(C.USAGE_MEDIA)
                     .build(),
-                /* handleAudioFocus = */ true // Automatic pause/duck on incoming calls & interruptions
+                true 
             )
-            .setHandleAudioBecomingNoisy(true) // Automatic pause when headphones are disconnected
-            .setWakeMode(C.WAKE_MODE_LOCAL) // Prevent CPU from sleeping during background playback
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
 
         exoPlayer = player
@@ -69,35 +81,21 @@ class UsmanPlaybackService : MediaSessionService() {
                     Player.STATE_ENDED -> "ENDED"
                     else -> "UNKNOWN"
                 }
-                Log.d("Media3Validation", "Playback State: $stateName")
+                Log.d("USMAN_PLAYBACK", "[Stage 9] Playback State Transition: $stateName")
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                Log.d("Media3Validation", "Is Playing: $isPlaying")
-            }
-
-            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-                Log.d("Media3Validation", "Media Item Transition: ${mediaItem?.mediaMetadata?.title} (Reason: $reason)")
-                Log.d("USMAN_PLAYBACK", "[Stage 7: MediaSession current metadata] Title: '${mediaItem?.mediaMetadata?.title}', Artist: '${mediaItem?.mediaMetadata?.artist}', Album: '${mediaItem?.mediaMetadata?.albumTitle}', ArtworkUri: ${mediaItem?.mediaMetadata?.artworkUri}")
-            }
-
-            override fun onPositionDiscontinuity(
-                oldPosition: Player.PositionInfo,
-                newPosition: Player.PositionInfo,
-                reason: Int
-            ) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
-                    Log.d("Media3Validation", "Seek detected: ${oldPosition.positionMs}ms -> ${newPosition.positionMs}ms")
-                }
+                Log.d("USMAN_PLAYBACK", "[Stage 9] isPlaying: $isPlaying, playWhenReady: ${player.playWhenReady}")
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("USMAN_PLAYBACK", "ExoPlayer playback error: ${error.message} (Code: ${error.errorCode}, ErrorName: ${error.errorCodeName})", error)
-                Log.e("Media3Validation", "Playback Failure: ${error.localizedMessage}")
+                val errorMsg = "ExoPlayer error: ${error.message} (Code: ${error.errorCode}, ${error.errorCodeName})"
+                Log.e("USMAN_PLAYBACK", errorMsg, error)
+                PlaybackErrorRepository.setError(errorMsg)
                 try {
                     player.prepare()
                 } catch (e: Exception) {
-                    Log.e("USMAN_PLAYBACK", "Error recovering from player error", e)
+                    Log.e("USMAN_PLAYBACK", "Error recovering", e)
                 }
             }
         })

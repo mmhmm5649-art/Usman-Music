@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Person
@@ -95,6 +96,7 @@ fun SearchScreen(
     onArtistClick: (Artist) -> Unit = {},
     onFolderClick: (MusicFolder) -> Unit = {},
     onTriggerOnlineSearch: (String) -> Unit = {},
+    onOpenDiagnostics: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -195,12 +197,22 @@ fun SearchScreen(
                             )
                         },
                         trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(onClick = { onSearchQueryChange("") }) {
+                            Row {
+                                if (query.isNotEmpty()) {
+                                    IconButton(onClick = { onSearchQueryChange("") }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Clear search",
+                                            tint = TextMuted,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                                IconButton(onClick = onOpenDiagnostics) {
                                     Icon(
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "Clear search",
-                                        tint = TextMuted,
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = "Diagnostics",
+                                        tint = NeonPurple,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
