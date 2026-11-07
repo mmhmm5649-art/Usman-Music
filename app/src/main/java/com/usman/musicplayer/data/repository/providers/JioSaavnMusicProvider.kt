@@ -93,11 +93,13 @@ class JioSaavnMusicProvider(
 
                 val encryptedUrl = songDetailsMap?.get("encrypted_media_url") as? String
                     ?: songDetailsMap?.get("encryptedMediaUrl") as? String
+                    ?: (songDetailsMap?.get("more_info") as? Map<*, *>)?.get("encrypted_media_url") as? String
                 val mediaUrl = songDetailsMap?.get("media_url") as? String
                     ?: songDetailsMap?.get("mediaUrl") as? String
+                    ?: (songDetailsMap?.get("more_info") as? Map<*, *>)?.get("media_url") as? String
 
                 if (encryptedUrl == null && mediaUrl == null) {
-                    Log.e(TAG, "Extraction failed: No URL fields found. Map keys: ${songDetailsMap?.keys}")
+                    Log.e(TAG, "Extraction failed: No URL fields found in map or more_info. Map keys: ${songDetailsMap?.keys}")
                 } else {
                     Log.d(TAG, "[Stage 4] ID: ${song.id}, Title: '${song.title}', EncryptedUrlFound: ${encryptedUrl != null}, MediaUrlFound: ${mediaUrl != null}")
                 }
