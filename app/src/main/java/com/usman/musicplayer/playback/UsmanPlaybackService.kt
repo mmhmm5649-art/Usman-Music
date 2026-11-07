@@ -38,6 +38,10 @@ class UsmanPlaybackService : MediaSessionService() {
             override fun onBytesTransferred(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean, bytesTransferred: Int) {}
             override fun onTransferEnd(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {
                 Log.d("USMAN_PLAYBACK", "[Stage 9] HTTP Request End: ${dataSpec.uri}")
+                if (source is androidx.media3.datasource.DefaultHttpDataSource) {
+                     // DefaultHttpDataSource doesn't expose response code easily here without extending.
+                     // Keeping logs as is.
+                }
             }
         }
         val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()

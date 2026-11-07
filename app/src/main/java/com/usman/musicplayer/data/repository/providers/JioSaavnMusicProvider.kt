@@ -78,7 +78,7 @@ class JioSaavnMusicProvider(
                 return@withContext Result.failure(Exception("Missing song ID for stream resolution"))
             }
 
-            val response = apiService.getSongDetails(pids = songId)
+            val response = apiService.getSongDetails(pid = songId)
             if (response.isSuccessful) {
                 val responseBody = response.body()?.string()
                 if (responseBody.isNullOrBlank()) {
@@ -96,7 +96,11 @@ class JioSaavnMusicProvider(
                 val mediaUrl = songDetailsMap?.get("media_url") as? String
                     ?: songDetailsMap?.get("mediaUrl") as? String
 
-                Log.d(TAG, "[Stage 4] ID: ${song.id}, Title: '${song.title}', EncryptedUrlFound: ${encryptedUrl != null}, MediaUrlFound: ${mediaUrl != null}")
+                if (encryptedUrl == null && mediaUrl == null) {
+                    Log.e(TAG, "Extraction failed: No URL fields found. Map keys: ${songDetailsMap?.keys}")
+                } else {
+                    Log.d(TAG, "[Stage 4] ID: ${song.id}, Title: '${song.title}', EncryptedUrlFound: ${encryptedUrl != null}, MediaUrlFound: ${mediaUrl != null}")
+                }
 
                 val decryptedUrl = JioSaavnDecryptor.decryptUrl(encryptedUrl) ?: mediaUrl
 
@@ -111,7 +115,7 @@ class JioSaavnMusicProvider(
                     Result.failure(Exception(errorMsg))
                 }
             } else {
-                Log.e(TAG, "JioSaavn API details failed for '${song.title}' with code: ${response.code()}")
+                Log.e(TAG, "JioSaavn API details failed for '${song.title}' with code: ${response.code()}, Body: ${response.errorBody()?.string()}")
                 Result.failure(IOException("JioSaavn API details failed: ${response.code()}"))
             }
         } catch (e: CancellationException) {

@@ -21,7 +21,7 @@ interface JioSaavnApiService {
 
     @GET("api.php")
     suspend fun getSongDetails(
-        @Query("pids") pids: String,
+        @Query("pid") pid: String,
         @Query("__call") call: String = "song.getDetails",
         @Query("_format") format: String = "json",
         @Query("_marker") marker: Int = 0,
