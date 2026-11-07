@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import android.util.Log
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -323,6 +324,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onTriggerOnlineSearch = { q -> viewModel.searchOnline(q, debounceMs = 0L) },
                         onSearchSourceChange = { src -> viewModel.setSearchSource(src) },
                         onPlaySong = { song ->
+                            Log.d("USMAN_PLAYBACK", "[Stage 2: SearchScreen Click] ID: ${song.id}, Title: '${song.title}'")
                             viewModel.playSong(song)
                             isNowPlayingExpanded = true
                         },
