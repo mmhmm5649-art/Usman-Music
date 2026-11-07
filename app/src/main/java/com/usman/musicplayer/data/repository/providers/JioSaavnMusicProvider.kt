@@ -89,7 +89,17 @@ class JioSaavnMusicProvider(
                 val adapter = moshi.adapter<Map<String, Any>>(type)
                 val rawBody = adapter.fromJson(responseBody)
                 
+                // ADDED: Log top-level structure
+                Log.d(TAG, "[Stage 4: API Response] Top-level keys: ${rawBody?.keys}")
+                
                 val songDetailsMap = extractSongDetailsFromResponse(rawBody, songId)
+                
+                // ADDED: Log extracted map keys if details map is null or lacks URL fields
+                if (songDetailsMap == null) {
+                    Log.e(TAG, "[Stage 4: API Response] Failed to extract details map for ID: $songId")
+                } else {
+                    Log.d(TAG, "[Stage 4: API Response] Song details map keys: ${songDetailsMap.keys}")
+                }
 
                 val encryptedUrl = songDetailsMap?.get("encrypted_media_url") as? String
                     ?: songDetailsMap?.get("encryptedMediaUrl") as? String
