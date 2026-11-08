@@ -187,24 +187,41 @@ class JioSaavnMusicProvider(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during JioSaavn stream resolution for '${song.title}': ${e.message}", e)
+            if (e is java.net.UnknownHostException || e is java.io.IOException || e is java.net.SocketTimeoutException) {
+                Log.w(TAG, "Network offline or unavailable during JioSaavn stream resolution for '${song.title}': ${e.message}")
+            } else {
+                Log.e(TAG, "Exception during JioSaavn stream resolution for '${song.title}': ${e.message}", e)
+            }
             Result.failure(e)
         }
     }
 
 
     override suspend fun getLyrics(song: Song): Result<String?> = withContext(Dispatchers.IO) {
-        val songId = song.filePath ?: return@withContext Result.success(null)
+        val songId = song.filePath ?: run {
+            Log.w("USMAN_LYRICS", "[JioSaavnMusicProvider] Missing songId (filePath) for '${song.title}'")
+            return@withContext Result.success(null)
+        }
         try {
+            Log.d("USMAN_LYRICS", "[JioSaavnMusicProvider] Requesting lyrics for '${song.title}' with songId: $songId")
             val response = apiService.getLyrics(songId)
             if (response.isSuccessful) {
-                Result.success(response.body()?.lyrics)
+                val lyrics = response.body()?.lyrics
+                val hasLyrics = !lyrics.isNullOrBlank()
+                Log.d("USMAN_LYRICS", "[JioSaavnMusicProvider] Lyrics response for '$songId': code=${response.code()}, hasLyrics=$hasLyrics, length=${lyrics?.length ?: 0}")
+                Result.success(lyrics)
             } else {
+                Log.w("USMAN_LYRICS", "[JioSaavnMusicProvider] Failed HTTP response ${response.code()} for songId: $songId")
                 Result.success(null)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (e is java.net.UnknownHostException || e is java.io.IOException || e is java.net.SocketTimeoutException) {
+                Log.w("USMAN_LYRICS", "[JioSaavnMusicProvider] Network offline during lyrics fetch for songId $songId: ${e.message}")
+            } else {
+                Log.e("USMAN_LYRICS", "[JioSaavnMusicProvider] Exception fetching lyrics for songId $songId: ${e.message}", e)
+            }
             Result.success(null)
         }
     }

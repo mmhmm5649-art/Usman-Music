@@ -52,10 +52,18 @@ object ProviderRegistry {
             .build()
             .create(JioSaavnApiService::class.java)
 
+        val lrclibApiService = Retrofit.Builder()
+            .baseUrl("https://lrclib.net/")
+            .client(httpClient)
+            .addConverterFactory(moshiConverter)
+            .build()
+            .create(com.usman.musicplayer.data.remote.LrcLibApiService::class.java)
+
         registerProvider(LocalMusicProvider(context), enabled = true)
         registerProvider(AudiusProvider(audiusApiService), enabled = true)
         registerProvider(CcMixterProvider(), enabled = true)
         registerProvider(InternetArchiveMusicProvider(), enabled = true)
+        registerProvider(com.usman.musicplayer.data.repository.providers.LrcLibMusicProvider(lrclibApiService), enabled = true)
         registerProvider(JioSaavnMusicProvider(jioSaavnApiService, moshi), enabled = true)
     }
 

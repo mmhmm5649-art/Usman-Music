@@ -161,6 +161,15 @@ fun RainbowAudioVisualizer(
 
                 val barHalfHeight = maxBarHeight * combinedMagnitude
 
+                // 3a. Soft outer glow behind the bar
+                drawLine(
+                    color = barColor.copy(alpha = (0.28f * currentActive * pulseGlow).coerceIn(0.1f, 0.38f)),
+                    start = Offset(x, midY - barHalfHeight * 1.15f),
+                    end = Offset(x, midY + 1f),
+                    strokeWidth = barWidth * 2.8f,
+                    cap = StrokeCap.Round
+                )
+
                 // 3. Draw upper vertical frequency bar
                 drawLine(
                     color = barColor,

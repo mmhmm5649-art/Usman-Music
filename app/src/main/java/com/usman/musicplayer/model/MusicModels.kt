@@ -50,7 +50,9 @@ enum class LibraryTab(val title: String) {
     PLAYLISTS("Playlists"),
     ALBUMS("Albums"),
     ARTISTS("Artists"),
-    FOLDERS("Folders")
+    FOLDERS("Folders"),
+    DOWNLOADS("Downloads"),
+    DOWNLOAD_CENTRE("Download Centre")
 }
 
 enum class RepeatMode {

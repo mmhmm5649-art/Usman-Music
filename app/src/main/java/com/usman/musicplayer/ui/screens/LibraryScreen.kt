@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.usman.musicplayer.data.local.DownloadEntity
 import com.usman.musicplayer.model.Album
 import com.usman.musicplayer.model.Artist
 import com.usman.musicplayer.model.LibraryTab
@@ -58,6 +59,11 @@ fun LibraryScreen(
     onOpenFolderPicker: () -> Unit,
     onRescanLibrary: () -> Unit,
     onClearFilter: () -> Unit,
+    onRemoveDownload: (Long) -> Unit = {},
+    onPauseDownload: (Long) -> Unit = {},
+    onResumeDownload: (Long) -> Unit = {},
+    onCancelDownload: (Long) -> Unit = {},
+    onRetryDownload: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -279,6 +285,26 @@ fun LibraryScreen(
                             onAddSafFolder = onOpenFolderPicker
                         )
                     }
+                    LibraryTab.DOWNLOADS -> {
+                        DownloadsSection(
+                            downloadedSongs = uiState.downloadedSongs,
+                            currentSong = uiState.currentSong,
+                            isPlaying = uiState.isPlaying,
+                            onSongClick = onPlaySong,
+                            onRemoveDownload = onRemoveDownload
+                        )
+                    }
+                    LibraryTab.DOWNLOAD_CENTRE -> {
+                        DownloadCentreSection(
+                            activeDownloads = uiState.activeDownloads,
+                            completedDownloads = uiState.completedDownloads,
+                            onPause = onPauseDownload,
+                            onResume = onResumeDownload,
+                            onCancel = onCancelDownload,
+                            onRetry = onRetryDownload,
+                            onRemove = onRemoveDownload
+                        )
+                    }
                 }
             }
         }
@@ -413,6 +439,8 @@ private fun LibraryTabsRow(
                         LibraryTab.ALBUMS -> Icons.Default.Album
                         LibraryTab.ARTISTS -> Icons.Default.Person
                         LibraryTab.FOLDERS -> Icons.Default.Folder
+                        LibraryTab.DOWNLOADS -> Icons.Default.Download
+                        LibraryTab.DOWNLOAD_CENTRE -> Icons.Default.CloudDownload
                     }
                     Icon(
                         imageVector = icon,
@@ -938,4 +966,391 @@ private fun EmptyLibraryState(
             }
         }
     }
+}
+
+@Composable
+private fun DownloadsSection(
+    downloadedSongs: List<Song>,
+    currentSong: Song?,
+    isPlaying: Boolean,
+    onSongClick: (Song) -> Unit,
+    onRemoveDownload: (Long) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(
+                    text = "Offline Downloads",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${downloadedSongs.size} songs available offline",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+            if (downloadedSongs.isNotEmpty()) {
+                Button(
+                    onClick = { onSongClick(downloadedSongs.random()) },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Shuffle, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Shuffle", fontSize = 12.sp)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (downloadedSongs.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(40.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "No downloaded songs yet",
+                        color = TextSecondary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Songs you download for offline playback will appear here and remain available after app restarts.",
+                        color = TextMuted,
+                        fontSize = 13.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 210.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(downloadedSongs, key = { "dl_song_${it.id}" }) { song ->
+                    val isCurrent = currentSong?.id == song.id
+                    LiquidGlassPanel(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { onSongClick(song) },
+                        shape = RoundedCornerShape(16.dp),
+                        backgroundColor = if (isCurrent) Color(0x331E2544) else Color(0x1A14182E),
+                        borderBrush = if (isCurrent) Brush.horizontalGradient(listOf(NeonCyan, NeonPurple)) else LiquidGlassBorderBrush,
+                        borderWidth = if (isCurrent) 1.dp else 0.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(50.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            ) {
+                                SongAlbumArtwork(song = song, modifier = Modifier.fillMaxSize(), cornerRadius = 12.dp)
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = song.title,
+                                    color = if (isCurrent) NeonCyan else TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "${song.artist} • ${song.formattedDuration}",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(onClick = { onRemoveDownload(song.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Remove download", tint = Color(0xFFF43F5E), modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadCentreSection(
+    activeDownloads: List<DownloadEntity>,
+    completedDownloads: List<DownloadEntity>,
+    onPause: (Long) -> Unit,
+    onResume: (Long) -> Unit,
+    onCancel: (Long) -> Unit,
+    onRetry: (Long) -> Unit,
+    onRemove: (Long) -> Unit
+) {
+    var subTab by remember { mutableStateOf(0) } // 0: Active, 1: Completed
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(text = "Download Centre", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = "${activeDownloads.size} active, ${completedDownloads.size} completed", color = TextSecondary, fontSize = 12.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            val activeCount = activeDownloads.size
+            val completedCount = completedDownloads.size
+
+            TabButton(title = "Active ($activeCount)", isSelected = subTab == 0, onClick = { subTab = 0 })
+            TabButton(title = "Completed ($completedCount)", isSelected = subTab == 1, onClick = { subTab = 1 })
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        val currentList = if (subTab == 0) activeDownloads else completedDownloads
+
+        if (currentList.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(40.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = if (subTab == 0) Icons.Default.CloudDownload else Icons.Default.DownloadDone,
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = if (subTab == 0) "No active downloads" else "No completed downloads",
+                        color = TextSecondary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 210.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(currentList, key = { "dl_task_${it.songId}" }) { task ->
+                    LiquidGlassPanel(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp)),
+                        shape = RoundedCornerShape(16.dp),
+                        backgroundColor = Color(0x1A14182E)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                ) {
+                                    SongAlbumArtwork(
+                                        song = Song(
+                                            id = task.songId,
+                                            title = task.title,
+                                            artist = task.artist,
+                                            album = task.album,
+                                            durationMs = task.durationMs,
+                                            filePath = task.filePath,
+                                            albumArtUri = task.albumArtUri
+                                        ),
+                                        modifier = Modifier.fillMaxSize(),
+                                        cornerRadius = 10.dp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = task.title,
+                                        color = TextPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = task.artist,
+                                        color = TextSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            when (task.status) {
+                                                "COMPLETED" -> Color(0x3300E676)
+                                                "DOWNLOADING" -> Color(0x3300E5FF)
+                                                "PAUSED" -> Color(0x33F59E0B)
+                                                "FAILED" -> Color(0x33F43F5E)
+                                                else -> Color(0x3394A3B8)
+                                            }
+                                        )
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = task.status,
+                                        color = when (task.status) {
+                                            "COMPLETED" -> Color(0xFF00E676)
+                                            "DOWNLOADING" -> Color(0xFF00E5FF)
+                                            "PAUSED" -> Color(0xFFFDE047)
+                                            "FAILED" -> Color(0xFFF43F5E)
+                                            else -> TextSecondary
+                                        },
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if (task.status == "DOWNLOADING" || task.status == "PAUSED") {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                LinearProgressIndicator(
+                                    progress = { task.progress / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = NeonCyan,
+                                    trackColor = Color(0x33FFFFFF)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "${task.progress}% (${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)})",
+                                        color = TextMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                when (task.status) {
+                                    "DOWNLOADING" -> {
+                                        TextButton(onClick = { onPause(task.songId) }) {
+                                            Icon(Icons.Default.Pause, null, tint = Color(0xFFFDE047), modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Pause", color = Color(0xFFFDE047), fontSize = 12.sp)
+                                        }
+                                    }
+                                    "PAUSED", "FAILED" -> {
+                                        TextButton(onClick = { onResume(task.songId) }) {
+                                            Icon(Icons.Default.PlayArrow, null, tint = NeonCyan, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Resume", color = NeonCyan, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                                if (task.status != "COMPLETED") {
+                                    TextButton(onClick = { onCancel(task.songId) }) {
+                                        Icon(Icons.Default.Close, null, tint = Color(0xFFF43F5E), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Cancel", color = Color(0xFFF43F5E), fontSize = 12.sp)
+                                    }
+                                } else {
+                                    TextButton(onClick = { onRemove(task.songId) }) {
+                                        Icon(Icons.Default.Delete, null, tint = Color(0xFFF43F5E), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Remove", color = Color(0xFFF43F5E), fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabButton(title: String, isSelected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (isSelected) ActivePillBrush else Brush.linearGradient(listOf(Color(0x331E2338), Color(0x331E2338))), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = title,
+            color = if (isSelected) Color.White else TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+        )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0) return "0 MB"
+    val mb = bytes.toDouble() / (1024 * 1024)
+    return String.format("%.1f MB", mb)
 }

@@ -97,15 +97,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             UsmanMusicPlayerTheme {
-                val context = LocalContext.current
-                val isTv = remember { DeviceUtils.isTvDevice(context) }
-
-                if (isTv) {
-                    val uiState by musicViewModel.uiState.collectAsStateWithLifecycle()
-                    TvMainLayout(viewModel = musicViewModel, uiState = uiState)
-                } else {
-                    UsmanMusicApp(viewModel = musicViewModel)
-                }
+                UsmanMusicApp(viewModel = musicViewModel)
             }
         }
     }
@@ -416,7 +408,12 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                         onNavigateToSearch = { currentDestination = AppDestination.SEARCH },
                         onOpenFolderPicker = { safFolderPicker.launch(null) },
                         onRescanLibrary = { viewModel.scanMusicLibrary() },
-                        onClearFilter = { viewModel.clearFilters() }
+                        onClearFilter = { viewModel.clearFilters() },
+                        onRemoveDownload = { songId -> viewModel.removeDownload(songId) },
+                        onPauseDownload = { songId -> viewModel.pauseDownload(songId) },
+                        onResumeDownload = { songId -> viewModel.resumeDownload(songId) },
+                        onCancelDownload = { songId -> viewModel.cancelDownload(songId) },
+                        onRetryDownload = { songId -> viewModel.retryDownload(songId) }
                     )
                 }
             }
@@ -520,7 +517,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 onAddToQueue = { song, callback ->
                     viewModel.addToQueue(song, callback)
                 },
-                onFetchLyrics = { song -> viewModel.fetchLyrics(song) }
+                onFetchLyrics = { song -> viewModel.fetchLyrics(song) },
+                onDownloadSong = { song -> viewModel.downloadSong(song) }
             )
         }
 

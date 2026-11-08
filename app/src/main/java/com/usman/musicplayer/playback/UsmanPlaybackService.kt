@@ -52,8 +52,12 @@ class UsmanPlaybackService : MediaSessionService() {
             .setReadTimeoutMs(15000)
             .setTransferListener(transferListener)
 
+        val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
-        val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
+        val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
+
 
         // 2. Build ExoPlayer
         val player = ExoPlayer.Builder(this)
@@ -132,11 +136,14 @@ class UsmanPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        AudioEffectsManager.releaseEffects()
+        AudioSpectrumManager.release()
         mediaSession?.run {
             player.release()
             release()
             mediaSession = null
         }
+        exoPlayer?.release()
         exoPlayer = null
         super.onDestroy()
     }

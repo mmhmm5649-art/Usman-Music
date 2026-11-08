@@ -1023,32 +1023,35 @@ class ExtensionEcosystemUnitTest {
         val epkBytes = byteOut.toByteArray()
 
         val server = MockWebServer()
-        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/octet-stream").setBody(okio.Buffer().write(epkBytes)))
-        server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/octet-stream").setBody(okio.Buffer().write(epkBytes)))
+            server.start()
 
-        val downloadUrl = server.url("/mock_package.epk").toString()
+            val downloadUrl = server.url("/mock_package.epk").toString()
 
-        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
-        com.usman.musicplayer.extension.ExtensionManager.init(context)
+            val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+            com.usman.musicplayer.extension.ExtensionManager.init(context)
 
-        val pkgToDownload = ExtensionPackage(
-            manifest = ExtensionManifest(
-                id = "ext.download.mock",
-                name = "Downloaded Mock Provider",
-                version = "1.0.0",
-                author = "Mock Developer",
-                description = "Downloaded extension test",
-                downloadUrl = downloadUrl
+            val pkgToDownload = ExtensionPackage(
+                manifest = ExtensionManifest(
+                    id = "ext.download.mock",
+                    name = "Downloaded Mock Provider",
+                    version = "1.0.0",
+                    author = "Mock Developer",
+                    description = "Downloaded extension test",
+                    downloadUrl = downloadUrl
+                )
             )
-        )
 
-        val result = com.usman.musicplayer.extension.ExtensionManager.downloadAndInstallPackage(context, pkgToDownload)
-        assertTrue("Download and install package should succeed", result.isSuccess)
+            val result = com.usman.musicplayer.extension.ExtensionManager.downloadAndInstallPackage(context, pkgToDownload)
+            assertTrue("Download and install package should succeed", result.isSuccess)
 
-        val installedList = com.usman.musicplayer.extension.ExtensionManager.installedExtensions.value
-        assertTrue(installedList.any { it.manifest.id == "ext.download.mock" && it.isInstalled })
+            val installedList = com.usman.musicplayer.extension.ExtensionManager.installedExtensions.value
+            assertTrue(installedList.any { it.manifest.id == "ext.download.mock" && it.isInstalled })
+        } finally {
+            server.shutdown()
+        }
 
-        server.shutdown()
     }
 
     @Test

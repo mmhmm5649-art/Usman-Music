@@ -10,11 +10,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.usman.musicplayer.data.LocalMusicScanner
+import com.usman.musicplayer.data.SongDownloadManager
+import com.usman.musicplayer.data.local.DownloadEntity
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.data.repository.MusicGenreCategory
 import com.usman.musicplayer.data.repository.OnlineMusicRepository
@@ -109,7 +113,12 @@ data class MusicPlayerUiState(
 
     // Music Sources & Providers
     val musicProviders: List<com.usman.musicplayer.sdk.MusicProvider> = emptyList(),
-    val enabledProviders: Map<String, Boolean> = emptyMap()
+    val enabledProviders: Map<String, Boolean> = emptyMap(),
+
+    // Downloads
+    val downloadedSongs: List<Song> = emptyList(),
+    val activeDownloads: List<DownloadEntity> = emptyList(),
+    val completedDownloads: List<DownloadEntity> = emptyList()
 )
 
 @UnstableApi
@@ -118,6 +127,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val scanner = LocalMusicScanner(application)
     private val playlistRepository = PlaylistRepository(application)
     private val musicRepository = UnifiedMusicRepository(application)
+    private val downloadManager = SongDownloadManager(application)
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchExecutionJob: Job? = null
@@ -140,8 +150,43 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         initializeMedia3Controller()
         loadInitialOnlineMusic()
         observePlaylists()
+        observeDownloads()
         updateProviderStates()
     }
+
+    private fun observeDownloads() {
+        viewModelScope.launch {
+            downloadManager.allDownloads.collect { entities ->
+                val completed = entities.filter { it.status == "COMPLETED" }
+                val active = entities.filter { it.status != "COMPLETED" }
+                val downloadedSongsList = completed.map { downloadManager.convertToOfflineSong(it) }
+                _uiState.update {
+                    it.copy(
+                        downloadedSongs = downloadedSongsList,
+                        activeDownloads = active,
+                        completedDownloads = completed
+                    )
+                }
+            }
+        }
+    }
+
+    fun downloadSong(song: Song) {
+        viewModelScope.launch {
+            val url = if (song.filePath.startsWith("http://") || song.filePath.startsWith("https://")) {
+                song.filePath
+            } else {
+                musicRepository.getStreamUrl(song).getOrNull() ?: song.externalUrl ?: return@launch
+            }
+            downloadManager.startDownload(song, url)
+        }
+    }
+
+    fun pauseDownload(songId: Long) { downloadManager.pauseDownload(songId) }
+    fun resumeDownload(songId: Long) { downloadManager.resumeDownload(songId) }
+    fun cancelDownload(songId: Long) { downloadManager.cancelDownload(songId) }
+    fun retryDownload(songId: Long) { downloadManager.retryDownload(songId) }
+    fun removeDownload(songId: Long) { downloadManager.removeDownload(songId) }
 
     private fun updateProviderStates() {
         val providers = com.usman.musicplayer.sdk.ProviderRegistry.providers
@@ -159,25 +204,53 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     suspend fun fetchLyrics(song: Song): String? {
+        Log.d("USMAN_LYRICS", "[MusicPlayerViewModel] Fetching lyrics for '${song.title}' by '${song.artist}' (ID: ${song.filePath ?: song.id})")
         val providers = com.usman.musicplayer.sdk.ProviderRegistry.activeProviders
-        // Try to find the provider that served this song first
+
+        // 1. Try LRCLIB primary lyrics provider first
+        val lrclibProvider = providers.find { it.metadata.id == "lrclib_lyrics_provider" }
+        if (lrclibProvider != null) {
+            val result = lrclibProvider.getLyrics(song)
+            if (result.isSuccess) {
+                val l = result.getOrNull()
+                if (!l.isNullOrBlank()) {
+                    Log.d("USMAN_LYRICS", "[MusicPlayerViewModel] LRCLIB lyrics fetched successfully (length: ${l.length})")
+                    return l
+                }
+            }
+        }
+
+        // 2. Try the provider that served this song
         val matchingProvider = providers.find {
             it.metadata.name.equals(song.sourceProvider, ignoreCase = true) ||
             it.metadata.id.equals(song.sourceProvider, ignoreCase = true)
         }
 
-        if (matchingProvider != null) {
+        if (matchingProvider != null && matchingProvider.metadata.id != "lrclib_lyrics_provider") {
             val result = matchingProvider.getLyrics(song)
-            if (result.isSuccess) return result.getOrNull()
+            if (result.isSuccess) {
+                val l = result.getOrNull()
+                if (!l.isNullOrBlank()) {
+                    Log.d("USMAN_LYRICS", "[MusicPlayerViewModel] Lyrics fetch via ${matchingProvider.metadata.name} success")
+                    return l
+                }
+            }
         }
 
-        // Fallback: try all active providers
+        // 3. Fallback: try all active providers
         for (provider in providers) {
-            if (provider.metadata.id == matchingProvider?.metadata?.id) continue
+            if (provider.metadata.id == "lrclib_lyrics_provider" || provider.metadata.id == matchingProvider?.metadata?.id) continue
             val result = provider.getLyrics(song)
-            if (result.isSuccess && result.getOrNull() != null) return result.getOrNull()
+            if (result.isSuccess) {
+                val l = result.getOrNull()
+                if (!l.isNullOrBlank()) {
+                    Log.d("USMAN_LYRICS", "[MusicPlayerViewModel] Lyrics fetch via fallback ${provider.metadata.name} success")
+                    return l
+                }
+            }
         }
 
+        Log.w("USMAN_LYRICS", "[MusicPlayerViewModel] Lyrics fetch failed or null for '${song.title}' across all providers")
         return null
     }
 
@@ -334,18 +407,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                                             val updatedSong = currentSong.copy(contentUriString = newUrl, filePath = newUrl)
                                             _uiState.update { it.copy(currentSong = updatedSong) }
                                             
-                                            controller.setMediaItem(
-                                                MediaItem.Builder()
-                                                    .setMediaId(updatedSong.id.toString())
-                                                    .setUri(Uri.parse(newUrl))
-                                                    .setMediaMetadata(
-                                                        MediaMetadata.Builder()
-                                                            .setTitle(updatedSong.title)
-                                                            .setArtist(updatedSong.artist)
-                                                            .build()
-                                                    )
-                                                    .build()
-                                            )
+                                            controller.setMediaItem(createMediaItem(updatedSong))
+
                                             controller.prepare()
                                             controller.play()
                                             return@launch
@@ -853,25 +916,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (controller != null) {
                 val queue = resolvedList.map { s ->
                     Log.d("USMAN_PLAYBACK", "[Stage 5: Active queue item] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ContentUri: ${s.contentUriString}")
-                    val uriString = s.contentUriString?.takeIf { it.isNotBlank() } ?: s.filePath
-                    val uri = when {
-                        uriString.startsWith("content://") || uriString.startsWith("http://") || uriString.startsWith("https://") -> Uri.parse(uriString)
-                        else -> Uri.parse("file://$uriString")
-                    }
-                    Log.d("USMAN_PLAYBACK", "[Stage 6: MediaItem.MediaMetadata] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ArtworkUri: ${s.albumArtUri}, URI Scheme: ${uri.scheme}, Host: ${uri.host}")
-                    MediaItem.Builder()
-                        .setMediaId(s.id.toString())
-                        .setUri(uri)
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(s.title)
-                                .setArtist(s.artist)
-                                .setAlbumTitle(s.album)
-                                .setArtworkUri(s.albumArtUri?.let { Uri.parse(it) })
-                                .build()
-                        )
-                        .build()
+                    createMediaItem(s)
                 }
+
 
                 val startIndex = queue.indexOfFirst { it.mediaId == playableSong.id.toString() }
                 controller.setMediaItems(queue, startIndex.coerceAtLeast(0), 0L)
@@ -1105,24 +1152,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun playNext(song: Song, onFeedback: (String) -> Unit = {}) {
         val controller = mediaController
         if (controller != null) {
-            val uri = when {
-                !song.contentUriString.isNullOrBlank() -> Uri.parse(song.contentUriString)
-                song.filePath.startsWith("content://") || song.filePath.startsWith("http://") || song.filePath.startsWith("https://") -> Uri.parse(song.filePath)
-                else -> Uri.parse("file://${song.filePath}")
-            }
-            val item = MediaItem.Builder()
-                .setMediaId(song.id.toString())
-                .setUri(uri)
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(song.title)
-                        .setArtist(song.artist)
-                        .setAlbumTitle(song.album)
-                        .setArtworkUri(song.albumArtUri?.let { Uri.parse(it) })
-                        .build()
-                )
-                .build()
-
+            val item = createMediaItem(song)
             val nextIndex = (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)
             controller.addMediaItem(nextIndex, item)
             onFeedback("Playing next: ${song.title}")
@@ -1134,30 +1164,14 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun addToQueue(song: Song, onFeedback: (String) -> Unit = {}) {
         val controller = mediaController
         if (controller != null) {
-            val uri = when {
-                !song.contentUriString.isNullOrBlank() -> Uri.parse(song.contentUriString)
-                song.filePath.startsWith("content://") || song.filePath.startsWith("http://") || song.filePath.startsWith("https://") -> Uri.parse(song.filePath)
-                else -> Uri.parse("file://${song.filePath}")
-            }
-            val item = MediaItem.Builder()
-                .setMediaId(song.id.toString())
-                .setUri(uri)
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(song.title)
-                        .setArtist(song.artist)
-                        .setAlbumTitle(song.album)
-                        .setArtworkUri(song.albumArtUri?.let { Uri.parse(it) })
-                        .build()
-                )
-                .build()
-
+            val item = createMediaItem(song)
             controller.addMediaItem(item)
             onFeedback("Added to queue: ${song.title}")
         } else {
             onFeedback("Added to queue")
         }
     }
+
 
     private fun onTrackEnded() {
         when (_uiState.value.repeatMode) {
@@ -1205,7 +1219,49 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private fun createMediaItem(s: Song): MediaItem {
+        val uriString = s.contentUriString?.takeIf { it.isNotBlank() } ?: s.filePath
+        val uri = when {
+            uriString.startsWith("content://") || uriString.startsWith("http://") || uriString.startsWith("https://") -> Uri.parse(uriString)
+            else -> Uri.parse("file://$uriString")
+        }
+
+        val mimeType = when {
+            s.isOnline -> {
+                val path = uri.path?.lowercase().orEmpty()
+                when {
+                    path.endsWith(".mp3") -> MimeTypes.AUDIO_MPEG
+                    path.endsWith(".flac") -> MimeTypes.AUDIO_FLAC
+                    path.endsWith(".ogg") -> MimeTypes.AUDIO_OGG
+                    path.endsWith(".aac") -> MimeTypes.AUDIO_AAC
+                    path.endsWith(".mp4") || path.endsWith(".m4a") -> MimeTypes.AUDIO_MP4
+                    else -> MimeTypes.AUDIO_MP4
+                }
+            }
+            else -> null
+        }
+
+        val builder = MediaItem.Builder()
+            .setMediaId(s.id.toString())
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(s.title)
+                    .setArtist(s.artist)
+                    .setAlbumTitle(s.album)
+                    .setArtworkUri(s.albumArtUri?.let { Uri.parse(it) })
+                    .build()
+            )
+
+        if (!mimeType.isNullOrBlank()) {
+            builder.setMimeType(mimeType)
+        }
+
+        return builder.build()
+    }
+
     override fun onCleared() {
+
         super.onCleared()
         progressTrackingJob?.cancel()
         searchDebounceJob?.cancel()

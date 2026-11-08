@@ -112,6 +112,7 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.compose.cloudy)
   implementation(libs.haze)
+  implementation(libs.androidx.palette.ktx)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)

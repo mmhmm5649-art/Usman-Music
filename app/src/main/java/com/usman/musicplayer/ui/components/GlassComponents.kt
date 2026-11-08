@@ -33,7 +33,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
 import dev.chrisbanes.haze.HazeDefaults
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeChild
@@ -495,4 +499,20 @@ fun GlassArtworkContainer(
             ),
         content = content
     )
+}
+
+/**
+ * Modifier extension providing a luminous neon focus highlight and D-pad focusability for Android TV.
+ */
+@Composable
+fun Modifier.tvFocusHighlight(shape: Shape = RoundedCornerShape(16.dp)): Modifier {
+    var isFocused by remember { mutableStateOf(false) }
+    return this
+        .focusable()
+        .onFocusChanged { isFocused = it.isFocused }
+        .border(
+            width = if (isFocused) 2.5.dp else 0.dp,
+            brush = if (isFocused) Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF9333EA))) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent)),
+            shape = shape
+        )
 }
