@@ -424,16 +424,16 @@ class LyricsParserTest {
 
         // "మధురమైన"
         assertEquals(0, line.words[0].charStart)
-        assertEquals(8, line.words[0].charEnd)
+        assertEquals(7, line.words[0].charEnd)
         assertEquals("మధురమైన", line.text.substring(line.words[0].charStart, line.words[0].charEnd))
 
         // "పాట"
-        assertEquals(9, line.words[1].charStart)
-        assertEquals(12, line.words[1].charEnd)
+        assertEquals(8, line.words[1].charStart)
+        assertEquals(11, line.words[1].charEnd)
         assertEquals("పాట", line.text.substring(line.words[1].charStart, line.words[1].charEnd))
 
         // "ప్రేమ"
-        assertEquals(13, line.words[2].charStart)
+        assertEquals(12, line.words[2].charStart)
         assertEquals(17, line.words[2].charEnd)
         assertEquals("ప్రేమ", line.text.substring(line.words[2].charStart, line.words[2].charEnd))
     }

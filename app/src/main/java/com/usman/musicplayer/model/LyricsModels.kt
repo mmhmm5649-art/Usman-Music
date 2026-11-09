@@ -91,11 +91,8 @@ object LyricsParser {
                     val wDur = wMatch.groupValues[2].toLongOrNull() ?: 300L
                     val wText = wMatch.groupValues[3].trim()
                     if (wText.isNotEmpty()) {
-                        val cStart = lineTextBuilder.length
-                        if (lineTextBuilder.isNotEmpty()) lineTextBuilder.append(" ")
-                        val effectiveStart = if (cStart == lineTextBuilder.length) cStart else lineTextBuilder.length - wText.length
-                        // Re-calculate more cleanly:
                         val currentText = lineTextBuilder.toString()
+                        // If appending a space, the new word starts at length of currentText + 1
                         val wordStartInLine = if (currentText.isEmpty()) 0 else currentText.length + 1
                         if (currentText.isNotEmpty()) lineTextBuilder.append(" ")
                         lineTextBuilder.append(wText)
