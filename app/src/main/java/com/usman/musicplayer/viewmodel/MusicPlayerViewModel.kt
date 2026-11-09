@@ -1098,6 +1098,20 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun seekForward(amountMs: Long = 10000L) {
+        val current = _playbackProgress.value.currentPositionMs
+        val duration = _playbackProgress.value.durationMs
+        val maxPos = if (duration > 0) duration else Long.MAX_VALUE
+        val target = (current + amountMs).coerceAtMost(maxPos)
+        seekTo(target)
+    }
+
+    fun seekBackward(amountMs: Long = 10000L) {
+        val current = _playbackProgress.value.currentPositionMs
+        val target = (current - amountMs).coerceAtLeast(0L)
+        seekTo(target)
+    }
+
     fun toggleShuffle() {
         val controller = mediaController
         val newShuffle = !_uiState.value.isShuffleEnabled

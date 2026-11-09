@@ -442,18 +442,20 @@ fun NowPlayingScreen(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // --- LOWER PLAYBACK SECTION (Grouped together and moved UP) ---
-            RainbowAudioVisualizer(
-                isPlaying = uiState.isPlaying,
-                height = 76.dp,
-                showGlow = true,
-                showReflection = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("audio_rainbow_visualizer")
-            )
+            // --- LOWER PLAYBACK SECTION (Visualizer shown on Phone only) ---
+            if (!isTv) {
+                RainbowAudioVisualizer(
+                    isPlaying = uiState.isPlaying,
+                    height = 76.dp,
+                    showGlow = true,
+                    showReflection = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("audio_rainbow_visualizer")
+                )
 
-            Spacer(modifier = Modifier.height(3.dp))
+                Spacer(modifier = Modifier.height(3.dp))
+            }
 
             // --- SLIDER & TIME DISPLAY ---
             val currentDisplayedMs = if (isDraggingSlider) (sliderTempPosition * durationMs).toLong() else positionMs

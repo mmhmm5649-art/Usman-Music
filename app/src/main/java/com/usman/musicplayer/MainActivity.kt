@@ -110,23 +110,26 @@ class MainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_HEADSETHOOK -> {
-                musicViewModel.togglePlayPause()
-                true
-            }
+            KeyEvent.KEYCODE_HEADSETHOOK,
             KeyEvent.KEYCODE_MEDIA_PLAY,
             KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 musicViewModel.togglePlayPause()
                 true
             }
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
                 musicViewModel.skipToNext()
                 true
             }
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                 musicViewModel.skipToPrevious()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                musicViewModel.seekForward(10000L)
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                musicViewModel.seekBackward(10000L)
                 true
             }
             else -> super.onKeyDown(keyCode, event)
