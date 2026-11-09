@@ -330,7 +330,9 @@ object LyricsParser {
                 val dur = (nextTs - item.timestampMs).coerceAtLeast(500L)
 
                 var finalWords = item.words
-                if (finalWords.isNotEmpty()) {
+                if (finalWords.isEmpty() && item.text.isNotBlank() && item.text != "♪") {
+                    finalWords = synthesizeWordsForLine(item.text, item.timestampMs, nextTs)
+                } else if (finalWords.isNotEmpty()) {
                     // Update last word duration to align with line end for smoother sustained vocals
                     val last = finalWords.last()
                     val targetEnd = if (last.endMs <= last.startMs || last.endMs > nextTs) {
@@ -351,7 +353,7 @@ object LyricsParser {
                 )
             }
 
-            val overallQuality = if (hasGenuineWordTimestamps) SyncQuality.WORD else SyncQuality.LINE
+            val overallQuality = if (hasGenuineWordTimestamps || mapped.any { it.words.isNotEmpty() }) SyncQuality.WORD else SyncQuality.LINE
             Log.d("USMAN_LYRICS", "[LyricsParser] Successfully parsed ${mapped.size} synchronized lines. Quality: $overallQuality")
             return ParsedLyrics(lines = mapped, isSynchronized = true, syncQuality = overallQuality)
         }
@@ -513,6 +515,60 @@ object LyricsParser {
         } catch (e: Exception) {
             0L
         }
+    }
+
+    private fun synthesizeWordsForLine(text: String, lineStartMs: Long, lineEndMs: Long): List<LyricWord> {
+        val totalDur = (lineEndMs - lineStartMs).coerceAtLeast(300L)
+        val rawTokens = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val tokens = if (rawTokens.isNotEmpty()) {
+            rawTokens
+        } else {
+            getGraphemes(text)
+        }
+        if (tokens.isEmpty()) return emptyList()
+
+        val totalChars = tokens.sumOf { it.length }.coerceAtLeast(1)
+        val words = mutableListOf<LyricWord>()
+        var currentMs = lineStartMs
+        var charCursor = 0
+
+        for ((idx, token) in tokens.withIndex()) {
+            val wordDur = (totalDur * token.length / totalChars.toDouble()).toLong().coerceAtLeast(100L)
+            val wStart = currentMs
+            val wEnd = if (idx == tokens.lastIndex) lineEndMs else (wStart + wordDur).coerceAtMost(lineEndMs)
+
+            val tokenStartInText = text.indexOf(token, charCursor).takeIf { it >= 0 } ?: charCursor
+            val tokenEndInText = tokenStartInText + token.length
+            charCursor = tokenEndInText
+
+            words.add(
+                LyricWord(
+                    text = token,
+                    startMs = wStart,
+                    endMs = wEnd,
+                    index = idx,
+                    charStart = tokenStartInText,
+                    charEnd = tokenEndInText
+                )
+            )
+            currentMs = wEnd
+        }
+        return words
+    }
+
+    private fun getGraphemes(text: String): List<String> {
+        if (text.isEmpty()) return emptyList()
+        val graphemes = mutableListOf<String>()
+        val iterator = java.text.BreakIterator.getCharacterInstance()
+        iterator.setText(text)
+        var start = iterator.first()
+        var end = iterator.next()
+        while (end != java.text.BreakIterator.DONE) {
+            graphemes.add(text.substring(start, end))
+            start = end
+            end = iterator.next()
+        }
+        return if (graphemes.isNotEmpty()) graphemes else listOf(text)
     }
 }
 

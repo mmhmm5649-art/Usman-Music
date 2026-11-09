@@ -217,6 +217,7 @@ fun NowPlayingScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
     val scope = rememberCoroutineScope()
     val song = uiState.currentSong
 
@@ -359,37 +360,71 @@ fun NowPlayingScreen(
                     label = "ArtworkOrLyricsTransition"
                 ) { isLyricsMode ->
                     if (isLyricsMode) {
-                        // LIVE SYNCHRONIZED LYRICS INTERFACE
-                        SynchronizedLyricsView(
-                            parsedLyrics = parsedLyricsState,
-                            playbackProgress = playbackProgress,
-                            isFetching = isFetchingLyrics,
-                            fetchError = lyricsFetchError,
-                            palette = albumPalette,
-                            onSeekTo = onSeekTo,
-                            onRetryFetch = {
-                                scope.launch {
-                                    if (song != null) {
-                                        isFetchingLyrics = true
-                                        lyricsFetchError = null
-                                        try {
-                                            val raw = onFetchLyrics(song)
-                                            if (raw != null) {
-                                                parsedLyricsState = LyricsParser.parse(raw, durationMs)
-                                            } else {
-                                                parsedLyricsState = com.usman.musicplayer.model.ParsedLyrics(emptyList(), isSynchronized = false)
+                        if (isTv) {
+                            com.usman.musicplayer.ui.tv.TvFullLyricsScreen(
+                                song = song,
+                                parsedLyrics = parsedLyricsState,
+                                playbackProgress = playbackProgress,
+                                isFetching = isFetchingLyrics,
+                                fetchError = lyricsFetchError,
+                                palette = albumPalette,
+                                onSeekTo = onSeekTo,
+                                onRetryFetch = {
+                                    scope.launch {
+                                        if (song != null) {
+                                            isFetchingLyrics = true
+                                            lyricsFetchError = null
+                                            try {
+                                                val raw = onFetchLyrics(song)
+                                                if (raw != null) {
+                                                    parsedLyricsState = LyricsParser.parse(raw, durationMs)
+                                                } else {
+                                                    parsedLyricsState = com.usman.musicplayer.model.ParsedLyrics(emptyList(), isSynchronized = false)
+                                                }
+                                            } catch (e: Exception) {
+                                                if (e is kotlinx.coroutines.CancellationException) throw e
+                                                lyricsFetchError = "Retry failed"
                                             }
-                                        } catch (e: Exception) {
-                                            if (e is kotlinx.coroutines.CancellationException) throw e
-                                            lyricsFetchError = "Retry failed"
+                                            isFetchingLyrics = false
                                         }
-                                        isFetchingLyrics = false
                                     }
-                                }
-                            },
-                            onCloseLyrics = { showLiveLyrics = false },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                                },
+                                onCloseLyrics = { showLiveLyrics = false },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            // LIVE SYNCHRONIZED LYRICS INTERFACE (PHONE)
+                            SynchronizedLyricsView(
+                                parsedLyrics = parsedLyricsState,
+                                playbackProgress = playbackProgress,
+                                isFetching = isFetchingLyrics,
+                                fetchError = lyricsFetchError,
+                                palette = albumPalette,
+                                onSeekTo = onSeekTo,
+                                onRetryFetch = {
+                                    scope.launch {
+                                        if (song != null) {
+                                            isFetchingLyrics = true
+                                            lyricsFetchError = null
+                                            try {
+                                                val raw = onFetchLyrics(song)
+                                                if (raw != null) {
+                                                    parsedLyricsState = LyricsParser.parse(raw, durationMs)
+                                                } else {
+                                                    parsedLyricsState = com.usman.musicplayer.model.ParsedLyrics(emptyList(), isSynchronized = false)
+                                                }
+                                            } catch (e: Exception) {
+                                                if (e is kotlinx.coroutines.CancellationException) throw e
+                                                lyricsFetchError = "Retry failed"
+                                            }
+                                            isFetchingLyrics = false
+                                        }
+                                    }
+                                },
+                                onCloseLyrics = { showLiveLyrics = false },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     } else {
                         // ALBUM ARTWORK & TRACK IDENTITY VIEW
                         AlbumArtworkTrackView(
@@ -907,7 +942,6 @@ private fun NowPlayingControlButton(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             )
-            .focusable()
             .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {
@@ -1221,7 +1255,7 @@ private fun SynchronizedLyricsView(
     // 2. Stable millisecond clock for line-switching logic (reduces re-evaluations)
     val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
 
-    LaunchedEffect(playbackProgress.isPlaying, playbackProgress.currentPositionMs, playbackProgress.updateTimeRealtimeMs) {
+    LaunchedEffect(playbackProgress.isPlaying) {
         if (!playbackProgress.isPlaying) {
             drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
             logicClockState.longValue = playbackProgress.currentPositionMs
@@ -1237,6 +1271,13 @@ private fun SynchronizedLyricsView(
                     logicClockState.longValue = currentLong
                 }
             }
+        }
+    }
+
+    LaunchedEffect(playbackProgress.currentPositionMs) {
+        if (kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 500L) {
+            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+            logicClockState.longValue = playbackProgress.currentPositionMs
         }
     }
 
@@ -1694,8 +1735,8 @@ private fun LyricLineItem(
                 textMeasurer.measure(line.text, style = textStyle)
             }
 
-            // Pre-cache all word paths
-            val wordPaths = remember(line.id, line.words) {
+            // Pre-cache all word paths using line.id, line.words, AND textLayoutResult
+            val wordPaths = remember(line.id, line.words, textLayoutResult) {
                 line.words.associate { word ->
                     val lineTextLength = line.text.length
                     val charStart = word.charStart.coerceIn(0, lineTextLength)
@@ -1711,44 +1752,52 @@ private fun LyricLineItem(
                     .drawWithContent {
                         val currentTime = drawClockState.value
                         
-                        // 1. Draw base dimmed text
-                        val baseColor = if (line.isBackgroundVocal) TextMuted.copy(alpha = 0.25f) else TextMuted
+                        // 1. Draw base text depending on line state
+                        val baseColor = when {
+                            !isActive && isPast -> Color.White.copy(alpha = 0.65f)
+                            !isActive && isFuture -> Color.White.copy(alpha = 0.35f)
+                            line.isBackgroundVocal -> TextMuted.copy(alpha = 0.25f)
+                            else -> TextMuted
+                        }
                         drawText(textLayoutResult, color = baseColor)
                         
-                        // 2. Prepare paths
-                        val completedPath = Path()
-                        var activeWord: LyricWord? = null
-                        var activeWordPath: Path? = null
-                        
-                        line.words.forEach { word ->
-                            val isWordPast = currentTime >= word.endMs
-                            val isWordActive = currentTime >= word.startMs && currentTime < word.endMs
-                            val path = wordPaths[word.index]
+                        // 2. Only draw active word-by-word highlighting when line is currently active
+                        if (isActive) {
+                            val completedPath = Path()
+                            var activeWord: LyricWord? = null
+                            var activeWordPath: Path? = null
                             
-                            if (path != null && !path.isEmpty) {
-                                if (isWordPast) {
-                                    completedPath.addPath(path)
-                                } else if (isWordActive) {
-                                    activeWord = word
-                                    activeWordPath = path
+                            line.words.forEach { word ->
+                                val isWordPast = currentTime >= word.endMs
+                                val isWordActive = currentTime >= word.startMs && currentTime < word.endMs
+                                val path = wordPaths[word.index]
+                                
+                                if (path != null && !path.isEmpty) {
+                                    if (isWordPast) {
+                                        completedPath.addPath(path)
+                                    } else if (isWordActive) {
+                                        activeWord = word
+                                        activeWordPath = path
+                                    }
                                 }
                             }
-                        }
-                        
-                        // 3. Draw completed words
-                        val highlightColor = if (line.isBackgroundVocal) Color.White.copy(alpha = 0.25f) else Color.White
-                        if (!completedPath.isEmpty) {
-                            clipPath(completedPath) { drawText(textLayoutResult, color = highlightColor) }
-                        }
-                        
-                        // 4. Draw active word
-                        if (activeWord != null && activeWordPath != null) {
-                            val bounds = activeWordPath!!.getBounds()
-                            val progress = ((currentTime.toDouble() - activeWord!!.startMs.toDouble()) / (activeWord!!.endMs - activeWord!!.startMs).toDouble()).coerceIn(0.0, 1.0).toFloat()
                             
-                            clipPath(activeWordPath!!) {
-                                clipRect(bounds.left, bounds.top, bounds.left + bounds.width * progress, bounds.bottom) {
-                                    drawText(textLayoutResult, color = highlightColor)
+                            // 3. Draw completed words in bright white
+                            val highlightColor = if (line.isBackgroundVocal) Color.White.copy(alpha = 0.25f) else Color.White
+                            if (!completedPath.isEmpty) {
+                                clipPath(completedPath) { drawText(textLayoutResult, color = highlightColor) }
+                            }
+                            
+                            // 4. Draw currently singing word with progressive clipRect animation
+                            if (activeWord != null && activeWordPath != null) {
+                                val bounds = activeWordPath!!.getBounds()
+                                val wordDuration = (activeWord!!.endMs - activeWord!!.startMs).toDouble().coerceAtLeast(1.0)
+                                val progress = ((currentTime.toDouble() - activeWord!!.startMs.toDouble()) / wordDuration).coerceIn(0.0, 1.0).toFloat()
+                                
+                                clipPath(activeWordPath!!) {
+                                    clipRect(bounds.left, bounds.top, bounds.left + bounds.width * progress, bounds.bottom) {
+                                        drawText(textLayoutResult, color = highlightColor)
+                                    }
                                 }
                             }
                         }
