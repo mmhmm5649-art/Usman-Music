@@ -3,6 +3,7 @@ package com.usman.musicplayer.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.util.Log
+import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
@@ -44,23 +45,57 @@ class UsmanPlaybackService : MediaSessionService() {
                 }
             }
         }
-        val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .setDefaultRequestProperties(mapOf("Referer" to "https://www.jiosaavn.com/"))
+        val baseHttpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .setDefaultRequestProperties(mapOf(
+                "Accept" to "*/*",
+                "Accept-Language" to "en-US,en;q=0.9",
+                "Connection" to "keep-alive"
+            ))
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(15000)
+            .setConnectTimeoutMs(20000)
+            .setReadTimeoutMs(20000)
             .setTransferListener(transferListener)
+
+        // ResolvingDataSource dynamically injects domain-specific headers (e.g. Referer for JioSaavn)
+        // without polluting cross-origin requests to other CDNs with unwanted Origin/Referer headers.
+        val resolvingDataSourceFactory = androidx.media3.datasource.ResolvingDataSource.Factory(
+            baseHttpDataSourceFactory,
+            androidx.media3.datasource.ResolvingDataSource.Resolver { dataSpec ->
+                val uri = dataSpec.uri
+                val host = uri.host?.lowercase().orEmpty()
+                val headers = mutableMapOf<String, String>()
+                if (host.contains("saavn") || host.contains("jio")) {
+                    headers["Referer"] = "https://www.jiosaavn.com/"
+                } else if (host.contains("music.youtube.com")) {
+                    headers["Referer"] = "https://music.youtube.com/"
+                }
+
+                val upgradedUri = if (uri.scheme == "http") {
+                    uri.buildUpon().scheme("https").build()
+                } else {
+                    uri
+                }
+
+                var builder = dataSpec.buildUpon().setUri(upgradedUri)
+                if (headers.isNotEmpty()) {
+                    builder = builder.setHttpRequestHeaders(headers)
+                }
+                builder.build()
+            }
+        )
 
         val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
+        val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, resolvingDataSourceFactory)
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
+        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
 
-        // 2. Build ExoPlayer
-        val player = ExoPlayer.Builder(this)
+        // 2. Build ExoPlayer with decoder fallback enabled for MediaCodec resource reclamation recovery
+        val player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -77,6 +112,9 @@ class UsmanPlaybackService : MediaSessionService() {
         currentAudioSessionId = player.audioSessionId
 
         player.addListener(object : Player.Listener {
+            private var lastFailedUri: Uri? = null
+            private var failureCountForUri = 0
+
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 currentAudioSessionId = audioSessionId
             }
@@ -98,12 +136,76 @@ class UsmanPlaybackService : MediaSessionService() {
 
             override fun onPlayerError(error: PlaybackException) {
                 val errorMsg = "ExoPlayer error: ${error.message} (Code: ${error.errorCode}, ${error.errorCodeName})"
-                Log.e("USMAN_PLAYBACK", errorMsg, error)
+                Log.w("USMAN_PLAYBACK", errorMsg)
                 PlaybackErrorRepository.setError(errorMsg)
-                try {
-                    player.prepare()
-                } catch (e: Exception) {
-                    Log.e("USMAN_PLAYBACK", "Error recovering", e)
+
+                val currentItem = player.currentMediaItem
+                val uri = currentItem?.localConfiguration?.uri
+
+                val isHttpError = error.cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException ||
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+
+                val isCodecError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                        error.message?.contains("MediaCodec", ignoreCase = true) == true
+
+                if (isHttpError) {
+                    val httpCause = error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+                    val responseCode = httpCause?.responseCode ?: -1
+                    Log.w("USMAN_PLAYBACK", "HTTP error $responseCode for URI: $uri")
+
+                    // Guard against infinite loop for the same failed URI
+                    if (uri != null && uri == lastFailedUri) {
+                        failureCountForUri++
+                        if (failureCountForUri >= 2) {
+                            Log.e("USMAN_PLAYBACK", "Aborting ExoPlayer retry loop for permanently failing URI: $uri")
+                            player.playWhenReady = false
+                            return
+                        }
+                    } else {
+                        lastFailedUri = uri
+                        failureCountForUri = 1
+                    }
+
+                    // Recovery attempt: If 403 Forbidden on JioSaavn CDN quality URL (e.g. 320kbps), downgrade quality
+                    if (uri != null && responseCode == 403) {
+                        val uriStr = uri.toString()
+                        val fallbackUriStr = when {
+                            uriStr.contains("_320.mp4") -> uriStr.replace("_320.mp4", "_160.mp4")
+                            uriStr.contains("_160.mp4") -> uriStr.replace("_160.mp4", "_96.mp4")
+                            uriStr.startsWith("http://") -> uriStr.replace("http://", "https://")
+                            else -> null
+                        }
+
+                        if (fallbackUriStr != null && fallbackUriStr != uriStr) {
+                            Log.w("USMAN_PLAYBACK", "Retrying 403 with quality fallback: $fallbackUriStr")
+                            val newMediaItem = currentItem.buildUpon().setUri(Uri.parse(fallbackUriStr)).build()
+                            player.setMediaItem(newMediaItem)
+                            player.prepare()
+                            player.play()
+                            return
+                        }
+                    }
+
+                    // If cannot recover at service level, stop playWhenReady so we don't spam errors
+                    player.playWhenReady = false
+                    return
+                }
+
+                if (isCodecError) {
+                    try {
+                        val currentPos = player.currentPosition
+                        val shouldPlayWhenReady = player.playWhenReady
+                        player.prepare()
+                        if (currentPos > 0) {
+                            player.seekTo(currentPos)
+                        }
+                        if (shouldPlayWhenReady) {
+                            player.play()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("USMAN_PLAYBACK", "Error recovering from codec error", e)
+                    }
                 }
             }
         })

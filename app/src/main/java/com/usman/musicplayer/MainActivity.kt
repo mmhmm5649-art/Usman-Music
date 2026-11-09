@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -58,6 +59,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import coil.Coil
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -227,6 +231,21 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
             }
             multiplePermissionsLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    // Preload current song's album artwork into AlbumArtworkCache so Now Playing has instant blurred background on first tap
+    LaunchedEffect(uiState.currentSong?.id, uiState.currentSong?.albumArtUri, uiState.currentSong?.filePath) {
+        val song = uiState.currentSong
+        if (song != null) {
+            com.usman.musicplayer.data.AlbumArtworkCache.loadArtwork(
+                context = context,
+                songId = song.id,
+                albumArtUri = song.albumArtUri,
+                filePath = song.filePath,
+                targetWidth = 512,
+                targetHeight = 512
+            )
         }
     }
 
@@ -435,7 +454,10 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     .padding(bottom = 8.dp)
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 680.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (uiState.currentSong != null) {
@@ -494,6 +516,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             NowPlayingScreen(
                 uiState = uiState,
                 playbackProgress = playbackProgress,
+                isExpanded = isNowPlayingExpanded,
                 onBackClick = { isNowPlayingExpanded = false },
                 onPlayPauseToggle = { viewModel.togglePlayPause() },
                 onSkipNext = { viewModel.skipToNext() },

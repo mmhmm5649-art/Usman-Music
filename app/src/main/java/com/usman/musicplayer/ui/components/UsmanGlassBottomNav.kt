@@ -7,9 +7,13 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,7 +44,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,7 +90,9 @@ fun UsmanGlassBottomNav(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
+            .widthIn(max = 640.dp)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center
     ) {
         LiquidGlassPanel(
             modifier = Modifier
@@ -174,21 +182,39 @@ private fun NavTabItem(
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    var isFocused by remember { mutableStateOf(false) }
+
+    val focusScale by animateFloatAsState(
+        targetValue = if (isFocused) 1.08f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "tabFocusScale"
+    )
 
     val iconColor by animateColorAsState(
-        targetValue = if (isSelected) TextPrimary else TextSecondary,
+        targetValue = if (isSelected || isFocused) TextPrimary else TextSecondary,
         animationSpec = spring(stiffness = Spring.StiffnessMedium),
         label = "iconColor"
     )
 
     Box(
         modifier = modifier
+            .graphicsLayer {
+                scaleX = focusScale
+                scaleY = focusScale
+            }
+            .onFocusChanged { isFocused = it.isFocused }
+            .border(
+                width = if (isFocused) 1.5.dp else 0.dp,
+                color = if (isFocused) Color.White.copy(alpha = 0.85f) else Color.Transparent,
+                shape = RoundedCornerShape(20.dp)
+            )
             .clip(RoundedCornerShape(20.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
             )
+            .focusable()
             .testTag("nav_item_${destination.route}"),
         contentAlignment = Alignment.Center
     ) {
@@ -207,7 +233,7 @@ private fun NavTabItem(
                 text = destination.title,
                 color = iconColor,
                 fontSize = 11.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
             )
         }
     }

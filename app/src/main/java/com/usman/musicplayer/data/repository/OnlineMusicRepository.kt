@@ -214,7 +214,10 @@ object OnlineMusicRepository {
             ?.replace("60x60bb", "600x600bb")
             ?: dto.artworkUrl60
 
-        val hasPreview = !dto.previewUrl.isNullOrBlank()
+        val securePreviewUrl = dto.previewUrl?.takeIf { it.isNotBlank() }?.let {
+            if (it.startsWith("http://")) it.replace("http://", "https://") else it
+        }
+        val hasPreview = !securePreviewUrl.isNullOrBlank()
         val duration = if (hasPreview) {
             // Official preview streams are 30 seconds (30,000ms)
             30_000L
@@ -228,10 +231,10 @@ object OnlineMusicRepository {
             artist = dto.artistName ?: "Unknown Artist",
             album = dto.collectionName ?: "Single",
             durationMs = duration,
-            filePath = dto.previewUrl ?: "",
+            filePath = securePreviewUrl ?: "",
             folderName = "iTunes Discovery",
             albumArtUri = highResArt,
-            contentUriString = dto.previewUrl,
+            contentUriString = securePreviewUrl,
             mimeType = "audio/mp4",
             sizeBytes = 0L,
             isFavorite = false,

@@ -381,41 +381,86 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         }
 
                         private var lastFailedSongId: Long? = null
+                        private var retryCountForSong = 0
 
                         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                            Log.e("MusicPlayerViewModel", "MediaCodec / Playback error: ${error.message} (Code: ${error.errorCode})", error)
+                            Log.e("MusicPlayerViewModel", "Playback error: ${error.message} (Code: ${error.errorCode})", error)
                             
                             val state = _uiState.value
                             val currentSong = state.currentSong
                             
-                            // If it's a 403 Forbidden error, it likely means the stream URL has expired.
-                            // We attempt to re-resolve the URL once.
-                            if (currentSong != null && currentSong.isOnline && 
-                                (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || 
-                                 error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED) &&
-                                lastFailedSongId != currentSong.id
-                            ) {
-                                Log.d("MusicPlayerViewModel", "Detected potential expired stream for ${currentSong.title}. Attempting re-resolution...")
-                                lastFailedSongId = currentSong.id
-                                
-                                viewModelScope.launch {
-                                    val streamResult = musicRepository.getStreamUrl(currentSong)
-                                    if (streamResult.isSuccess) {
-                                        val newUrl = streamResult.getOrNull()
-                                        if (!newUrl.isNullOrBlank()) {
-                                            Log.d("MusicPlayerViewModel", "Re-resolved stream URL successfully. Retrying playback...")
-                                            val updatedSong = currentSong.copy(contentUriString = newUrl, filePath = newUrl)
-                                            _uiState.update { it.copy(currentSong = updatedSong) }
-                                            
-                                            controller.setMediaItem(createMediaItem(updatedSong))
+                            val isHttpError = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                                    error.cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 
+                            if (currentSong != null && currentSong.isOnline && isHttpError) {
+                                if (lastFailedSongId != currentSong.id) {
+                                    lastFailedSongId = currentSong.id
+                                    retryCountForSong = 1
+                                } else {
+                                    retryCountForSong++
+                                }
+
+                                if (retryCountForSong <= 2) {
+                                    Log.d("MusicPlayerViewModel", "Detected potential expired/403 stream for ${currentSong.title}. Attempting fresh re-resolution (attempt $retryCountForSong)...")
+                                    
+                                    viewModelScope.launch {
+                                        // Pass copy with contentUriString = null so it actually contacts the provider for a fresh URL
+                                        // rather than returning the existing failed cached URL!
+                                        val songToResolve = currentSong.copy(contentUriString = null)
+                                        val streamResult = musicRepository.getStreamUrl(songToResolve)
+                                        if (streamResult.isSuccess) {
+                                            var newUrl = streamResult.getOrNull()
+                                            if (!newUrl.isNullOrBlank()) {
+                                                // If same 320kbps URL is returned and already failed with 403, try 160kbps
+                                                if (newUrl == currentSong.contentUriString && newUrl.contains("_320.mp4")) {
+                                                    newUrl = newUrl.replace("_320.mp4", "_160.mp4")
+                                                }
+                                                if (newUrl != currentSong.contentUriString) {
+                                                    Log.d("MusicPlayerViewModel", "Re-resolved new stream URL: $newUrl. Retrying playback...")
+                                                    val updatedSong = currentSong.copy(contentUriString = newUrl)
+                                                    _uiState.update { it.copy(currentSong = updatedSong) }
+                                                    
+                                                    controller.setMediaItem(createMediaItem(updatedSong))
+                                                    controller.prepare()
+                                                    controller.play()
+                                                    return@launch
+                                                }
+                                            }
+                                        }
+
+                                        // Re-resolution failed or returned same failed URL -> Skip to next track smoothly!
+                                        Log.w("MusicPlayerViewModel", "Stream re-resolution failed for '${currentSong.title}'. Skipping to next track in queue...")
+                                        _uiState.update { 
+                                            it.copy(
+                                                onlineSearchError = "Stream unavailable for \"${currentSong.title}\". Playing next track..."
+                                            ) 
+                                        }
+                                        if (controller.hasNextMediaItem()) {
+                                            controller.seekToNextMediaItem()
                                             controller.prepare()
                                             controller.play()
-                                            return@launch
+                                        } else {
+                                            skipToNext()
                                         }
                                     }
-                                    Log.e("MusicPlayerViewModel", "Re-resolution failed for ${currentSong.title}")
-                                    _uiState.update { it.copy(isPlaying = false) }
+                                    return
+                                } else {
+                                    // Max retries reached for this song -> Skip to next track
+                                    Log.w("MusicPlayerViewModel", "Max retries reached for '${currentSong.title}'. Skipping...")
+                                    _uiState.update { 
+                                        it.copy(
+                                            onlineSearchError = "Stream unavailable for \"${currentSong.title}\""
+                                        ) 
+                                    }
+                                    if (controller.hasNextMediaItem()) {
+                                        controller.seekToNextMediaItem()
+                                        controller.prepare()
+                                        controller.play()
+                                    } else {
+                                        skipToNext()
+                                    }
+                                    return
                                 }
                             } else {
                                 _uiState.update { it.copy(isPlaying = false) }
@@ -951,10 +996,24 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         if (controller.isPlaying) {
             controller.pause()
             _uiState.update { it.copy(isPlaying = false) }
+            _playbackProgress.update {
+                it.copy(
+                    isPlaying = false,
+                    currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
+                )
+            }
             AudioSpectrumManager.clearSpectrum()
         } else {
             controller.play()
             _uiState.update { it.copy(isPlaying = true) }
+            _playbackProgress.update {
+                it.copy(
+                    isPlaying = true,
+                    currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
+                )
+            }
             startProgressTracker()
             val sId = UsmanPlaybackService.currentAudioSessionId
             if (sId > 0) {
@@ -1002,8 +1061,15 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun seekTo(positionMs: Long) {
-        mediaController?.seekTo(positionMs.coerceAtLeast(0L))
-        _uiState.update { it.copy(currentPositionMs = positionMs) }
+        val validPos = positionMs.coerceAtLeast(0L)
+        mediaController?.seekTo(validPos)
+        _uiState.update { it.copy(currentPositionMs = validPos) }
+        _playbackProgress.update {
+            it.copy(
+                currentPositionMs = validPos,
+                updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
+            )
+        }
     }
 
     fun toggleShuffle() {
@@ -1210,17 +1276,23 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         currentPositionMs = currentPos.coerceAtLeast(0L),
                         durationMs = duration.coerceAtLeast(0L),
                         bufferedPositionMs = buffered.coerceAtLeast(0L),
-                        isPlaying = isPlaying
+                        isPlaying = isPlaying,
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
                     )
                 }
 
-                delay(250)
+                delay(50)
             }
         }
     }
 
     private fun createMediaItem(s: Song): MediaItem {
-        val uriString = s.contentUriString?.takeIf { it.isNotBlank() } ?: s.filePath
+        val rawUriString = s.contentUriString?.takeIf { it.isNotBlank() } ?: s.filePath
+        val uriString = if (s.isOnline && rawUriString.startsWith("http://")) {
+            rawUriString.replace("http://", "https://")
+        } else {
+            rawUriString
+        }
         val uri = when {
             uriString.startsWith("content://") || uriString.startsWith("http://") || uriString.startsWith("https://") -> Uri.parse(uriString)
             else -> Uri.parse("file://$uriString")

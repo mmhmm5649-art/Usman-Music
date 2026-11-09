@@ -104,10 +104,12 @@ class JioSaavnMusicProvider(
                 return@withContext Result.success(cachedUrl)
             }
 
-            val songId = song.filePath ?: run {
-                Log.e(TAG, "[Stage 4] Missing song ID (filePath) for '${song.title}'")
-                return@withContext Result.failure(Exception("Missing song ID for stream resolution"))
-            }
+            val songId = song.filePath.takeIf { !it.isNullOrBlank() && !it.startsWith("http") }
+                ?: song.id.toString().takeIf { it.isNotBlank() && it != "0" }
+                ?: run {
+                    Log.e(TAG, "[Stage 4] Missing valid song ID for '${song.title}'")
+                    return@withContext Result.failure(Exception("Missing song ID for stream resolution"))
+                }
 
             // Strategy 1: Resolve stream via public API details endpoint (/api/songs/{id})
             for (baseUrl in publicApiBases) {
@@ -169,11 +171,16 @@ class JioSaavnMusicProvider(
                 }
 
                 val decryptedUrl = JioSaavnDecryptor.decryptUrl(encryptedUrl) ?: mediaUrl
+                val finalUrl = if (decryptedUrl?.startsWith("http://") == true) {
+                    decryptedUrl.replace("http://", "https://")
+                } else {
+                    decryptedUrl
+                }
 
-                if (!decryptedUrl.isNullOrBlank()) {
-                    val sanitizedHost = runCatching { Uri.parse(decryptedUrl).host }.getOrNull() ?: "unknown"
-                    Log.d(TAG, "[Stage 4] Stream resolution success for '${song.title}', host: $sanitizedHost, URL: $decryptedUrl")
-                    Result.success(decryptedUrl)
+                if (!finalUrl.isNullOrBlank()) {
+                    val sanitizedHost = runCatching { Uri.parse(finalUrl).host }.getOrNull() ?: "unknown"
+                    Log.d(TAG, "[Stage 4] Stream resolution success for '${song.title}', host: $sanitizedHost, URL: $finalUrl")
+                    Result.success(finalUrl)
                 } else {
                     val errorMsg = "Failed to decrypt or resolve stream URL for '${song.title}'. Encrypted: ${encryptedUrl?.take(20)}, Media: ${mediaUrl?.take(20)}"
                     Log.e(TAG, errorMsg)
@@ -308,8 +315,14 @@ class JioSaavnMusicProvider(
             mediaUrl ?: moreInfo?.get("media_url")?.toString()
         }
 
-        if (!searchDecryptedUrl.isNullOrBlank()) {
-            val sanitizedHost = runCatching { Uri.parse(searchDecryptedUrl).host }.getOrNull() ?: "unknown"
+        val finalSearchUrl = if (searchDecryptedUrl?.startsWith("http://") == true) {
+            searchDecryptedUrl.replace("http://", "https://")
+        } else {
+            searchDecryptedUrl
+        }
+
+        if (!finalSearchUrl.isNullOrBlank()) {
+            val sanitizedHost = runCatching { Uri.parse(finalSearchUrl).host }.getOrNull() ?: "unknown"
             Log.d(TAG, "[Search Parse] Pre-resolved stream URL for '$titleName', host: $sanitizedHost")
         }
 
@@ -322,7 +335,7 @@ class JioSaavnMusicProvider(
             filePath = songIdStr,
             folderName = "JioSaavn",
             albumArtUri = artwork,
-            contentUriString = searchDecryptedUrl,
+            contentUriString = finalSearchUrl,
             isOnline = true,
             playbackType = PlaybackType.FULL,
             externalUrl = permaUrl,
@@ -509,7 +522,9 @@ class JioSaavnMusicProvider(
 
     private fun extractHighestQualityUrl(downloadUrl: Any?): String? {
         if (downloadUrl == null) return null
-        if (downloadUrl is String && downloadUrl.isNotBlank()) return downloadUrl
+        if (downloadUrl is String && downloadUrl.isNotBlank()) {
+            return if (downloadUrl.startsWith("http://")) downloadUrl.replace("http://", "https://") else downloadUrl
+        }
         if (downloadUrl is List<*>) {
             // Check qualities in preference order: 320kbps -> 160kbps -> 96kbps -> 48kbps -> 12kbps
             val preferredQualities = listOf("320kbps", "160kbps", "96kbps", "48kbps", "12kbps")
@@ -518,7 +533,9 @@ class JioSaavnMusicProvider(
                     if (item is Map<*, *>) {
                         if (item["quality"] == q) {
                             val url = item["url"]?.toString()
-                            if (!url.isNullOrBlank()) return url
+                            if (!url.isNullOrBlank()) {
+                                return if (url.startsWith("http://")) url.replace("http://", "https://") else url
+                            }
                         }
                     }
                 }
@@ -527,10 +544,22 @@ class JioSaavnMusicProvider(
             val lastItem = downloadUrl.lastOrNull()
             if (lastItem is Map<*, *>) {
                 val url = lastItem["url"]?.toString()
-                if (!url.isNullOrBlank()) return url
+                if (!url.isNullOrBlank()) {
+                    return if (url.startsWith("http://")) url.replace("http://", "https://") else url
+                }
             }
         }
         return null
+    }
+
+    fun getFallbackQualityUrl(currentUrl: String): String? {
+        return when {
+            currentUrl.contains("_320.mp4") -> currentUrl.replace("_320.mp4", "_160.mp4")
+            currentUrl.contains("_160.mp4") -> currentUrl.replace("_160.mp4", "_96.mp4")
+            currentUrl.contains("_96.mp4") -> currentUrl.replace("_96.mp4", "_48.mp4")
+            currentUrl.startsWith("http://") -> currentUrl.replace("http://", "https://")
+            else -> null
+        }
     }
 }
 

@@ -44,7 +44,9 @@ import kotlin.math.sin
 fun RainbowAudioVisualizer(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
-    height: Dp = 80.dp
+    height: Dp = 80.dp,
+    showGlow: Boolean = true,
+    showReflection: Boolean = true
 ) {
     // Collect real-time FFT spectrum data from AudioSpectrumManager (64 bins)
     val spectrumData by AudioSpectrumManager.spectrumFlow.collectAsState()
@@ -162,13 +164,15 @@ fun RainbowAudioVisualizer(
                 val barHalfHeight = maxBarHeight * combinedMagnitude
 
                 // 3a. Soft outer glow behind the bar
-                drawLine(
-                    color = barColor.copy(alpha = (0.28f * currentActive * pulseGlow).coerceIn(0.1f, 0.38f)),
-                    start = Offset(x, midY - barHalfHeight * 1.15f),
-                    end = Offset(x, midY + 1f),
-                    strokeWidth = barWidth * 2.8f,
-                    cap = StrokeCap.Round
-                )
+                if (showGlow) {
+                    drawLine(
+                        color = barColor.copy(alpha = (0.28f * currentActive * pulseGlow).coerceIn(0.1f, 0.38f)),
+                        start = Offset(x, midY - barHalfHeight * 1.15f),
+                        end = Offset(x, midY + 1f),
+                        strokeWidth = barWidth * 2.8f,
+                        cap = StrokeCap.Round
+                    )
+                }
 
                 // 3. Draw upper vertical frequency bar
                 drawLine(
@@ -179,36 +183,41 @@ fun RainbowAudioVisualizer(
                     cap = StrokeCap.Round
                 )
 
-                // 4. Draw reflective glowing mirror (Simplified to solid color with alpha gradient to avoid allocations)
-                val reflectHeight = barHalfHeight * 0.65f
-                val topAlpha = (0.35f * currentActive * pulseGlow).coerceIn(0f, 0.45f)
-                
-                // Reflection - Draw 3 segments with decreasing alpha to simulate gradient without allocating Brush
-                // This is much faster than Brush.verticalGradient in a loop
-                drawLine(
-                    color = barColor.copy(alpha = topAlpha),
-                    start = Offset(x, midY + 1f),
-                    end = Offset(x, midY + reflectHeight * 0.5f),
-                    strokeWidth = barWidth,
-                    cap = StrokeCap.Round
-                )
-                drawLine(
-                    color = barColor.copy(alpha = topAlpha * 0.4f),
-                    start = Offset(x, midY + reflectHeight * 0.5f),
-                    end = Offset(x, midY + reflectHeight),
-                    strokeWidth = barWidth,
-                    cap = StrokeCap.Round
-                )
+                // 4. Draw reflective glowing mirror (only if showReflection is enabled)
+                if (showReflection) {
+                    val reflectHeight = barHalfHeight * 0.65f
+                    val topAlpha = (0.35f * currentActive * pulseGlow).coerceIn(0f, 0.45f)
+                    
+                    drawLine(
+                        color = barColor.copy(alpha = topAlpha),
+                        start = Offset(x, midY + 1f),
+                        end = Offset(x, midY + reflectHeight * 0.5f),
+                        strokeWidth = barWidth,
+                        cap = StrokeCap.Round
+                    )
+                    drawLine(
+                        color = barColor.copy(alpha = topAlpha * 0.4f),
+                        start = Offset(x, midY + reflectHeight * 0.5f),
+                        end = Offset(x, midY + reflectHeight),
+                        strokeWidth = barWidth,
+                        cap = StrokeCap.Round
+                    )
+                }
             }
 
-            // Glowing baseline spanning the entire width (One allocation per frame is acceptable)
+            // Baseline spanning the entire width (flat and clean when showGlow is false)
             val horizonBrush = Brush.horizontalGradient(rainbowColors)
+            val baseAlpha = if (showGlow) {
+                (0.40f * currentActive * pulseGlow).coerceIn(0.08f, 0.50f)
+            } else {
+                (0.25f * currentActive).coerceIn(0.05f, 0.35f)
+            }
             drawLine(
                 brush = horizonBrush,
                 start = Offset(0f, midY),
                 end = Offset(canvasWidth, midY),
-                strokeWidth = 1.5f,
-                alpha = (0.40f * currentActive * pulseGlow).coerceIn(0.08f, 0.50f)
+                strokeWidth = if (showGlow) 1.5f else 1.0f,
+                alpha = baseAlpha
             )
         }
     }

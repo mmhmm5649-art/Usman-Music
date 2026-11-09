@@ -1,8 +1,13 @@
 package com.usman.musicplayer.ui.components
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,13 +29,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -61,16 +72,34 @@ fun CompactNowPlayingBar(
         if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
     }
 
+    var isBarFocused by remember { mutableStateOf(false) }
+    val barScale by animateFloatAsState(
+        targetValue = if (isBarFocused) 1.025f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "miniPlayerFocusScale"
+    )
+
+    var isPrevFocused by remember { mutableStateOf(false) }
+    var isPlayFocused by remember { mutableStateOf(false) }
+    var isNextFocused by remember { mutableStateOf(false) }
+
     LiquidGlassPanel(
         modifier = modifier
             .fillMaxWidth()
+            .widthIn(max = 640.dp)
+            .graphicsLayer {
+                scaleX = barScale
+                scaleY = barScale
+            }
             .shadow(elevation = 18.dp, shape = RoundedCornerShape(22.dp), spotColor = Color(0x73000000))
+            .onFocusChanged { isBarFocused = it.isFocused }
             .clickable(onClick = onBarClick)
+            .focusable()
             .testTag("compact_now_playing_bar"),
         shape = RoundedCornerShape(22.dp),
-        borderBrush = LiquidGlassBorderBrush,
+        borderBrush = if (isBarFocused) Brush.linearGradient(listOf(Color.White, Color(0xAAFFFFFF))) else LiquidGlassBorderBrush,
         backgroundColor = Color(0x38121626),
-        borderWidth = 1.dp,
+        borderWidth = if (isBarFocused) 2.dp else 1.dp,
         hazeState = hazeState,
         hazeBlurRadius = 24.dp
     ) {
@@ -158,30 +187,50 @@ fun CompactNowPlayingBar(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Previous Button with >= 48dp touch target
-                IconButton(
-                    onClick = onSkipPrevious,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("compact_prev_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.SkipPrevious,
-                        contentDescription = "Previous Track",
-                        tint = TextPrimary.copy(alpha = 0.92f),
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(2.dp))
-
-                // Floating Play/Pause Glass Orb Button with subtle specular reflection
+                // Previous Button with TV D-pad focus support
                 Box(
                     modifier = Modifier
                         .size(44.dp)
+                        .onFocusChanged { isPrevFocused = it.isFocused }
+                        .border(
+                            width = if (isPrevFocused) 1.5.dp else 0.dp,
+                            color = if (isPrevFocused) Color.White else Color.Transparent,
+                            shape = CircleShape
+                        )
+                        .clip(CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    IconButton(
+                        onClick = onSkipPrevious,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("compact_prev_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = "Previous Track",
+                            tint = if (isPrevFocused) Color.White else TextPrimary.copy(alpha = 0.92f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(4.dp))
+
+                // Floating Play/Pause Glass Orb Button with TV focus indicator
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .onFocusChanged { isPlayFocused = it.isFocused }
+                        .border(
+                            width = if (isPlayFocused) 2.dp else 0.dp,
+                            color = if (isPlayFocused) Color.White else Color.Transparent,
+                            shape = CircleShape
+                        )
                         .clip(CircleShape)
                         .background(PlayPauseButtonBrush)
                         .clickable(onClick = onPlayPauseToggle)
+                        .focusable()
                         .testTag("compact_play_pause_button"),
                     contentAlignment = Alignment.Center
                 ) {
@@ -193,21 +242,34 @@ fun CompactNowPlayingBar(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(2.dp))
+                Spacer(modifier = Modifier.width(4.dp))
 
-                // Next Button with >= 48dp touch target
-                IconButton(
-                    onClick = onSkipNext,
+                // Next Button with TV D-pad focus support
+                Box(
                     modifier = Modifier
                         .size(44.dp)
-                        .testTag("compact_next_button")
+                        .onFocusChanged { isNextFocused = it.isFocused }
+                        .border(
+                            width = if (isNextFocused) 1.5.dp else 0.dp,
+                            color = if (isNextFocused) Color.White else Color.Transparent,
+                            shape = CircleShape
+                        )
+                        .clip(CircleShape),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.SkipNext,
-                        contentDescription = "Next Track",
-                        tint = TextPrimary.copy(alpha = 0.92f),
-                        modifier = Modifier.size(22.dp)
-                    )
+                    IconButton(
+                        onClick = onSkipNext,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("compact_next_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = "Next Track",
+                            tint = if (isNextFocused) Color.White else TextPrimary.copy(alpha = 0.92f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }
