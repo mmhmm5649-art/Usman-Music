@@ -150,4 +150,60 @@ class LyricsParserTest {
         assertFalse(emptyParsed.isSynchronized)
         assertTrue(emptyParsed.lines.isEmpty())
     }
+
+    @Test
+    fun testRapidTransitionsAndConsecutiveShortTimestamps() {
+        val rapidLrc = """
+            [00:01.00]Word 1
+            [00:01.40]Word 2
+            [00:01.90]Word 3
+            [00:02.30]Word 4
+            [00:02.80]Word 5
+        """.trimIndent()
+
+        val parsed = LyricsParser.parse(rapidLrc)
+        val lines = parsed.lines
+        assertEquals(5, lines.size)
+
+        // At 1200ms -> Line 0
+        assertEquals(0, LyricsParser.findActiveIndex(lines, 1200L))
+        // At 1400ms -> Line 1
+        assertEquals(1, LyricsParser.findActiveIndex(lines, 1400L))
+        // At 1600ms -> Line 1
+        assertEquals(1, LyricsParser.findActiveIndex(lines, 1600L))
+        // At 1900ms -> Line 2
+        assertEquals(2, LyricsParser.findActiveIndex(lines, 1900L))
+        // At 2350ms -> Line 3
+        assertEquals(3, LyricsParser.findActiveIndex(lines, 2350L))
+        // At 3000ms -> Line 4
+        assertEquals(4, LyricsParser.findActiveIndex(lines, 3000L))
+    }
+
+    @Test
+    fun testStrictlySingleActiveLineConstraint() {
+        val lrc = """
+            [00:05.00]Line 0
+            [00:10.00]Line 1
+            [00:15.00]Line 2
+            [00:20.00]Line 3
+            [00:30.00]Line 4
+        """.trimIndent()
+
+        val parsed = LyricsParser.parse(lrc)
+        val lines = parsed.lines
+
+        // Sweep from 0 to 40,000ms in 250ms steps:
+        // Confirm findActiveIndex ALWAYS produces a valid single index (or -1 if empty)
+        for (ms in 0L..40000L step 250L) {
+            val activeIdx = LyricsParser.findActiveIndex(lines, ms)
+            assertTrue(
+                "Active index at ${ms}ms must be between 0 and ${lines.size - 1}, but was $activeIdx",
+                activeIdx in lines.indices
+            )
+
+            // Verify that evaluating line.id == activeIdx is true for EXACTLY ONE line
+            val activeCount = lines.count { it.id == activeIdx }
+            assertEquals("Exactly one line must be active at ${ms}ms", 1, activeCount)
+        }
+    }
 }

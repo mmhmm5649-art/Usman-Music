@@ -46,6 +46,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import com.usman.musicplayer.data.repository.LocalSearchIndexer
+import com.usman.musicplayer.data.repository.LocalMusicProvider
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -89,6 +92,13 @@ data class MusicPlayerUiState(
     val selectedArtistFilter: String? = null,
     val selectedFolderFilter: String? = null,
 
+    // Device Local Music Search Results (Off-UI-Thread Indexed)
+    val deviceMatchingSongs: List<Song> = emptyList(),
+    val deviceMatchingAlbums: List<Album> = emptyList(),
+    val deviceMatchingArtists: List<Artist> = emptyList(),
+    val deviceMatchingFolders: List<MusicFolder> = emptyList(),
+    val isLocalSearching: Boolean = false,
+
     // Online Global Music Discovery & Search State
     val searchSource: SearchSource = SearchSource.ONLINE,
     val onlineSearchResults: List<Song> = emptyList(),
@@ -128,6 +138,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val playlistRepository = PlaylistRepository(application)
     private val musicRepository = UnifiedMusicRepository(application)
     private val downloadManager = SongDownloadManager(application)
+    val localSearchIndexer = LocalSearchIndexer()
+    private val searchQueryStateFlow = MutableStateFlow("")
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchExecutionJob: Job? = null
@@ -152,6 +164,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         observePlaylists()
         observeDownloads()
         updateProviderStates()
+        setupSearchPipeline()
     }
 
     private fun observeDownloads() {
@@ -711,9 +724,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun setSearchSource(source: SearchSource) {
         _uiState.update { it.copy(searchSource = source) }
-        if (source == SearchSource.ONLINE && _uiState.value.searchQuery.isNotBlank()) {
-            searchOnline(_uiState.value.searchQuery)
-        }
+        executeSearch(_uiState.value.searchQuery)
     }
 
     fun searchOnline(query: String, debounceMs: Long = 300L) {
@@ -816,11 +827,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 .distinctBy { if (it.contentUriString != null) it.contentUriString else it.filePath }
                 .sortedBy { it.title.lowercase() }
 
-            // Move heavy extraction to background thread to prevent UI freeze
+            // Move heavy extraction and indexing to background thread to prevent UI freeze
             val (albums, artists, folders) = withContext(kotlinx.coroutines.Dispatchers.Default) {
                 val albums = LocalMusicScanner.extractAlbums(allSongs)
                 val artists = LocalMusicScanner.extractArtists(allSongs)
                 val folders = LocalMusicScanner.extractFolders(allSongs, _uiState.value.safFolders)
+                localSearchIndexer.updateIndex(allSongs, albums, artists, folders)
                 Triple(albums, artists, folders)
             }
 
@@ -833,6 +845,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     isScanning = false,
                     currentSong = current.currentSong ?: allSongs.firstOrNull()
                 )
+            }
+
+            if (_uiState.value.searchQuery.isNotBlank()) {
+                executeSearch(_uiState.value.searchQuery)
             }
         }
     }
@@ -1116,11 +1132,55 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private fun setupSearchPipeline() {
+        viewModelScope.launch {
+            searchQueryStateFlow
+                .debounce(150L)
+                .distinctUntilChanged()
+                .collect { query ->
+                    executeSearch(query)
+                }
+        }
+    }
+
+    private fun executeSearch(query: String) {
+        val trimmed = query.trim()
+        val currentSource = _uiState.value.searchSource
+        
+        if (currentSource == SearchSource.DEVICE) {
+            if (trimmed.isEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        deviceMatchingSongs = emptyList(),
+                        deviceMatchingAlbums = emptyList(),
+                        deviceMatchingArtists = emptyList(),
+                        deviceMatchingFolders = emptyList(),
+                        isLocalSearching = false
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(isLocalSearching = true) }
+                viewModelScope.launch {
+                    val results = localSearchIndexer.search(trimmed)
+                    _uiState.update {
+                        it.copy(
+                            deviceMatchingSongs = results.songs,
+                            deviceMatchingAlbums = results.albums,
+                            deviceMatchingArtists = results.artists,
+                            deviceMatchingFolders = results.folders,
+                            isLocalSearching = false
+                        )
+                    }
+                }
+            }
+        } else {
+            searchOnline(trimmed, debounceMs = 0L)
+        }
+    }
+
     fun updateSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
-        if (_uiState.value.searchSource == SearchSource.ONLINE) {
-            searchOnline(query)
-        }
+        searchQueryStateFlow.value = query
     }
 
     fun setLibraryTab(tab: LibraryTab) {

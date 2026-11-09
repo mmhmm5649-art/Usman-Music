@@ -104,43 +104,11 @@ fun SearchScreen(
     val query = uiState.searchQuery
     val isOnlineMode = uiState.searchSource == SearchSource.ONLINE
 
-    // Filter matching device songs, artists, albums, and folders
-    val matchingSongs = remember(query, uiState.songs) {
-        if (query.isBlank()) emptyList()
-        else {
-            val q = query.trim().lowercase()
-            uiState.songs.filter {
-                it.title.lowercase().contains(q) ||
-                it.artist.lowercase().contains(q) ||
-                it.album.lowercase().contains(q) ||
-                it.folderName.lowercase().contains(q)
-            }
-        }
-    }
-
-    val matchingAlbums = remember(query, uiState.albums) {
-        if (query.isBlank()) emptyList()
-        else {
-            val q = query.trim().lowercase()
-            uiState.albums.filter { it.title.lowercase().contains(q) || it.artist.lowercase().contains(q) }
-        }
-    }
-
-    val matchingArtists = remember(query, uiState.artists) {
-        if (query.isBlank()) emptyList()
-        else {
-            val q = query.trim().lowercase()
-            uiState.artists.filter { it.name.lowercase().contains(q) }
-        }
-    }
-
-    val matchingFolders = remember(query, uiState.folders) {
-        if (query.isBlank()) emptyList()
-        else {
-            val q = query.trim().lowercase()
-            uiState.folders.filter { it.name.lowercase().contains(q) || it.path.lowercase().contains(q) }
-        }
-    }
+    // Device matching songs, artists, albums, and folders (off-UI thread indexed)
+    val matchingSongs = uiState.deviceMatchingSongs
+    val matchingAlbums = uiState.deviceMatchingAlbums
+    val matchingArtists = uiState.deviceMatchingArtists
+    val matchingFolders = uiState.deviceMatchingFolders
 
     Box(
         modifier = modifier

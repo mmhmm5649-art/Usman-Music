@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -31,6 +32,10 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
+import java.text.BreakIterator
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -56,6 +61,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1230,25 +1237,22 @@ private fun SynchronizedLyricsView(
         }
     }
 
-    // Position provider passed to items so that only the Draw phase reads the frame clock
-    val positionProvider = remember { { currentFramePositionMs } }
-
-    // Manual scroll tracking state (pause auto-scroll for 4.5s on touch drag)
-    var userManualScrollPauseUntil by remember { mutableFloatStateOf(0f) }
+    // 3. Manual scroll tracking state (pause auto-scroll for 4.5s on touch drag)
     var isManualScrolled by remember { mutableStateOf(false) }
+    var manualScrollPauseUntil by remember { mutableLongStateOf(0L) }
 
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     LaunchedEffect(isDragged) {
         if (isDragged) {
             isManualScrolled = true
-            userManualScrollPauseUntil = (System.currentTimeMillis() + 4500L).toFloat()
+            manualScrollPauseUntil = System.currentTimeMillis() + 4500L
         }
     }
 
-    // Check timer countdown for auto-resuming scroll after 4.5s
+    // Timer to resume auto-scrolling after 4.5s idle
     LaunchedEffect(isManualScrolled) {
         if (isManualScrolled) {
-            while (System.currentTimeMillis() < userManualScrollPauseUntil.toLong()) {
+            while (System.currentTimeMillis() < manualScrollPauseUntil) {
                 delay(200L)
             }
             if (!isDragged) {
@@ -1263,13 +1267,12 @@ private fun SynchronizedLyricsView(
         lastScrolledIndex = -1
     }
 
-    // Smooth auto-scroll to keep current singing line centered
+    // Smooth auto-scroll to keep current singing line centered near middle
     LaunchedEffect(activeIndex, isManualScrolled) {
         if (!isManualScrolled && isSynchronized && activeIndex >= 0 && activeIndex < lines.size) {
-            val scrollTarget = (activeIndex - 1).coerceAtLeast(0)
-            if (scrollTarget != lastScrolledIndex) {
-                lastScrolledIndex = scrollTarget
-                listState.animateScrollToItem(scrollTarget)
+            if (activeIndex != lastScrolledIndex) {
+                lastScrolledIndex = activeIndex
+                listState.animateScrollToItem(activeIndex)
             }
         }
     }
@@ -1379,10 +1382,10 @@ private fun SynchronizedLyricsView(
                             contentPadding = PaddingValues(vertical = 140.dp, horizontal = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(24.dp)
                         ) {
-                            items(lines, key = { it.id }) { line ->
-                                val isActive = isSynchronized && line.id == activeIndex
+                            items(lines, key = { "${it.id}_${it.timestampMs}" }) { line ->
+                                val isActive = isSynchronized && activeIndex >= 0 && line.id == activeIndex
                                 val isPast = isSynchronized && activeIndex >= 0 && line.id < activeIndex
-                                val isFuture = isSynchronized && activeIndex >= 0 && line.id > activeIndex
+                                val isFuture = !isSynchronized || activeIndex < 0 || line.id > activeIndex
 
                                 LyricLineItem(
                                     line = line,
@@ -1390,12 +1393,9 @@ private fun SynchronizedLyricsView(
                                     isPast = isPast,
                                     isFuture = isFuture,
                                     isSynchronized = isSynchronized,
-                                    positionProvider = positionProvider,
+                                    currentFramePositionMs = currentFramePositionMs,
                                     palette = palette,
-                                    onSeekTo = { ts ->
-                                        onSeekTo(ts)
-                                        isManualScrolled = false
-                                    }
+                                    onSeekTo = onSeekTo
                                 )
                             }
                         }
@@ -1584,6 +1584,22 @@ private fun formatMs(ms: Long): String {
     return String.format("%02d:%02d", minutes, seconds)
 }
 
+private fun String.getGraphemes(): List<String> {
+    if (this.isEmpty()) return emptyList()
+    val graphemes = mutableListOf<String>()
+    val iterator = java.text.BreakIterator.getCharacterInstance()
+    iterator.setText(this)
+    var start = iterator.first()
+    var end = iterator.next()
+    while (end != java.text.BreakIterator.DONE) {
+        graphemes.add(this.substring(start, end))
+        start = end
+        end = iterator.next()
+    }
+    return if (graphemes.isNotEmpty()) graphemes else listOf(this)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LyricLineItem(
     line: LyricLine,
@@ -1591,53 +1607,34 @@ private fun LyricLineItem(
     isPast: Boolean,
     isFuture: Boolean,
     isSynchronized: Boolean,
-    positionProvider: () -> Long,
+    currentFramePositionMs: Long,
     palette: AlbumPalette,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 1. Apple Music-style smooth scale animation for active line (1.04x)
     val lineScale by animateFloatAsState(
-        targetValue = if (isActive && isSynchronized) 1.15f else 1.0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "lineScale"
+        targetValue = if (isActive && isSynchronized) 1.04f else 1.0f,
+        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+        label = "lyricScale_${line.id}"
     )
 
-    val lineAlpha by animateFloatAsState(
-        targetValue = when {
-            !isSynchronized -> 0.90f
-            isActive -> 1.0f
-            isPast -> 0.65f
-            else -> 0.35f
-        },
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "lineAlpha"
+    // 2. Active line glow radius
+    val activeGlowRadius by animateFloatAsState(
+        targetValue = if (isActive && isSynchronized) 10f else 0f,
+        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+        label = "lyricGlow_${line.id}"
     )
 
-    val baseTextStyle = remember {
-        androidx.compose.ui.text.TextStyle(
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            lineHeight = 36.sp
+    val shadow = if (activeGlowRadius > 0.5f) {
+        androidx.compose.ui.graphics.Shadow(
+            color = Color.White.copy(alpha = 0.30f),
+            blurRadius = activeGlowRadius,
+            offset = Offset.Zero
         )
+    } else {
+        androidx.compose.ui.graphics.Shadow.None
     }
-
-    val highlightBrush = remember(palette.accent) {
-        Brush.horizontalGradient(
-            colors = listOf(
-                Color.White,
-                palette.accent,
-                Color.White
-            )
-        )
-    }
-
-    var textLayoutResult by remember(line.id) { mutableStateOf<TextLayoutResult?>(null) }
 
     Box(
         modifier = modifier
@@ -1645,117 +1642,112 @@ private fun LyricLineItem(
             .graphicsLayer {
                 scaleX = lineScale
                 scaleY = lineScale
-                alpha = lineAlpha
                 transformOrigin = TransformOrigin(0f, 0.5f)
             }
+            .clip(RoundedCornerShape(12.dp))
             .clickable {
                 if (line.isTimestamped && line.timestampMs >= 0L) {
                     onSeekTo(line.timestampMs)
                 }
             }
-            .padding(vertical = 4.dp, horizontal = 4.dp)
+            .padding(vertical = 6.dp, horizontal = 4.dp)
     ) {
-        // Base layer: Dimmed/Frosted text (Composed once; zero frame-by-frame recomposition)
-        Text(
-            text = line.text,
-            color = Color.White.copy(alpha = if (isActive && isSynchronized) 0.35f else 1.0f),
-            style = baseTextStyle,
-            fontWeight = if (isActive) FontWeight.Bold else if (isFuture || !isSynchronized) FontWeight.SemiBold else FontWeight.Medium,
-            onTextLayout = { result ->
-                if (textLayoutResult == null || textLayoutResult?.size != result.size) {
-                    textLayoutResult = result
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (isSynchronized && line.words.isNotEmpty()) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                line.words.forEach { word ->
+                    val graphemes = word.text.getGraphemes()
+                    val numGraphemes = graphemes.size.coerceAtLeast(1)
 
-        // Active layer: Highlighted sweeping text (Executed purely in Draw phase via GPU clipping)
-        if (isActive && isSynchronized) {
-            Text(
-                text = line.text,
-                style = baseTextStyle.copy(brush = highlightBrush),
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .drawWithContent {
-                        val currentMs = positionProvider()
-                        val lineStart = line.timestampMs
-                        val lineDuration = line.durationMs.coerceAtLeast(300L)
-                        val progress = ((currentMs - lineStart).toFloat() / lineDuration.toFloat()).coerceIn(0f, 1f)
-
-                        if (progress <= 0f) return@drawWithContent
-                        if (progress >= 1f) {
-                            drawContent()
-                            return@drawWithContent
+                    val wordProgress = when {
+                        !isActive -> if (isPast) 1.0f else 0.0f
+                        currentFramePositionMs >= word.endMs -> 1.0f
+                        currentFramePositionMs < word.startMs -> 0.0f
+                        else -> {
+                            val span = (word.endMs - word.startMs).toFloat().coerceAtLeast(1f)
+                            ((currentFramePositionMs - word.startMs).toFloat() / span).coerceIn(0f, 1f)
                         }
+                    }
 
-                        val layout = textLayoutResult
-                        if (layout != null) {
-                            val lineCount = layout.lineCount
-                            val totalChars = line.text.length
-                            val charOffset = if (line.words.isNotEmpty()) {
-                                var count = 0
-                                for (w in line.words) {
-                                    if (currentMs >= w.endMs) {
-                                        count += w.text.length + 1
-                                    } else if (currentMs >= w.startMs) {
-                                        val wDur = (w.endMs - w.startMs).coerceAtLeast(80L)
-                                        val wProg = ((currentMs - w.startMs).toFloat() / wDur.toFloat()).coerceIn(0f, 1f)
-                                        count += (w.text.length * wProg).toInt()
-                                        break
-                                    } else {
-                                        break
-                                    }
-                                }
-                                count.coerceIn(0, totalChars)
-                            } else {
-                                (totalChars * progress).toInt().coerceIn(0, totalChars)
+                    val annotatedWord = buildAnnotatedString {
+                        graphemes.forEachIndexed { i, grapheme ->
+                            val gStart = i.toFloat() / numGraphemes
+                            val gEnd = (i + 1).toFloat() / numGraphemes
+
+                            val gProgress = when {
+                                wordProgress >= gEnd -> 1.0f
+                                wordProgress <= gStart -> 0.0f
+                                else -> ((wordProgress - gStart) / (gEnd - gStart)).coerceIn(0f, 1f)
                             }
 
-                            if (lineCount > 1) {
-                                val activeLineIdx = layout.getLineForOffset(charOffset)
-                                for (i in 0 until activeLineIdx) {
-                                    clipRect(
-                                        left = layout.getLineLeft(i),
-                                        top = layout.getLineTop(i),
-                                        right = layout.getLineRight(i),
-                                        bottom = layout.getLineBottom(i)
-                                    ) {
-                                        this@drawWithContent.drawContent()
-                                    }
-                                }
-                                val currentSweepX = layout.getHorizontalPosition(charOffset, true)
-                                clipRect(
-                                    left = layout.getLineLeft(activeLineIdx),
-                                    top = layout.getLineTop(activeLineIdx),
-                                    right = currentSweepX,
-                                    bottom = layout.getLineBottom(activeLineIdx)
-                                ) {
-                                    this@drawWithContent.drawContent()
-                                }
-                            } else {
-                                val sweepX = layout.getHorizontalPosition(charOffset, true)
-                                clipRect(
-                                    left = 0f,
-                                    top = -10f,
-                                    right = sweepX,
-                                    bottom = size.height + 10f
-                                ) {
-                                    this@drawWithContent.drawContent()
+                            val gColor = when {
+                                !isSynchronized -> Color.White.copy(alpha = 0.88f)
+                                isPast -> Color.White.copy(alpha = 0.70f)
+                                isFuture -> Color.White.copy(alpha = 0.40f)
+                                else -> {
+                                    // Active line: grapheme-by-grapheme progress lerp (unsung grey -> bright white)
+                                    androidx.compose.ui.graphics.lerp(
+                                        start = Color.White.copy(alpha = 0.40f),
+                                        stop = Color.White,
+                                        fraction = gProgress
+                                    )
                                 }
                             }
-                        } else {
-                            val sweepX = size.width * progress
-                            clipRect(
-                                left = 0f,
-                                top = -10f,
-                                right = sweepX,
-                                bottom = size.height + 10f
+
+                            val gWeight = if (isActive && gProgress > 0f) FontWeight.Bold else FontWeight.SemiBold
+                            val gGlow = if (isActive && gProgress > 0.05f) {
+                                androidx.compose.ui.graphics.Shadow(
+                                    color = Color.White.copy(alpha = 0.35f * gProgress),
+                                    blurRadius = 8f * gProgress,
+                                    offset = Offset.Zero
+                                )
+                            } else androidx.compose.ui.graphics.Shadow.None
+
+                            withStyle(
+                                style = SpanStyle(
+                                    color = gColor,
+                                    fontWeight = gWeight,
+                                    shadow = gGlow
+                                )
                             ) {
-                                this@drawWithContent.drawContent()
+                                append(grapheme)
                             }
                         }
                     }
+
+                    Text(
+                        text = annotatedWord,
+                        fontSize = 24.sp,
+                        lineHeight = 36.sp
+                    )
+                }
+            }
+        } else {
+            // Unsynchronized / plain text fallback line
+            val targetTextColor = when {
+                !isSynchronized -> Color.White.copy(alpha = 0.88f)
+                isActive -> Color.White
+                isPast -> Color.White.copy(alpha = 0.70f)
+                else -> Color.White.copy(alpha = 0.40f)
+            }
+
+            val textColor by animateColorAsState(
+                targetValue = targetTextColor,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+                label = "lyricColor_${line.id}"
+            )
+
+            Text(
+                text = line.text,
+                color = textColor,
+                fontSize = 24.sp,
+                fontWeight = if (isActive && isSynchronized) FontWeight.Bold else FontWeight.SemiBold,
+                lineHeight = 36.sp,
+                style = androidx.compose.ui.text.TextStyle(shadow = shadow),
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

@@ -10,6 +10,8 @@ import kotlinx.coroutines.withContext
 
 class LocalMusicProvider(context: Context) : MusicProvider {
     private val scanner = LocalMusicScanner(context)
+    @Volatile
+    private var cachedSongs: List<Song>? = null
     
     override val metadata = ProviderMetadata(
         id = "local_device",
@@ -19,15 +21,21 @@ class LocalMusicProvider(context: Context) : MusicProvider {
         authRequired = false
     )
 
+    fun updateSongs(songs: List<Song>) {
+        cachedSongs = songs
+    }
+
     override suspend fun search(query: String, limit: Int): Result<List<Song>> = withContext(Dispatchers.IO) {
         try {
-            val allSongs = scanner.scanLocalAudio()
+            val allSongs = cachedSongs ?: scanner.scanLocalAudio().also { cachedSongs = it }
             val filtered = if (query.isBlank()) {
                 allSongs
             } else {
+                val q = query.trim().lowercase()
                 allSongs.filter { 
-                    it.title.contains(query, ignoreCase = true) || 
-                    it.artist.contains(query, ignoreCase = true) 
+                    it.title.lowercase().contains(q) || 
+                    it.artist.lowercase().contains(q) ||
+                    it.album.lowercase().contains(q)
                 }
             }
             Result.success(filtered.take(limit))
