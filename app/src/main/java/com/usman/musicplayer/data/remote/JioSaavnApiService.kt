@@ -56,7 +56,7 @@ interface JioSaavnApiService {
     @GET
     suspend fun searchSongsCustom(
         @retrofit2.http.Url url: String
-    ): Response<SaavnDevSearchResponse>
+    ): Response<ResponseBody>
 
     @GET
     suspend fun getSongDetailsCustom(

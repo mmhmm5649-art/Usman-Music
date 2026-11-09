@@ -410,9 +410,9 @@ fun NowPlayingScreen(
             // --- LOWER PLAYBACK SECTION (Grouped together and moved UP) ---
             RainbowAudioVisualizer(
                 isPlaying = uiState.isPlaying,
-                height = 54.dp,
-                showGlow = false,
-                showReflection = false,
+                height = 76.dp,
+                showGlow = true,
+                showReflection = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("audio_rainbow_visualizer")

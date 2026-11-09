@@ -14,7 +14,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 class UnifiedMusicRepository(context: Context) {
 
-    private val searchCache = ConcurrentHashMap<String, List<Song>>()
+    private data class CachedResult(val songs: List<Song>, val timestamp: Long)
+    private val searchCache = ConcurrentHashMap<String, CachedResult>()
+    private val CACHE_TTL_MS = 30_000L // 30 seconds TTL for fresh online release searches
 
     init {
         ExtensionManager.init(context)
@@ -26,9 +28,10 @@ class UnifiedMusicRepository(context: Context) {
         if (trimmed.isBlank()) return@coroutineScope emptyList()
 
         val cacheKey = "${trimmed.lowercase()}_${limit}_$offset"
-        searchCache[cacheKey]?.let {
+        val cached = searchCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS && cached.songs.isNotEmpty()) {
             Log.d("SearchTiming", "Cache hit for query '$trimmed' (offset $offset)")
-            return@coroutineScope it
+            return@coroutineScope cached.songs
         }
 
         val active = ProviderRegistry.activeProviders
@@ -51,13 +54,32 @@ class UnifiedMusicRepository(context: Context) {
 
         val allResults = deferredList.awaitAll().flatten()
 
+        val queryTokens = trimmed.lowercase()
+            .replace(Regex("""[^\p{L}\p{Nd}\s]"""), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length >= 2 }
+
         val sortedResults = allResults
             .distinctBy { it.id }
+            .map { song ->
+                val score = calculateRelevanceScore(song, queryTokens)
+                song to score
+            }
+            .filter { (song, score) ->
+                // Filter out unrelated archive or broad matches that have zero word overlap with specific queries
+                if (queryTokens.isNotEmpty() && song.sourceProvider.equals("Internet Archive", ignoreCase = true)) {
+                    score >= 40
+                } else {
+                    true
+                }
+            }
             .sortedWith(
-                compareByDescending<Song> { it.playbackType == PlaybackType.FULL }
-                    .thenByDescending { it.isFullTrackVerified }
-                    .thenByDescending { !it.albumArtUri.isNullOrBlank() }
+                compareByDescending<Pair<Song, Int>> { it.second } // Relevance score descending
+                    .thenByDescending { it.first.playbackType == PlaybackType.FULL }
+                    .thenByDescending { it.first.isFullTrackVerified }
+                    .thenByDescending { !it.first.albumArtUri.isNullOrBlank() }
             )
+            .map { it.first }
             .let { list ->
                 if (offset > 0 && offset < list.size) {
                     list.drop(offset)
@@ -68,10 +90,38 @@ class UnifiedMusicRepository(context: Context) {
             .take(limit)
 
         if (sortedResults.isNotEmpty()) {
-            searchCache[cacheKey] = sortedResults
+            searchCache[cacheKey] = CachedResult(sortedResults, System.currentTimeMillis())
+        } else {
+            searchCache.remove(cacheKey)
         }
 
         sortedResults
+    }
+
+    private fun calculateRelevanceScore(song: Song, queryTokens: List<String>): Int {
+        val title = song.title.lowercase()
+        val artist = song.artist.lowercase()
+        if (queryTokens.isEmpty()) return 0
+
+        var score = 0
+        val fullQuery = queryTokens.joinToString(" ")
+
+        if (title == fullQuery) {
+            score += 300
+        } else if (title.contains(fullQuery)) {
+            score += 150
+        }
+
+        for (token in queryTokens) {
+            if (title.contains(token)) {
+                score += 50
+            }
+            if (artist.contains(token)) {
+                score += 40
+            }
+        }
+
+        return score
     }
 
     suspend fun getStreamUrl(song: Song): Result<String> {
