@@ -36,7 +36,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import java.text.BreakIterator
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.drawText
+import androidx.compose.runtime.State
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -126,8 +134,10 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -138,6 +148,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextLayoutResult
@@ -152,6 +164,7 @@ import androidx.compose.ui.unit.sp
 import com.usman.musicplayer.R
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.model.LyricLine
+import com.usman.musicplayer.model.LyricWord
 import com.usman.musicplayer.model.LyricsParser
 import com.usman.musicplayer.model.PlaybackProgress
 import com.usman.musicplayer.model.Playlist
@@ -799,14 +812,7 @@ private fun ThemeAlbumBackground(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 1. Fully opaque solid dark base (prevents previous screen bleed-through)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF060913))
-        )
-
-        // 2. Fully opaque ambient frosted gradient derived from album palette
+        // 1. Unified Background: Palette-based gradient
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -815,38 +821,33 @@ private fun ThemeAlbumBackground(
                         colors = listOf(
                             palette.primary,
                             palette.secondary,
-                            palette.darkBackground
+                            palette.darkBackground,
+                            palette.darkBackground // Extra stop for smoother transition
                         )
                     )
                 )
         )
 
-        // 3. Full-screen heavily blurred album artwork background
+        // 2. Full-screen heavily blurred album artwork
         val bmp = backgroundBitmap
         if (bmp != null) {
             Crossfade(
                 targetState = bmp,
-                animationSpec = tween(300),
+                animationSpec = tween(500),
                 label = "AlbumBackgroundBlurCrossfade"
             ) { bitmap ->
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                scaleX = 1.45f
-                                scaleY = 1.45f
-                            }
-                            .cloudy(radius = 45)
-                    )
-                }
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .cloudy(radius = 45)
+                )
             }
         }
 
-        // 4. Apple Music-style translucent dark vignette overlay ensuring crisp readability
+        // 3. Smooth dark vignette overlay
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -854,8 +855,8 @@ private fun ThemeAlbumBackground(
                     Brush.verticalGradient(
                         colors = listOf(
                             Color(0x33000000),
-                            Color(0x55000000),
-                            Color(0x88000000)
+                            Color(0x00000000),
+                            Color(0xAA000000)
                         )
                     )
                 )
@@ -1215,25 +1216,34 @@ private fun SynchronizedLyricsView(
     val isSynchronized = parsedLyrics?.isSynchronized == true
     val listState = rememberLazyListState()
 
-    // 1. High-precision continuous frame-clock time synchronized with display refresh rate (60Hz / 90Hz / 120Hz)
-    var currentFramePositionMs by remember { mutableLongStateOf(playbackProgress.interpolatedPositionMs()) }
+    // 1. High-precision sub-millisecond frame-clock for ultra-smooth drawing
+    val drawClockState = remember { mutableFloatStateOf(playbackProgress.interpolatedPositionMsFloat()) }
+    // 2. Stable millisecond clock for line-switching logic (reduces re-evaluations)
+    val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
 
     LaunchedEffect(playbackProgress.isPlaying, playbackProgress.currentPositionMs, playbackProgress.updateTimeRealtimeMs) {
         if (!playbackProgress.isPlaying) {
-            currentFramePositionMs = playbackProgress.currentPositionMs
+            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+            logicClockState.longValue = playbackProgress.currentPositionMs
             return@LaunchedEffect
         }
         while (isActive) {
-            withFrameMillis {
-                currentFramePositionMs = playbackProgress.interpolatedPositionMs()
+            withFrameNanos {
+                val currentFloat = playbackProgress.interpolatedPositionMsFloat()
+                drawClockState.floatValue = currentFloat
+                // Only update logic clock if a millisecond has actually passed to keep line-switching stable
+                val currentLong = currentFloat.toLong()
+                if (logicClockState.longValue != currentLong) {
+                    logicClockState.longValue = currentLong
+                }
             }
         }
     }
 
-    // 2. Active index calculation driven by State read in derivedStateOf
+    // 3. Active index calculation driven by logic clock (stable millisecond accuracy)
     val activeIndex by remember(lines, isSynchronized) {
         derivedStateOf {
-            if (isSynchronized) LyricsParser.findActiveIndex(lines, currentFramePositionMs) else -1
+            if (isSynchronized) LyricsParser.findActiveIndex(lines, logicClockState.longValue) else -1
         }
     }
 
@@ -1272,7 +1282,15 @@ private fun SynchronizedLyricsView(
         if (!isManualScrolled && isSynchronized && activeIndex >= 0 && activeIndex < lines.size) {
             if (activeIndex != lastScrolledIndex) {
                 lastScrolledIndex = activeIndex
-                listState.animateScrollToItem(activeIndex)
+                // Calculate an offset to center the item slightly above middle (approx 2/5 from top)
+                val viewportHeight = listState.layoutInfo.viewportSize.height
+                if (viewportHeight > 0) {
+                    val centerOffset = -(viewportHeight * 2 / 5)
+                    listState.animateScrollToItem(activeIndex, centerOffset)
+                } else {
+                    // Fallback for first scroll if height not yet measured
+                    listState.animateScrollToItem(activeIndex)
+                }
             }
         }
     }
@@ -1393,7 +1411,8 @@ private fun SynchronizedLyricsView(
                                     isPast = isPast,
                                     isFuture = isFuture,
                                     isSynchronized = isSynchronized,
-                                    currentFramePositionMs = currentFramePositionMs,
+                                    logicClockState = logicClockState,
+                                    drawClockState = drawClockState,
                                     palette = palette,
                                     onSeekTo = onSeekTo
                                 )
@@ -1607,22 +1626,29 @@ private fun LyricLineItem(
     isPast: Boolean,
     isFuture: Boolean,
     isSynchronized: Boolean,
-    currentFramePositionMs: Long,
+    logicClockState: State<Long>,
+    drawClockState: State<Float>,
     palette: AlbumPalette,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // 1. Apple Music-style smooth scale animation for active line (1.04x)
+    // 1. Apple Music-style smooth scale animation for active line (1.04x) with spring physics
     val lineScale by animateFloatAsState(
         targetValue = if (isActive && isSynchronized) 1.04f else 1.0f,
-        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "lyricScale_${line.id}"
     )
 
     // 2. Active line glow radius
     val activeGlowRadius by animateFloatAsState(
         targetValue = if (isActive && isSynchronized) 10f else 0f,
-        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "lyricGlow_${line.id}"
     )
 
@@ -1653,78 +1679,81 @@ private fun LyricLineItem(
             .padding(vertical = 6.dp, horizontal = 4.dp)
     ) {
         if (isSynchronized && line.words.isNotEmpty()) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                line.words.forEach { word ->
-                    val graphemes = word.text.getGraphemes()
-                    val numGraphemes = graphemes.size.coerceAtLeast(1)
+            val textMeasurer = rememberTextMeasurer()
+            val textStyle = remember(line.isBackgroundVocal, isActive) {
+                TextStyle(
+                    fontSize = 24.sp,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold,
+                    fontStyle = if (line.isBackgroundVocal) FontStyle.Italic else FontStyle.Normal,
+                    lineHeight = 36.sp,
+                    color = Color.Unspecified
+                )
+            }
+            
+            val textLayoutResult = remember(line.text, textStyle) {
+                textMeasurer.measure(line.text, style = textStyle)
+            }
 
-                    val wordProgress = when {
-                        !isActive -> if (isPast) 1.0f else 0.0f
-                        currentFramePositionMs >= word.endMs -> 1.0f
-                        currentFramePositionMs < word.startMs -> 0.0f
-                        else -> {
-                            val span = (word.endMs - word.startMs).toFloat().coerceAtLeast(1f)
-                            ((currentFramePositionMs - word.startMs).toFloat() / span).coerceIn(0f, 1f)
-                        }
-                    }
-
-                    val annotatedWord = buildAnnotatedString {
-                        graphemes.forEachIndexed { i, grapheme ->
-                            val gStart = i.toFloat() / numGraphemes
-                            val gEnd = (i + 1).toFloat() / numGraphemes
-
-                            val gProgress = when {
-                                wordProgress >= gEnd -> 1.0f
-                                wordProgress <= gStart -> 0.0f
-                                else -> ((wordProgress - gStart) / (gEnd - gStart)).coerceIn(0f, 1f)
-                            }
-
-                            val gColor = when {
-                                !isSynchronized -> Color.White.copy(alpha = 0.88f)
-                                isPast -> Color.White.copy(alpha = 0.70f)
-                                isFuture -> Color.White.copy(alpha = 0.40f)
-                                else -> {
-                                    // Active line: grapheme-by-grapheme progress lerp (unsung grey -> bright white)
-                                    androidx.compose.ui.graphics.lerp(
-                                        start = Color.White.copy(alpha = 0.40f),
-                                        stop = Color.White,
-                                        fraction = gProgress
-                                    )
-                                }
-                            }
-
-                            val gWeight = if (isActive && gProgress > 0f) FontWeight.Bold else FontWeight.SemiBold
-                            val gGlow = if (isActive && gProgress > 0.05f) {
-                                androidx.compose.ui.graphics.Shadow(
-                                    color = Color.White.copy(alpha = 0.35f * gProgress),
-                                    blurRadius = 8f * gProgress,
-                                    offset = Offset.Zero
-                                )
-                            } else androidx.compose.ui.graphics.Shadow.None
-
-                            withStyle(
-                                style = SpanStyle(
-                                    color = gColor,
-                                    fontWeight = gWeight,
-                                    shadow = gGlow
-                                )
-                            ) {
-                                append(grapheme)
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = annotatedWord,
-                        fontSize = 24.sp,
-                        lineHeight = 36.sp
-                    )
+            // Pre-cache all word paths
+            val wordPaths = remember(line.id, line.words) {
+                line.words.associate { word ->
+                    val lineTextLength = line.text.length
+                    val charStart = word.charStart.coerceIn(0, lineTextLength)
+                    val charEnd = word.charEnd.coerceIn(charStart, lineTextLength)
+                    word.index to textLayoutResult.getPathForRange(charStart, charEnd)
                 }
             }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(with(androidx.compose.ui.platform.LocalDensity.current) { textLayoutResult.size.height.toDp() })
+                    .drawWithContent {
+                        val currentTime = drawClockState.value
+                        
+                        // 1. Draw base dimmed text
+                        val baseColor = if (line.isBackgroundVocal) TextMuted.copy(alpha = 0.25f) else TextMuted
+                        drawText(textLayoutResult, color = baseColor)
+                        
+                        // 2. Prepare paths
+                        val completedPath = Path()
+                        var activeWord: LyricWord? = null
+                        var activeWordPath: Path? = null
+                        
+                        line.words.forEach { word ->
+                            val isWordPast = currentTime >= word.endMs
+                            val isWordActive = currentTime >= word.startMs && currentTime < word.endMs
+                            val path = wordPaths[word.index]
+                            
+                            if (path != null && !path.isEmpty) {
+                                if (isWordPast) {
+                                    completedPath.addPath(path)
+                                } else if (isWordActive) {
+                                    activeWord = word
+                                    activeWordPath = path
+                                }
+                            }
+                        }
+                        
+                        // 3. Draw completed words
+                        val highlightColor = if (line.isBackgroundVocal) Color.White.copy(alpha = 0.25f) else Color.White
+                        if (!completedPath.isEmpty) {
+                            clipPath(completedPath) { drawText(textLayoutResult, color = highlightColor) }
+                        }
+                        
+                        // 4. Draw active word
+                        if (activeWord != null && activeWordPath != null) {
+                            val bounds = activeWordPath!!.getBounds()
+                            val progress = ((currentTime.toDouble() - activeWord!!.startMs.toDouble()) / (activeWord!!.endMs - activeWord!!.startMs).toDouble()).coerceIn(0.0, 1.0).toFloat()
+                            
+                            clipPath(activeWordPath!!) {
+                                clipRect(bounds.left, bounds.top, bounds.left + bounds.width * progress, bounds.bottom) {
+                                    drawText(textLayoutResult, color = highlightColor)
+                                }
+                            }
+                        }
+                    }
+            )
         } else {
             // Unsynchronized / plain text fallback line
             val targetTextColor = when {
@@ -1733,18 +1762,22 @@ private fun LyricLineItem(
                 isPast -> Color.White.copy(alpha = 0.70f)
                 else -> Color.White.copy(alpha = 0.40f)
             }
-
+            
             val textColor by animateColorAsState(
                 targetValue = targetTextColor,
-                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                ),
                 label = "lyricColor_${line.id}"
             )
-
+            
             Text(
                 text = line.text,
                 color = textColor,
                 fontSize = 24.sp,
                 fontWeight = if (isActive && isSynchronized) FontWeight.Bold else FontWeight.SemiBold,
+                fontStyle = if (line.isBackgroundVocal) FontStyle.Italic else FontStyle.Normal,
                 lineHeight = 36.sp,
                 style = androidx.compose.ui.text.TextStyle(shadow = shadow),
                 modifier = Modifier.fillMaxWidth()
@@ -1888,3 +1921,5 @@ fun NowPlayingProgressBar(
         }
     }
 }
+
+

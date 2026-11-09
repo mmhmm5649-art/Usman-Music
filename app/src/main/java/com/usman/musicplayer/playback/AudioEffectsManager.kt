@@ -2,6 +2,7 @@ package com.usman.musicplayer.playback
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.BassBoost
 import android.media.audiofx.EnvironmentalReverb
 import android.media.audiofx.Equalizer
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /**
  * Data model for a single frequency band in the graphic Equalizer
@@ -142,135 +144,127 @@ object AudioEffectsManager {
 
     // Session-specific cache for failed effect types to prevent repeated crashes/logs
     private val failedEffects = mutableSetOf<String>()
+    
+    // Cached supported effects to avoid repeated expensive calls
+    private var supportedEffectTypes: Set<java.util.UUID>? = null
+
+    private fun isEffectSupported(type: java.util.UUID): Boolean {
+        if (supportedEffectTypes == null) {
+            supportedEffectTypes = AudioEffect.queryEffects().map { it.type }.toSet()
+        }
+        return supportedEffectTypes!!.contains(type)
+    }
 
     /**
      * Attach all audio effects to the active audio session ID from ExoPlayer
      */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private var attachJob: kotlinx.coroutines.Job? = null
+    private val effectsScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+
     fun attachAudioSession(context: Context, audioSessionId: Int) {
-        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == 0) {
-            Log.w(TAG, "Invalid audioSessionId: $audioSessionId. Delaying effect attach.")
-            return
-        }
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == 0) return
+        
+        attachJob?.cancel()
+        attachJob = effectsScope.launch {
+            init(context)
+            if (currentAudioSessionId == audioSessionId) return@launch
 
-        init(context)
+            releaseEffects()
+            
+            // Stabilization delay before any effect creation to let AudioFlinger settle
+            kotlinx.coroutines.delay(200)
 
-        if (currentAudioSessionId == audioSessionId && (equalizer != null || environmentalReverb != null || presetReverb != null)) {
-            Log.d(TAG, "Audio effects already attached to session $audioSessionId")
-            return
-        }
+            currentAudioSessionId = audioSessionId
 
-        releaseEffects()
-        currentAudioSessionId = audioSessionId
-        failedEffects.clear() // Reset failed cache for new session
-
-        // 1. Equalizer Setup
-        if (!failedEffects.contains("Equalizer")) {
-            try {
-                val eq = Equalizer(0, audioSessionId).apply {
-                    enabled = _effectsState.value.masterEnabled && _effectsState.value.equalizerEnabled
-                }
+            // 1. Equalizer Setup
+            initializeEffect("Equalizer", AudioEffect.EFFECT_TYPE_EQUALIZER) {
+                val eq = Equalizer(0, audioSessionId)
+                eq.enabled = _effectsState.value.masterEnabled && _effectsState.value.equalizerEnabled
                 equalizer = eq
                 _effectsState.update { it.copy(isEqualizerSupported = true) }
                 setupEqualizerBands(eq)
-            } catch (e: Throwable) {
-                Log.d(TAG, "Equalizer not supported on session $audioSessionId (${e.message})")
-                equalizer = null
-                _effectsState.update { it.copy(isEqualizerSupported = false) }
-                failedEffects.add("Equalizer")
             }
-        }
+            kotlinx.coroutines.delay(20)
 
-        // 2. Bass Boost Setup
-        if (!failedEffects.contains("BassBoost")) {
-            try {
-                val bb = BassBoost(0, audioSessionId).apply {
-                    val state = _effectsState.value
-                    enabled = state.masterEnabled && state.bassBoostEnabled
-                    if (strengthSupported) {
-                        setStrength(state.bassBoostStrength)
-                    }
-                }
+            // 2. Bass Boost Setup
+            initializeEffect("BassBoost", AudioEffect.EFFECT_TYPE_BASS_BOOST) {
+                val bb = BassBoost(0, audioSessionId)
+                val state = _effectsState.value
+                bb.enabled = state.masterEnabled && state.bassBoostEnabled
+                if (bb.strengthSupported) bb.setStrength(state.bassBoostStrength)
                 bassBoost = bb
                 _effectsState.update { it.copy(isBassBoostSupported = true) }
-            } catch (e: Throwable) {
-                Log.d(TAG, "BassBoost not supported on session $audioSessionId (${e.message})")
-                bassBoost = null
-                _effectsState.update { it.copy(isBassBoostSupported = false) }
-                failedEffects.add("BassBoost")
             }
-        }
+            kotlinx.coroutines.delay(50)
 
-        // 3. Virtualizer Setup (Spatial Width)
-        if (!failedEffects.contains("Virtualizer")) {
-            try {
-                val virt = Virtualizer(0, audioSessionId).apply {
-                    val state = _effectsState.value
-                    enabled = state.masterEnabled && state.virtualizerEnabled
-                    if (strengthSupported) {
-                        setStrength(state.virtualizerStrength)
-                    }
-                }
+            // 3. Virtualizer Setup
+            initializeEffect("Virtualizer", AudioEffect.EFFECT_TYPE_VIRTUALIZER) {
+                val virt = Virtualizer(0, audioSessionId)
+                val state = _effectsState.value
+                virt.enabled = state.masterEnabled && state.virtualizerEnabled
+                if (virt.strengthSupported) virt.setStrength(state.virtualizerStrength)
                 virtualizer = virt
                 _effectsState.update { it.copy(isVirtualizerSupported = true) }
+            }
+            kotlinx.coroutines.delay(50)
+
+            // 4. Reverb
+            setupConcertHallReverb(audioSessionId)
+        }
+    }
+
+    private suspend fun initializeEffect(name: String, type: java.util.UUID, initBlock: suspend () -> Unit) {
+        if (!failedEffects.contains(name) && isEffectSupported(type)) {
+            try {
+                initBlock()
             } catch (e: Throwable) {
-                Log.d(TAG, "Virtualizer not supported on session $audioSessionId (${e.message})")
-                virtualizer = null
-                _effectsState.update { it.copy(isVirtualizerSupported = false) }
-                failedEffects.add("Virtualizer")
+                Log.d(TAG, "$name initialization failed: ${e.message}")
+                failedEffects.add(name)
             }
         }
-
-        // 4. Concert Hall Reverb (Parametric EnvironmentalReverb with PresetReverb fallback)
-        setupConcertHallReverb(audioSessionId)
     }
 
     private fun setupConcertHallReverb(audioSessionId: Int) {
         val state = _effectsState.value
         val shouldEnable = state.masterEnabled && state.concertHallEnabled
 
-        // Attempt genuine parametric EnvironmentalReverb first for authentic hall acoustics
-        try {
-            val env = EnvironmentalReverb(0, audioSessionId)
-            applyEnvironmentalSettings(env, state.concertHallIntensity)
-            env.enabled = shouldEnable
-            environmentalReverb = env
-            presetReverb = null
-            _effectsState.update {
-                it.copy(
-                    isReverbSupported = true,
-                    isEnvironmentalReverbActive = true
-                )
+        // Attempt genuine parametric EnvironmentalReverb
+        if (!failedEffects.contains("EnvironmentalReverb")) {
+            try {
+                val env = EnvironmentalReverb(0, audioSessionId)
+                applyEnvironmentalSettings(env, state.concertHallIntensity)
+                env.enabled = shouldEnable
+                environmentalReverb = env
+                presetReverb = null
+                _effectsState.update { it.copy(isReverbSupported = true, isEnvironmentalReverbActive = true) }
+                return
+            } catch (e: Throwable) {
+                if (e.message?.contains("-38") == true) {
+                    Log.d(TAG, "EnvironmentalReverb temporary failure: ${e.message}")
+                } else {
+                    Log.d(TAG, "EnvironmentalReverb unsupported, trying PresetReverb fallback")
+                    failedEffects.add("EnvironmentalReverb")
+                }
             }
-            Log.d(TAG, "EnvironmentalReverb initialized on session $audioSessionId (active=$shouldEnable)")
-            return
-        } catch (e: Throwable) {
-            Log.d(TAG, "EnvironmentalReverb unsupported on session $audioSessionId (${e.message}), trying PresetReverb fallback")
-            environmentalReverb = null
         }
 
         // Fallback: PresetReverb
-        try {
-            val pReverb = PresetReverb(0, audioSessionId).apply {
-                preset = if (state.concertHallEnabled) mapIntensityToPreset(state.concertHallIntensity) else PresetReverb.PRESET_NONE
-                enabled = shouldEnable
-            }
-            presetReverb = pReverb
-            _effectsState.update {
-                it.copy(
-                    isReverbSupported = true,
-                    isEnvironmentalReverbActive = false,
-                    currentReverbPreset = pReverb.preset
-                )
-            }
-            Log.d(TAG, "PresetReverb fallback initialized on session $audioSessionId (preset=${pReverb.preset})")
-        } catch (e2: Throwable) {
-            Log.d(TAG, "Neither EnvironmentalReverb nor PresetReverb supported on session $audioSessionId (${e2.message})")
-            presetReverb = null
-            _effectsState.update {
-                it.copy(
-                    isReverbSupported = false,
-                    isEnvironmentalReverbActive = false
-                )
+        if (!failedEffects.contains("PresetReverb")) {
+            try {
+                val pReverb = PresetReverb(0, audioSessionId)
+                pReverb.preset = if (state.concertHallEnabled) mapIntensityToPreset(state.concertHallIntensity) else PresetReverb.PRESET_NONE
+                pReverb.enabled = shouldEnable
+                presetReverb = pReverb
+                _effectsState.update { it.copy(isReverbSupported = true, isEnvironmentalReverbActive = false, currentReverbPreset = pReverb.preset) }
+            } catch (e2: Throwable) {
+                if (e2.message?.contains("-38") == true) {
+                    Log.d(TAG, "PresetReverb temporary failure: ${e2.message}")
+                } else {
+                    Log.d(TAG, "Neither EnvironmentalReverb nor PresetReverb supported")
+                    failedEffects.add("PresetReverb")
+                    _effectsState.update { it.copy(isReverbSupported = false, isEnvironmentalReverbActive = false) }
+                }
             }
         }
     }

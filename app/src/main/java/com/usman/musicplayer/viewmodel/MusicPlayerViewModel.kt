@@ -326,8 +326,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                                 startProgressTracker()
                                 val sessionId = UsmanPlaybackService.currentAudioSessionId
                                 if (sessionId > 0) {
-                                    AudioSpectrumManager.attachAudioSession(context, sessionId)
-                                    AudioEffectsManager.attachAudioSession(context, sessionId)
+                                    // Delay slightly to ensure AudioSession is fully initialized and ready
+                                    viewModelScope.launch {
+                                        delay(100)
+                                        AudioSpectrumManager.attachAudioSession(context, sessionId)
+                                        AudioEffectsManager.attachAudioSession(context, sessionId)
+                                    }
                                 }
                             } else {
                                 AudioSpectrumManager.clearSpectrum()
@@ -484,10 +488,14 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     // Attach audio session if already playing
                     val sessionId = UsmanPlaybackService.currentAudioSessionId
                     if (sessionId > 0) {
-                        AudioSpectrumManager.attachAudioSession(context, sessionId)
-                        AudioEffectsManager.attachAudioSession(context, sessionId)
+                        viewModelScope.launch {
+                            delay(100)
+                            AudioSpectrumManager.attachAudioSession(context, sessionId)
+                            AudioEffectsManager.attachAudioSession(context, sessionId)
+                        }
                     }
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     e.printStackTrace()
                 }
             },
@@ -861,6 +869,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 // Ignore if not supported
             }
 
@@ -1083,7 +1092,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _playbackProgress.update {
             it.copy(
                 currentPositionMs = validPos,
-                updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
+                updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
             )
         }
     }
@@ -1222,6 +1232,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 playlistRepository.createPlaylist(trimmed, initialSong)
                 onResult(true, "Created playlist \"$trimmed\"")
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 onResult(false, "Failed to create playlist: ${e.message}")
             }
         }
@@ -1233,6 +1244,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val (success, message) = playlistRepository.addSongToPlaylist(playlistId, song, allowDuplicate)
                 onResult(success, message)
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 onResult(false, "Failed to add song: ${e.message}")
             }
         }
@@ -1337,7 +1349,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         durationMs = duration.coerceAtLeast(0L),
                         bufferedPositionMs = buffered.coerceAtLeast(0L),
                         isPlaying = isPlaying,
-                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime()
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                        updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                     )
                 }
 

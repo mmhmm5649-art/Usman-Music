@@ -101,7 +101,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             UsmanMusicPlayerTheme {
-                UsmanMusicApp(viewModel = musicViewModel)
+                val context = LocalContext.current
+                val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
+                if (isTv) {
+                    com.usman.musicplayer.ui.tv.TvMainLayout(viewModel = musicViewModel, uiState = musicViewModel.uiState.collectAsStateWithLifecycle().value)
+                } else {
+                    UsmanMusicApp(viewModel = musicViewModel)
+                }
             }
         }
     }

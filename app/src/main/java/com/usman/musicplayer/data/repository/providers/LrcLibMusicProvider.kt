@@ -5,6 +5,7 @@ import com.usman.musicplayer.data.remote.LrcLibApiService
 import com.usman.musicplayer.sdk.MusicProvider
 import com.usman.musicplayer.sdk.ProviderMetadata
 import com.usman.musicplayer.sdk.Song
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -162,6 +163,7 @@ class LrcLibMusicProvider(
 
             safeLogW("[LrcLibMusicProvider] All LRCLIB query stages exhausted without finding lyrics for '$title' - '$artist'")
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             if (e is java.net.UnknownHostException || e is java.io.IOException || e is java.net.SocketTimeoutException) {
                 safeLogW("[LrcLibMusicProvider] Network offline or unavailable during LRCLIB query: ${e.message}")
             } else {

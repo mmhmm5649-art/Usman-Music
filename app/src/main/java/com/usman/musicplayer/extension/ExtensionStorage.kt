@@ -4,6 +4,7 @@ import android.content.Context
 import com.usman.musicplayer.sdk.PlaybackType
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.CancellationException
 import java.io.File
 
 /**
@@ -48,6 +49,7 @@ class ExtensionStorage(val context: Context) {
             }
             if (list.isEmpty()) getDefaultRepositories() else list
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             getDefaultRepositories()
         }
     }

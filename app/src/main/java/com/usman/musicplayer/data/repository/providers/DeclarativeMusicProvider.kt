@@ -5,6 +5,7 @@ import com.usman.musicplayer.sdk.MusicProvider
 import com.usman.musicplayer.sdk.PlaybackType
 import com.usman.musicplayer.sdk.ProviderMetadata
 import com.usman.musicplayer.sdk.Song
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -106,6 +107,7 @@ class DeclarativeMusicProvider(
             val songs = parseTracks(body, limit)
             Result.success(songs)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Result.failure(e)
         }
     }

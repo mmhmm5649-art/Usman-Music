@@ -16,6 +16,7 @@ import dev.brahmkshatriya.echo.common.models.Track
 import dev.brahmkshatriya.echo.common.models.ImageHolder
 import dev.brahmkshatriya.echo.common.models.Streamable
 import dev.brahmkshatriya.echo.common.models.Shelf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -167,6 +168,7 @@ class EchoMusicProviderBridge(
             val songs = tracks.map { mapEchoTrackToSong(it) }.take(limit)
             Result.success(songs)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.e("EchoRuntime", "Search execution failed", e)
             Result.failure(e)
         }
@@ -200,6 +202,7 @@ class EchoMusicProviderBridge(
             
             Result.failure(Exception("Resolved media is not a supported HTTP source."))
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.e("EchoRuntime", "Stream resolution failed", e)
             Result.failure(e)
         }
