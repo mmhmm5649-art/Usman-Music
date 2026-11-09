@@ -87,7 +87,6 @@ import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.UsmanMusicPlayerTheme
 import android.view.KeyEvent
-import com.usman.musicplayer.ui.tv.TvMainLayout
 import com.usman.musicplayer.util.DeviceUtils
 import com.usman.musicplayer.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.delay
@@ -101,13 +100,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             UsmanMusicPlayerTheme {
-                val context = LocalContext.current
-                val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
-                if (isTv) {
-                    com.usman.musicplayer.ui.tv.TvMainLayout(viewModel = musicViewModel, uiState = musicViewModel.uiState.collectAsStateWithLifecycle().value)
-                } else {
-                    UsmanMusicApp(viewModel = musicViewModel)
-                }
+                UsmanMusicApp(viewModel = musicViewModel)
             }
         }
     }
