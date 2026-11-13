@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -101,16 +102,23 @@ fun TvFullLyricsScreen(
     onCloseLyrics: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val lines = parsedLyrics?.lines.orEmpty()
-    val isSynchronized = parsedLyrics?.isSynchronized == true
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var scriptMode by remember {
+        mutableStateOf(com.usman.musicplayer.ui.components.LyricsScriptPreferences.getScriptMode(context))
+    }
+    val activeLyrics = remember(parsedLyrics, scriptMode) {
+        parsedLyrics?.withScriptMode(scriptMode)
+    }
+    val lines = activeLyrics?.lines.orEmpty()
+    val isSynchronized = activeLyrics?.isSynchronized == true
     val listState = rememberLazyListState()
 
     // High-precision frame-clock for ultra-smooth word highlighting
     val drawClockState = remember { mutableFloatStateOf(playbackProgress.interpolatedPositionMsFloat()) }
     val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
 
-    LaunchedEffect(playbackProgress.isPlaying) {
-        if (!playbackProgress.isPlaying) {
+    LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
+        if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
             drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
             logicClockState.longValue = playbackProgress.currentPositionMs
             return@LaunchedEffect
@@ -128,7 +136,10 @@ fun TvFullLyricsScreen(
     }
 
     LaunchedEffect(playbackProgress.currentPositionMs) {
-        if (kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 500L) {
+        if (!playbackProgress.isPlaying ||
+            playbackProgress.isBuffering ||
+            kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
+        ) {
             drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
             logicClockState.longValue = playbackProgress.currentPositionMs
         }
@@ -178,7 +189,7 @@ fun TvFullLyricsScreen(
             .padding(horizontal = 48.dp, vertical = 28.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // TV Header Bar: Back Button, Song Thumbnail & Info, Live Lyrics Indicator
+            // TV Header Bar: Back Button, Song Thumbnail & Info, Script Selector & Live Lyrics Indicator
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -249,36 +260,26 @@ fun TvFullLyricsScreen(
                     }
                 }
 
-                // Live Lyrics Tag
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(palette.accent.copy(alpha = 0.2f))
-                        .border(1.dp, palette.accent.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                // Script Selector (Original Script vs Romanized) & Live Lyrics Badge
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.FormatQuote,
-                            contentDescription = null,
-                            tint = palette.accent,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val syncLabel = when (parsedLyrics?.syncQuality) {
-                            com.usman.musicplayer.model.SyncQuality.WORD,
-                            com.usman.musicplayer.model.SyncQuality.CHARACTER -> "WORD-SYNCED LIVE LYRICS"
-                            com.usman.musicplayer.model.SyncQuality.LINE -> "LINE-SYNCED LIVE LYRICS"
-                            else -> if (isSynchronized) "LIVE SYNCHRONIZED LYRICS" else "PLAIN LYRICS"
-                        }
-                        Text(
-                            text = syncLabel,
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-                    }
+                    com.usman.musicplayer.ui.components.AmllScriptSelectorPill(
+                        selectedMode = scriptMode,
+                        onModeSelected = { newMode ->
+                            scriptMode = newMode
+                            com.usman.musicplayer.ui.components.LyricsScriptPreferences.setScriptMode(context, newMode)
+                        },
+                        palette = palette,
+                        isTv = true
+                    )
+
+                    com.usman.musicplayer.ui.components.AmllSyncQualityBadge(
+                        parsedLyrics = activeLyrics,
+                        palette = palette,
+                        isTv = true
+                    )
                 }
             }
 
@@ -354,23 +355,29 @@ fun TvFullLyricsScreen(
                     else -> {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("tv_amll_lyrics_lazy_column"),
                             contentPadding = PaddingValues(vertical = 180.dp, horizontal = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(28.dp)
                         ) {
-                            items(lines, key = { "${it.id}_${it.timestampMs}" }) { line ->
+                            items(lines.size, key = { idx -> "${lines[idx].id}_${lines[idx].timestampMs}" }) { index ->
+                                val line = lines[index]
+                                val prevLineEndMs = if (index > 0) lines[index - 1].endTimestampMs.coerceAtLeast(lines[index - 1].timestampMs) else 0L
                                 val isActive = isSynchronized && activeIndex >= 0 && line.id == activeIndex
                                 val isPast = isSynchronized && activeIndex >= 0 && line.id < activeIndex
                                 val isFuture = !isSynchronized || activeIndex < 0 || line.id > activeIndex
 
-                                TvLyricLineItem(
+                                com.usman.musicplayer.ui.components.AmllLyricLineItem(
                                     line = line,
+                                    prevLineEndMs = prevLineEndMs,
                                     isActive = isActive,
                                     isPast = isPast,
                                     isFuture = isFuture,
                                     isSynchronized = isSynchronized,
                                     drawClockState = drawClockState,
                                     palette = palette,
+                                    isTv = true,
                                     onSeekTo = onSeekTo
                                 )
                             }

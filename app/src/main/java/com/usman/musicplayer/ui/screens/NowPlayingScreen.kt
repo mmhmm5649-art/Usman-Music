@@ -1248,8 +1248,15 @@ private fun SynchronizedLyricsView(
     onCloseLyrics: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val lines = parsedLyrics?.lines.orEmpty()
-    val isSynchronized = parsedLyrics?.isSynchronized == true
+    val context = LocalContext.current
+    var scriptMode by remember {
+        mutableStateOf(com.usman.musicplayer.ui.components.LyricsScriptPreferences.getScriptMode(context))
+    }
+    val activeLyrics = remember(parsedLyrics, scriptMode) {
+        parsedLyrics?.withScriptMode(scriptMode)
+    }
+    val lines = activeLyrics?.lines.orEmpty()
+    val isSynchronized = activeLyrics?.isSynchronized == true
     val listState = rememberLazyListState()
 
     // 1. High-precision sub-millisecond frame-clock for ultra-smooth drawing
@@ -1257,8 +1264,8 @@ private fun SynchronizedLyricsView(
     // 2. Stable millisecond clock for line-switching logic (reduces re-evaluations)
     val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
 
-    LaunchedEffect(playbackProgress.isPlaying) {
-        if (!playbackProgress.isPlaying) {
+    LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
+        if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
             drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
             logicClockState.longValue = playbackProgress.currentPositionMs
             return@LaunchedEffect
@@ -1277,7 +1284,10 @@ private fun SynchronizedLyricsView(
     }
 
     LaunchedEffect(playbackProgress.currentPositionMs) {
-        if (kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 500L) {
+        if (!playbackProgress.isPlaying ||
+            playbackProgress.isBuffering ||
+            kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
+        ) {
             drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
             logicClockState.longValue = playbackProgress.currentPositionMs
         }
@@ -1410,53 +1420,56 @@ private fun SynchronizedLyricsView(
             }
             else -> {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Header Badge for Unsynchronized Plain Lyrics
-                    if (!isSynchronized) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 12.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0x33F59E0B))
-                                    .border(1.dp, Color(0x88F59E0B), RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = "PLAIN LYRICS • NOT SYNCHRONIZED",
-                                    color = Color(0xFFFDE047),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.8.sp
-                                )
-                            }
-                        }
+                    // Script Selector (Original vs Romanized) & Honest AMLL Sync Quality Badge
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        com.usman.musicplayer.ui.components.AmllScriptSelectorPill(
+                            selectedMode = scriptMode,
+                            onModeSelected = { newMode ->
+                                scriptMode = newMode
+                                com.usman.musicplayer.ui.components.LyricsScriptPreferences.setScriptMode(context, newMode)
+                            },
+                            palette = palette,
+                            isTv = false
+                        )
+                        com.usman.musicplayer.ui.components.AmllSyncQualityBadge(
+                            parsedLyrics = activeLyrics,
+                            palette = palette,
+                            isTv = false
+                        )
                     }
 
                     Box(modifier = Modifier.weight(1f)) {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("amll_lyrics_lazy_column"),
                             contentPadding = PaddingValues(vertical = 140.dp, horizontal = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(24.dp)
                         ) {
-                            items(lines, key = { "${it.id}_${it.timestampMs}" }) { line ->
+                            items(lines.size, key = { idx -> "${lines[idx].id}_${lines[idx].timestampMs}" }) { index ->
+                                val line = lines[index]
+                                val prevLineEndMs = if (index > 0) lines[index - 1].endTimestampMs.coerceAtLeast(lines[index - 1].timestampMs) else 0L
                                 val isActive = isSynchronized && activeIndex >= 0 && line.id == activeIndex
                                 val isPast = isSynchronized && activeIndex >= 0 && line.id < activeIndex
                                 val isFuture = !isSynchronized || activeIndex < 0 || line.id > activeIndex
 
-                                LyricLineItem(
+                                com.usman.musicplayer.ui.components.AmllLyricLineItem(
                                     line = line,
+                                    prevLineEndMs = prevLineEndMs,
                                     isActive = isActive,
                                     isPast = isPast,
                                     isFuture = isFuture,
                                     isSynchronized = isSynchronized,
-                                    logicClockState = logicClockState,
                                     drawClockState = drawClockState,
                                     palette = palette,
+                                    isTv = false,
                                     onSeekTo = onSeekTo
                                 )
                             }

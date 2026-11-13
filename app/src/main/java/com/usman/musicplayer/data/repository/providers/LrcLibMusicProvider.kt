@@ -83,6 +83,8 @@ class LrcLibMusicProvider(
             artistsToTry.add(cleanArtist)
         }
 
+        var fallbackDevanagariOrPlainLyrics: String? = null
+
         try {
             // Stage 1 & 2: Try exact /api/get for each artist variation
             for (tryArtist in artistsToTry) {
@@ -97,20 +99,24 @@ class LrcLibMusicProvider(
                 if (response.isSuccessful) {
                     val track = response.body()
                     if (track != null) {
-                        val synced = track.syncedLyrics
-                        val plain = track.plainLyrics
-                        val hasSynced = !synced.isNullOrBlank()
-                        val hasPlain = !plain.isNullOrBlank()
+                        val synced = track.syncedLyrics?.takeIf { it.isNotBlank() }
+                        val plain = track.plainLyrics?.takeIf { it.isNotBlank() }
+                        val hasSynced = synced != null
+                        val hasPlain = plain != null
                         safeLogD("[LrcLibMusicProvider] Found exact match: '${track.trackName}' by '${track.artistName}' | hasSynced=$hasSynced | hasPlain=$hasPlain")
-                        val lyrics = if (hasSynced) synced else plain
-                        if (!lyrics.isNullOrBlank()) {
-                            return@withContext Result.success(lyrics)
+                        if (synced != null && !com.usman.musicplayer.model.HindiRomanTransliterator.containsDevanagari(synced)) {
+                            // Official Romanized / non-Devanagari synced lyrics found immediately
+                            return@withContext Result.success(synced)
+                        }
+                        val candidate = synced ?: plain
+                        if (candidate != null && fallbackDevanagariOrPlainLyrics == null) {
+                            fallbackDevanagariOrPlainLyrics = candidate
                         }
                     }
                 }
             }
 
-            // Stage 3: Try /api/search with track_name and artist_name
+            // Stage 3: Try /api/search with track_name and artist_name (also checks if an official Romanized version exists)
             for (tryArtist in artistsToTry) {
                 safeLogD("[LrcLibMusicProvider] Trying GET /api/search with track='$title', artist='$tryArtist'")
                 val resp = apiService.searchLyrics(
@@ -126,17 +132,15 @@ class LrcLibMusicProvider(
                         safeLogD("  [$idx] '${t.trackName}' by '${t.artistName}' (dur: ${t.duration}s, synced: ${!t.syncedLyrics.isNullOrBlank()})")
                     }
 
-                    val bestMatch = tracks.find { !it.syncedLyrics.isNullOrBlank() }
-                        ?: tracks.find { !it.plainLyrics.isNullOrBlank() }
-
-                    if (bestMatch != null) {
-                        val lyrics = bestMatch.syncedLyrics?.takeIf { it.isNotBlank() } ?: bestMatch.plainLyrics
-                        safeLogD("[LrcLibMusicProvider] Selected search match: '${bestMatch.trackName}' by '${bestMatch.artistName}'")
-                        if (!lyrics.isNullOrBlank()) {
-                            return@withContext Result.success(lyrics)
-                        }
+                    val bestLyrics = selectBestLyricsCandidate(tracks, durationSec)
+                    if (!bestLyrics.isNullOrBlank()) {
+                        return@withContext Result.success(bestLyrics)
                     }
                 }
+            }
+
+            if (!fallbackDevanagariOrPlainLyrics.isNullOrBlank()) {
+                return@withContext Result.success(fallbackDevanagariOrPlainLyrics)
             }
 
             // Stage 4: Free text search query `q = "$title $artist"`
@@ -150,14 +154,9 @@ class LrcLibMusicProvider(
                 for ((idx, t) in tracks.withIndex()) {
                     safeLogD("  [$idx] '${t.trackName}' by '${t.artistName}' (dur: ${t.duration}s)")
                 }
-                val bestMatch = tracks.find { !it.syncedLyrics.isNullOrBlank() }
-                    ?: tracks.find { !it.plainLyrics.isNullOrBlank() }
-                if (bestMatch != null) {
-                    val lyrics = bestMatch.syncedLyrics?.takeIf { it.isNotBlank() } ?: bestMatch.plainLyrics
-                    safeLogD("[LrcLibMusicProvider] Selected free search match: '${bestMatch.trackName}' by '${bestMatch.artistName}'")
-                    if (!lyrics.isNullOrBlank()) {
-                        return@withContext Result.success(lyrics)
-                    }
+                val bestLyrics = selectBestLyricsCandidate(tracks, durationSec)
+                if (!bestLyrics.isNullOrBlank()) {
+                    return@withContext Result.success(bestLyrics)
                 }
             }
 
@@ -171,6 +170,42 @@ class LrcLibMusicProvider(
             }
         }
 
-        Result.success(null)
+        Result.success(fallbackDevanagariOrPlainLyrics)
+    }
+
+    /**
+     * Ranks candidate LRCLIB tracks, preferring:
+     * 1. Synchronized lyrics over plain lyrics
+     * 2. Official Romanized (non-Devanagari) lyrics over Devanagari lyrics
+     * 3. Word-level / Enhanced LRC timestamps (`<mm:ss.xx>` or `(start,dur)`)
+     * 4. Closest duration match
+     */
+    private fun selectBestLyricsCandidate(
+        tracks: List<com.usman.musicplayer.data.remote.LrcLibTrack>,
+        targetDurationSec: Int
+    ): String? {
+        if (tracks.isEmpty()) return null
+        val inlineWordRegex = Regex("""(<\d{1,2}:\d{2})|(\(\d+,\d+)""")
+
+        val scored = tracks.mapNotNull { t ->
+            val synced = t.syncedLyrics?.takeIf { it.isNotBlank() }
+            val plain = t.plainLyrics?.takeIf { it.isNotBlank() }
+            val chosen = synced ?: plain ?: return@mapNotNull null
+
+            var score = 0
+            if (synced != null) score += 1000
+            if (inlineWordRegex.containsMatchIn(chosen)) score += 400
+            if (!com.usman.musicplayer.model.HindiRomanTransliterator.containsDevanagari(chosen)) {
+                score += 250
+            }
+            if (targetDurationSec > 0 && t.duration != null) {
+                val diff = kotlin.math.abs(t.duration - targetDurationSec.toDouble())
+                if (diff <= 4.0) score += 150
+                else if (diff <= 12.0) score += 75
+            }
+            chosen to score
+        }
+
+        return scored.maxByOrNull { it.second }?.first
     }
 }

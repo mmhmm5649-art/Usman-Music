@@ -758,6 +758,16 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     controller.addListener(object : Player.Listener {
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             _uiState.update { it.copy(isPlaying = isPlaying) }
+                            _playbackProgress.update {
+                                it.copy(
+                                    currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+                                    isPlaying = isPlaying,
+                                    isBuffering = controller.playbackState == Player.STATE_BUFFERING,
+                                    playbackSpeed = controller.playbackParameters.speed,
+                                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                                    updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                                )
+                            }
                             if (isPlaying) {
                                 startProgressTracker()
                                 val sessionId = UsmanPlaybackService.currentAudioSessionId
@@ -767,6 +777,36 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                                 }
                             } else {
                                 AudioSpectrumManager.clearSpectrum()
+                            }
+                        }
+
+                        override fun onPositionDiscontinuity(
+                            oldPosition: Player.PositionInfo,
+                            newPosition: Player.PositionInfo,
+                            reason: Int
+                        ) {
+                            val newPosMs = newPosition.positionMs.coerceAtLeast(0L)
+                            _uiState.update { it.copy(currentPositionMs = newPosMs) }
+                            _playbackProgress.update {
+                                it.copy(
+                                    currentPositionMs = newPosMs,
+                                    isPlaying = controller.isPlaying,
+                                    isBuffering = controller.playbackState == Player.STATE_BUFFERING,
+                                    playbackSpeed = controller.playbackParameters.speed,
+                                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                                    updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                                )
+                            }
+                        }
+
+                        override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) {
+                            _playbackProgress.update {
+                                it.copy(
+                                    currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+                                    playbackSpeed = playbackParameters.speed,
+                                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                                    updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                                )
                             }
                         }
 
@@ -809,6 +849,19 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                             val buffered = controller.bufferedPosition.coerceAtLeast(0L)
                             val isPlaying = controller.isPlaying
 
+                            val isBuffering = playbackState == Player.STATE_BUFFERING
+                            _playbackProgress.update {
+                                it.copy(
+                                    currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+                                    durationMs = if (duration > 0) duration else it.durationMs,
+                                    bufferedPositionMs = buffered,
+                                    isPlaying = isPlaying,
+                                    isBuffering = isBuffering,
+                                    playbackSpeed = controller.playbackParameters.speed,
+                                    updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                                    updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                                )
+                            }
                             if (playbackState == Player.STATE_READY) {
                                 _uiState.update {
                                     it.copy(
@@ -2577,6 +2630,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val buffered = controller?.bufferedPosition ?: _uiState.value.bufferedPositionMs
                 val isPlaying = controller?.isPlaying ?: _uiState.value.isPlaying
 
+                val isBuffering = controller?.playbackState == Player.STATE_BUFFERING
+                val speed = controller?.playbackParameters?.speed ?: 1.0f
+
                 // Update specialized progress flow (high-frequency)
                 _playbackProgress.update {
                     it.copy(
@@ -2584,6 +2640,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         durationMs = duration.coerceAtLeast(0L),
                         bufferedPositionMs = buffered.coerceAtLeast(0L),
                         isPlaying = isPlaying,
+                        playbackSpeed = speed,
+                        isBuffering = isBuffering,
                         updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
                         updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                     )
