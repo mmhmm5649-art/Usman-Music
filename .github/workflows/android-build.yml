@@ -11,18 +11,127 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Configure Firebase (app/google-services.json)
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          # Restore optional debug.keystore if supplied via GitHub secret so SHA-1 matches Firebase Auth
+          if [ -n "${DEBUG_KEYSTORE_BASE64:-}" ] && [ ! -f "debug.keystore" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > debug.keystore
+            echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
+          fi
+
+          # Decode GOOGLE_SERVICES_JSON_BASE64 (or raw GOOGLE_SERVICES_JSON) into app/google-services.json
+          if [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
+            mkdir -p app
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '[:space:]' | base64 --decode > app/google-services.json
+            echo "Decoded GOOGLE_SERVICES_JSON_BASE64 secret into app/google-services.json."
+          elif [ -n "${GOOGLE_SERVICES_JSON:-}" ]; then
+            mkdir -p app
+            printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            echo "Wrote GOOGLE_SERVICES_JSON secret into app/google-services.json."
+          elif [ -f "app/google-services.json" ]; then
+            echo "Using existing app/google-services.json from repository."
+          else
+            echo "::error title=Missing app/google-services.json::Firebase configuration file 'app/google-services.json' is missing in the GitHub Actions environment. Add a GitHub Actions repository secret named 'GOOGLE_SERVICES_JSON_BASE64' containing the Base64-encoded contents of your Firebase 'google-services.json' (for package 'com.usman.musicplayer' with Google Sign-In enabled so 'oauth_client' includes 'client_type: 3')."
+            echo "================================================================================"
+            echo "ERROR: app/google-services.json is missing."
+            echo ""
+            echo "How to fix in GitHub Actions:"
+            echo "  1. Obtain your 'google-services.json' from Firebase Console -> Project Settings"
+            echo "     for Android package 'com.usman.musicplayer' (with Google Sign-In enabled so"
+            echo "     an OAuth 2.0 Web Client ID with 'client_type: 3' is present)."
+            echo "  2. Base64-encode the file (single line):"
+            echo "     base64 -w 0 app/google-services.json"
+            echo "  3. In your GitHub repository, go to:"
+            echo "     Settings -> Secrets and variables -> Actions -> New repository secret"
+            echo "     Name:  GOOGLE_SERVICES_JSON_BASE64"
+            echo "     Value: <paste Base64 string>"
+            echo "================================================================================"
+            exit 1
+          fi
+
+          # Validate that app/google-services.json is valid JSON, matches com.usman.musicplayer,
+          # and contains a client_type: 3 Web Client ID so R.string.default_web_client_id is generated
+          python3 - <<'PY'
+          import json, sys
+
+          path = "app/google-services.json"
+          expected_pkg = "com.usman.musicplayer"
+
+          try:
+              with open(path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"::error file={path}::Invalid JSON in {path}: {exc}")
+              sys.exit(1)
+
+          clients = data.get("client", [])
+          matching_client = None
+          for client in clients:
+              pkg = (
+                  client.get("client_info", {})
+                  .get("android_client_info", {})
+                  .get("package_name")
+              )
+              if pkg == expected_pkg:
+                  matching_client = client
+                  break
+
+          if matching_client is None:
+              print(
+                  f"::error file={path}::No Android client in {path} matches applicationId '{expected_pkg}'."
+              )
+              sys.exit(1)
+
+          oauth_clients = list(matching_client.get("oauth_client", []))
+          other_oauth = (
+              matching_client.get("services", {})
+              .get("appinvite_service", {})
+              .get("other_platform_oauth_client", [])
+          )
+          all_oauth = oauth_clients + list(other_oauth)
+          web_clients = [
+              c for c in all_oauth
+              if c.get("client_type") == 3 and c.get("client_id")
+          ]
+
+          if not web_clients:
+              print(
+                  f"::error file={path}::No OAuth 2.0 Web Client ID (client_type: 3) found in {path} for '{expected_pkg}'. "
+                  "Enable Google Sign-In in Firebase Console -> Authentication -> Sign-in method -> Google and re-download google-services.json so R.string.default_web_client_id is generated."
+              )
+              sys.exit(1)
+
+          print(
+              f"Validated {path}: package='{expected_pkg}', project_id='{data.get('project_info', {}).get('project_id')}', "
+              f"default_web_client_id present ({len(web_clients)} client_type=3 entry)."
+          )
+          PY
+
       - name: Make gradlew executable
         run: chmod +x gradlew
+
       - name: Run Unit Tests
-        run: ./gradlew :app:testDebugUnitTest
+        run: ./gradlew :app:testDebugUnitTest -PrequireGoogleServices=true
+
       - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleDebug -PrequireGoogleServices=true
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

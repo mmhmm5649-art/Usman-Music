@@ -1,5 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.time.Duration
+import java.util.Base64
 
 plugins {
   alias(libs.plugins.android.application)
@@ -9,19 +10,91 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+val appId = "com.usman.musicplayer"
+val googleServicesFile = file("google-services.json")
+
+if (!googleServicesFile.exists()) {
+  val base64Secret = System.getenv("GOOGLE_SERVICES_JSON_BASE64")?.trim().orEmpty()
+  val rawSecret = System.getenv("GOOGLE_SERVICES_JSON")?.trim().orEmpty()
+  if (base64Secret.isNotEmpty()) {
+    try {
+      val decodedBytes = Base64.getMimeDecoder().decode(base64Secret)
+      googleServicesFile.writeBytes(decodedBytes)
+      logger.lifecycle("Firebase: Restored app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 environment variable.")
+    } catch (e: IllegalArgumentException) {
+      throw GradleException(
+        "Invalid Base64 content in GOOGLE_SERVICES_JSON_BASE64 environment variable: ${e.message}",
+        e
+      )
+    }
+  } else if (rawSecret.isNotEmpty()) {
+    googleServicesFile.writeText(rawSecret)
+    logger.lifecycle("Firebase: Restored app/google-services.json from GOOGLE_SERVICES_JSON environment variable.")
+  }
+}
+
+val googleServicesContent = if (googleServicesFile.exists()) googleServicesFile.readText() else ""
+val hasMatchingPackageName =
+  Regex("\"package_name\"\\s*:\\s*\"${Regex.escape(appId)}\"").containsMatchIn(googleServicesContent)
+val hasWebClientIdInGoogleServices =
+  hasMatchingPackageName && Regex("\"client_type\"\\s*:\\s*3").containsMatchIn(googleServicesContent)
+val requireGoogleServices =
+  providers.gradleProperty("requireGoogleServices").map { it.equals("true", ignoreCase = true) }.getOrElse(false)
+
+if (!googleServicesFile.exists()) {
+  val missingMsg =
+    """
+    Firebase configuration file 'app/google-services.json' is missing.
+    - For GitHub Actions: Add a repository secret named 'GOOGLE_SERVICES_JSON_BASE64' containing the Base64-encoded contents of your 'app/google-services.json' (`base64 -w 0 app/google-services.json`).
+    - For local builds: Place a valid 'google-services.json' for package '$appId' (with Google Sign-In enabled so 'oauth_client' includes 'client_type: 3') at 'app/google-services.json'.
+    """.trimIndent()
+  if (requireGoogleServices) {
+    throw GradleException(missingMsg)
+  } else {
+    logger.warn(missingMsg)
+  }
+} else {
+  if (!hasMatchingPackageName) {
+    val pkgMismatchMsg =
+      "Firebase configuration error in 'app/google-services.json': No Android client found with package_name '$appId' matching applicationId."
+    if (requireGoogleServices) {
+      throw GradleException(pkgMismatchMsg)
+    } else {
+      logger.warn(pkgMismatchMsg)
+    }
+  }
+  if (!hasWebClientIdInGoogleServices) {
+    val missingWebClientMsg =
+      "Firebase configuration warning in 'app/google-services.json': No OAuth 2.0 Web Client ID ('client_type: 3') found for '$appId'. Enable Google Sign-In in Firebase Console -> Authentication -> Sign-in method -> Google and re-download 'google-services.json' so 'R.string.default_web_client_id' is generated."
+    if (requireGoogleServices) {
+      throw GradleException(missingWebClientMsg)
+    } else {
+      logger.warn(missingWebClientMsg)
+    }
+  }
+}
+
 android {
-  namespace = "com.usman.musicplayer"
+  namespace = appId
   compileSdk = 35
   buildToolsVersion = "35.0.0"
 
   defaultConfig {
-    applicationId = "com.usman.musicplayer"
+    applicationId = appId
     minSdk = 24
     targetSdk = 35
     versionCode = 1
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // When app/google-services.json is present and contains a client_type: 3 Web Client ID,
+    // the Google Services Gradle plugin automatically generates R.string.default_web_client_id.
+    // When app/google-services.json is absent or lacks client_type: 3, provide an empty fallback
+    // resource so GoogleAuthHelper.kt always compiles cleanly and handles the missing ID at runtime.
+    if (!hasWebClientIdInGoogleServices) {
+      resValue("string", "default_web_client_id", "")
+    }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -79,10 +152,7 @@ android {
   }
 }
 
-
-
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
-
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
 
