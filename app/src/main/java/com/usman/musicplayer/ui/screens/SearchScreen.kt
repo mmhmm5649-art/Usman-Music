@@ -67,10 +67,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.model.Album
+import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.Artist
 import com.usman.musicplayer.model.MusicFolder
-import com.usman.musicplayer.model.PlaybackType
+import com.usman.musicplayer.model.OnlineArtistResult
+import com.usman.musicplayer.model.SearchFilterCategory
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.ui.components.OnlineAlbumResultCard
+import com.usman.musicplayer.ui.components.OnlineArtistResultRow
+import com.usman.musicplayer.ui.components.SearchFilterCategoryBar
 import com.usman.musicplayer.ui.components.SongAlbumArtwork
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.ElectricBlue
@@ -92,6 +97,9 @@ fun SearchScreen(
     onSearchSourceChange: (SearchSource) -> Unit,
     onPlaySong: (Song) -> Unit,
     onOpenService: (Context, Song, ExternalServiceType) -> Unit,
+    onSearchFilterCategoryChange: (SearchFilterCategory) -> Unit = {},
+    onOpenOnlineAlbum: (AlbumSearchResult) -> Unit = {},
+    onOpenOnlineArtist: (OnlineArtistResult) -> Unit = {},
     onAlbumClick: (Album) -> Unit = {},
     onArtistClick: (Artist) -> Unit = {},
     onFolderClick: (MusicFolder) -> Unit = {},
@@ -151,7 +159,7 @@ fun SearchScreen(
                             .testTag("search_input_field"),
                         placeholder = {
                             Text(
-                                text = if (isOnlineMode) "Search Telugu, Phonk, The Weeknd, BTS..." else "Search songs, artists, folders...",
+                                text = if (isOnlineMode) "Search songs, movies, albums, artists..." else "Search songs, albums, artists...",
                                 color = TextMuted,
                                 fontSize = 14.sp
                             )
@@ -271,11 +279,70 @@ fun SearchScreen(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    SearchFilterCategoryBar(
+                        selectedCategory = uiState.searchFilterCategory,
+                        onCategorySelected = onSearchFilterCategoryChange
+                    )
                 }
             }
 
-            // Quick Category Shortcuts (when query is empty)
+            // Quick Category Shortcuts & Recent Text Search History (when query is empty)
             if (query.isBlank()) {
+                val safeTrendingSongs = uiState.onlineTrendingSongs.filter { song ->
+                    !song.isOnline || (
+                        song.sourceProvider.equals("JioSaavn", ignoreCase = true) &&
+                            song.playbackType == com.usman.musicplayer.model.PlaybackType.FULL
+                        )
+                }
+
+                if (uiState.searchHistory.isNotEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "Recent Searches",
+                                color = TextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                uiState.searchHistory.forEach { historyQuery ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color(0x2B283052))
+                                            .clickable {
+                                                onSearchSourceChange(SearchSource.ONLINE)
+                                                onSearchQueryChange(historyQuery)
+                                                onTriggerOnlineSearch(historyQuery)
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = historyQuery,
+                                            color = TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Column(
                         modifier = Modifier
@@ -328,8 +395,8 @@ fun SearchScreen(
                     }
                 }
 
-                // Trending preview recommendations
-                if (uiState.onlineTrendingSongs.isNotEmpty()) {
+                // Trending JioSaavn recommendations
+                if (safeTrendingSongs.isNotEmpty()) {
                     item {
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
@@ -341,7 +408,7 @@ fun SearchScreen(
                         )
                     }
 
-                    items(uiState.onlineTrendingSongs.take(8), key = { "trend_search_${it.id}" }) { song ->
+                    items(safeTrendingSongs.take(8), key = { "trend_search_${it.id}" }) { song ->
                         OnlineSongResultRow(
                             song = song,
                             isCurrent = uiState.currentSong?.id == song.id,
@@ -355,6 +422,7 @@ fun SearchScreen(
 
             // Results Section: ONLINE MODE
             if (isOnlineMode && query.isNotBlank()) {
+                val filter = uiState.searchFilterCategory
                 if (uiState.isOnlineSearching) {
                     item {
                         Box(
@@ -378,7 +446,7 @@ fun SearchScreen(
                             }
                         }
                     }
-                } else if (uiState.onlineSearchError != null) {
+                } else if (uiState.onlineSearchError != null && uiState.onlineSearchResults.isEmpty() && uiState.onlineSearchAlbums.isEmpty() && uiState.onlineSearchArtists.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
@@ -387,50 +455,200 @@ fun SearchScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = uiState.onlineSearchError ?: "No songs found",
+                                text = uiState.onlineSearchError ?: "No results found",
                                 color = TextMuted,
                                 fontSize = 14.sp
                             )
                         }
                     }
                 } else {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Online Search Results",
-                                color = TextPrimary,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "${uiState.onlineSearchResults.size} tracks",
-                                color = SoftCyan,
-                                fontSize = 13.sp
-                            )
+                    // 1. Albums & Movie Soundtracks
+                    if (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ALBUMS) {
+                        val albumsToShow = if (filter == SearchFilterCategory.ALL) {
+                            uiState.onlineSearchAlbums.take(4)
+                        } else {
+                            uiState.onlineSearchAlbums
+                        }
+
+                        if (albumsToShow.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Albums & Movie Soundtracks",
+                                        color = TextPrimary,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (filter == SearchFilterCategory.ALL && uiState.onlineSearchAlbums.size > 4) {
+                                        Text(
+                                            text = "See all (${uiState.onlineSearchAlbums.size})",
+                                            color = SoftCyan,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier
+                                                .clickable { onSearchFilterCategoryChange(SearchFilterCategory.ALBUMS) }
+                                                .padding(4.dp)
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "${uiState.onlineSearchAlbums.size} albums",
+                                            color = SoftCyan,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            items(albumsToShow, key = { "online_album_${it.sourceProvider}_${it.id}" }) { album ->
+                                OnlineAlbumResultCard(
+                                    album = album,
+                                    onClick = { onOpenOnlineAlbum(album) },
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 5.dp)
+                                )
+                            }
+                        } else if (filter == SearchFilterCategory.ALBUMS) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No matching albums or movie soundtracks found for \"$query\"",
+                                        color = TextMuted,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    items(uiState.onlineSearchResults, key = { "online_res_${it.id}" }) { song ->
-                        OnlineSongResultRow(
-                            song = song,
-                            isCurrent = uiState.currentSong?.id == song.id,
-                            isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
-                            onPlay = { onPlaySong(song) },
-                            onOpenService = { service -> onOpenService(context, song, service) }
-                        )
+                    // 2. Artists
+                    if (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ARTISTS) {
+                        val artistsToShow = if (filter == SearchFilterCategory.ALL) {
+                            uiState.onlineSearchArtists.take(3)
+                        } else {
+                            uiState.onlineSearchArtists
+                        }
+                        if (artistsToShow.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Artists",
+                                        color = TextPrimary,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "${uiState.onlineSearchArtists.size} artists",
+                                        color = SoftCyan,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+
+                            items(artistsToShow, key = { "online_artist_${it.id}_${it.name}" }) { artist ->
+                                OnlineArtistResultRow(
+                                    artist = artist,
+                                    onClick = { onOpenOnlineArtist(artist) },
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                                )
+                            }
+                        } else if (filter == SearchFilterCategory.ARTISTS) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No matching artists found for \"$query\"",
+                                        color = TextMuted,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Songs
+                    if (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.SONGS) {
+                        if (uiState.onlineSearchResults.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Songs",
+                                        color = TextPrimary,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "${uiState.onlineSearchResults.size} tracks",
+                                        color = SoftCyan,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+
+                            items(uiState.onlineSearchResults, key = { "online_res_${it.id}_${it.filePath}" }) { song ->
+                                OnlineSongResultRow(
+                                    song = song,
+                                    isCurrent = uiState.currentSong?.id == song.id,
+                                    isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
+                                    onPlay = { onPlaySong(song) },
+                                    onOpenService = { service -> onOpenService(context, song, service) }
+                                )
+                            }
+                        } else if (filter == SearchFilterCategory.SONGS) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No matching songs found for \"$query\"",
+                                        color = TextMuted,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
 
             // Results Section: DEVICE MODE
             if (!isOnlineMode && query.isNotBlank()) {
-                val totalMatches = matchingSongs.size + matchingAlbums.size + matchingArtists.size + matchingFolders.size
+                val filter = uiState.searchFilterCategory
+                val showSongs = filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.SONGS
+                val showAlbums = filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ALBUMS
+                val showArtists = filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ARTISTS
+
+                val totalMatches = (if (showSongs) matchingSongs.size else 0) +
+                    (if (showAlbums) matchingAlbums.size else 0) +
+                    (if (showArtists) matchingArtists.size else 0)
 
                 item {
                     Text(
@@ -442,7 +660,39 @@ fun SearchScreen(
                     )
                 }
 
-                if (matchingSongs.isNotEmpty()) {
+                if (showAlbums && matchingAlbums.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "Albums (${matchingAlbums.size})",
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    items(matchingAlbums, key = { "album_res_${it.id}" }) { album ->
+                        AlbumResultRow(album = album, onClick = { onAlbumClick(album) })
+                    }
+                }
+
+                if (showArtists && matchingArtists.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "Artists (${matchingArtists.size})",
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    items(matchingArtists, key = { "artist_res_${it.name}" }) { artist ->
+                        ArtistResultRow(artist = artist, onClick = { onArtistClick(artist) })
+                    }
+                }
+
+                if (showSongs && matchingSongs.isNotEmpty()) {
                     item {
                         Text(
                             text = "Songs (${matchingSongs.size})",
@@ -460,38 +710,6 @@ fun SearchScreen(
                             isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
                             onPlay = { onPlaySong(song) }
                         )
-                    }
-                }
-
-                if (matchingAlbums.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Albums (${matchingAlbums.size})",
-                            color = TextPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                        )
-                    }
-
-                    items(matchingAlbums, key = { "album_res_${it.id}" }) { album ->
-                        AlbumResultRow(album = album, onClick = { onAlbumClick(album) })
-                    }
-                }
-
-                if (matchingArtists.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Artists (${matchingArtists.size})",
-                            color = TextPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                        )
-                    }
-
-                    items(matchingArtists, key = { "artist_res_${it.name}" }) { artist ->
-                        ArtistResultRow(artist = artist, onClick = { onArtistClick(artist) })
                     }
                 }
             }
@@ -575,27 +793,11 @@ fun OnlineSongResultRow(
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = if (song.playbackType == PlaybackType.PREVIEW) "PREVIEW (30s)" else "FULL TRACK",
+                        text = "FULL TRACK",
                         color = Color(0xFFD8B4FE),
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold
                     )
-                }
-
-                if (!song.sourceProvider.isNullOrBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0x3338BDF8))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = song.sourceProvider.uppercase(),
-                            color = Color(0xFFBAE6FD),
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Black
-                        )
-                    }
                 }
 
                 if (!song.genre.isNullOrBlank()) {

@@ -33,14 +33,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.usman.musicplayer.model.Album
+import com.usman.musicplayer.model.AlbumDetails
+import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.LibraryTab
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.ui.components.TvAlbumGridCard
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 
 /**
  * TV-Optimized Library Screen for Android TV / Google TV.
- * Offers tabs for All Songs, Albums, Artists, Playlists, Favourites, Downloads,
+ * Offers tabs for All Songs, Albums, Artists, Playlists, Downloads,
  * with spacious grid layouts and clear D-pad focus outlines.
  */
 @Composable
@@ -48,6 +52,8 @@ fun TvLibraryScreen(
     uiState: MusicPlayerUiState,
     onTabSelected: (LibraryTab) -> Unit,
     onPlaySong: (Song) -> Unit,
+    onOpenSavedAlbum: (AlbumDetails) -> Unit = {},
+    onOpenLocalAlbum: (Album) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val tabs = listOf(
@@ -118,35 +124,91 @@ fun TvLibraryScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         // Content Display
-        val songsToDisplay = when (uiState.activeLibraryTab) {
-            LibraryTab.ALL_SONGS -> uiState.songs
-            LibraryTab.DOWNLOADS -> uiState.downloadedSongs
-            else -> uiState.songs
-        }
+        if (uiState.activeLibraryTab == LibraryTab.ALBUMS) {
+            if (uiState.savedAlbums.isEmpty() && uiState.albums.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "No saved or local albums available",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 176.dp),
+                    contentPadding = PaddingValues(bottom = 40.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(uiState.savedAlbums, key = { "tv_saved_album_${it.sourceProvider}_${it.id}" }) { saved ->
+                        val summary = AlbumSearchResult(
+                            id = saved.id,
+                            title = saved.title,
+                            movieName = saved.movieName,
+                            artist = saved.artist,
+                            year = saved.year,
+                            songCount = saved.tracks.size.coerceAtLeast(saved.songCount),
+                            artworkUri = saved.artworkUri,
+                            sourceProvider = saved.sourceProvider,
+                            externalUrl = saved.externalUrl,
+                            language = saved.language,
+                            isCompleteAlbum = saved.isComplete
+                        )
+                        TvAlbumGridCard(
+                            album = summary,
+                            onClick = { onOpenSavedAlbum(saved) }
+                        )
+                    }
 
-        if (songsToDisplay.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "No tracks available in this section",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
+                    items(uiState.albums, key = { "tv_local_album_${it.id}_${it.title}" }) { album ->
+                        val summary = AlbumSearchResult(
+                            id = album.id.toString(),
+                            title = album.title,
+                            artist = album.artist,
+                            songCount = album.songCount,
+                            artworkUri = album.artworkUri,
+                            sourceProvider = "Device Library",
+                            isCompleteAlbum = true
+                        )
+                        TvAlbumGridCard(
+                            album = summary,
+                            onClick = { onOpenLocalAlbum(album) }
+                        )
+                    }
+                }
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 160.dp),
-                contentPadding = PaddingValues(bottom = 40.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(songsToDisplay, key = { "${it.id}_${it.filePath}" }) { song ->
-                    TvSongCard(
-                        song = song,
-                        onClick = { onPlaySong(song) },
-                        cardWidth = 160.dp,
-                        cardHeight = 210.dp
+            val songsToDisplay = when (uiState.activeLibraryTab) {
+                LibraryTab.ALL_SONGS -> uiState.songs
+                LibraryTab.DOWNLOADS -> uiState.downloadedSongs
+                else -> uiState.songs
+            }
+
+            if (songsToDisplay.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "No tracks available in this section",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
                     )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 160.dp),
+                    contentPadding = PaddingValues(bottom = 40.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(songsToDisplay, key = { "${it.id}_${it.filePath}" }) { song ->
+                        TvSongCard(
+                            song = song,
+                            onClick = { onPlaySong(song) },
+                            cardWidth = 160.dp,
+                            cardHeight = 210.dp
+                        )
+                    }
                 }
             }
         }

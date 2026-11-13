@@ -21,8 +21,17 @@ object ProviderRegistry {
     private val _providers = CopyOnWriteArrayList<MusicProvider>()
     private val _enabledMap = ConcurrentHashMap<String, Boolean>()
 
+    @Volatile
+    private var internalSoundtrackVerifier: MusicProvider? = null
+
     val providers: List<MusicProvider> get() = _providers
     val activeProviders: List<MusicProvider> get() = _providers.filter { _enabledMap[it.metadata.id] != false }
+
+    /**
+     * Hidden internal-only metadata verifier for soundtrack tracklists/ordering.
+     * Never exposed in user-facing provider lists, search results, or playback queues.
+     */
+    fun getInternalSoundtrackVerifier(): MusicProvider? = internalSoundtrackVerifier
 
     fun init(context: Context) {
         if (_providers.isNotEmpty()) return
@@ -52,12 +61,21 @@ object ProviderRegistry {
             .build()
             .create(JioSaavnApiService::class.java)
 
+        val itunesApiService = Retrofit.Builder()
+            .baseUrl("https://itunes.apple.com/")
+            .client(httpClient)
+            .addConverterFactory(moshiConverter)
+            .build()
+            .create(com.usman.musicplayer.data.remote.MusicApiService::class.java)
+
         val lrclibApiService = Retrofit.Builder()
             .baseUrl("https://lrclib.net/")
             .client(httpClient)
             .addConverterFactory(moshiConverter)
             .build()
             .create(com.usman.musicplayer.data.remote.LrcLibApiService::class.java)
+
+        internalSoundtrackVerifier = com.usman.musicplayer.data.repository.providers.ITunesMusicProvider(itunesApiService)
 
         registerProvider(LocalMusicProvider(context), enabled = true)
         registerProvider(AudiusProvider(audiusApiService), enabled = true)
@@ -68,6 +86,10 @@ object ProviderRegistry {
     }
 
     fun registerProvider(provider: MusicProvider, enabled: Boolean = true) {
+        if (provider.metadata.id == "itunes_catalog_provider" || provider.metadata.name.equals("iTunes", ignoreCase = true)) {
+            internalSoundtrackVerifier = provider
+            return
+        }
         // Avoid duplicate registration
         _providers.removeAll { it.metadata.id == provider.metadata.id }
         _providers.add(provider)
@@ -88,6 +110,11 @@ object ProviderRegistry {
     }
 
     suspend fun getStreamUrl(song: Song): Result<String> {
+        // Reject preview-only or iTunes streams from resolution/playback
+        if (song.isOnline && (song.playbackType == PlaybackType.PREVIEW || song.sourceProvider.equals("iTunes", ignoreCase = true))) {
+            return Result.failure(Exception("Preview tracks are disabled; only full-length streams are supported."))
+        }
+
         // Direct stream already present in song model
         if (!song.contentUriString.isNullOrBlank()) {
             return Result.success(song.contentUriString)
@@ -103,8 +130,8 @@ object ProviderRegistry {
             return matchingProvider.getStreamUrl(song)
         }
 
-        // Fallback: try active providers
-        for (provider in activeProviders) {
+        // Fallback: try active full-playback providers
+        for (provider in activeProviders.filter { it.metadata.isFullPlaybackSupported }) {
             val result = provider.getStreamUrl(song)
             if (result.isSuccess) {
                 return result
@@ -112,5 +139,19 @@ object ProviderRegistry {
         }
 
         return Result.failure(Exception("No streaming provider available for ${song.title}"))
+    }
+
+    suspend fun getAlbumDetails(album: AlbumSearchResult): Result<AlbumDetails?> {
+        if (album.sourceProvider.equals("iTunes", ignoreCase = true)) {
+            return Result.failure(Exception("iTunes albums are not shown in user-facing results"))
+        }
+        val matchingProvider = activeProviders.find {
+            it.metadata.name.equals(album.sourceProvider, ignoreCase = true) ||
+            it.metadata.id.equals(album.sourceProvider, ignoreCase = true)
+        }
+        if (matchingProvider != null) {
+            return matchingProvider.getAlbumDetails(album)
+        }
+        return Result.failure(Exception("Provider '${album.sourceProvider}' is not available for album '${album.title}'"))
     }
 }

@@ -3,741 +3,1163 @@ package com.usman.musicplayer.playback
 import android.content.Context
 import android.content.SharedPreferences
 import android.media.audiofx.AudioEffect
-import android.media.audiofx.BassBoost
-import android.media.audiofx.EnvironmentalReverb
-import android.media.audiofx.Equalizer
-import android.media.audiofx.PresetReverb
-import android.media.audiofx.Virtualizer
+import android.os.Build
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
 
 /**
- * Data model for a single frequency band in the graphic Equalizer
- */
-data class EqualizerBand(
-    val bandIndex: Short,
-    val centerFreqHz: Int,
-    val formattedFreq: String,
-    val minGainMb: Short,
-    val maxGainMb: Short,
-    val currentGainMb: Short
-) {
-    val currentGainDb: Float
-        get() = currentGainMb / 100f
-
-    val minGainDb: Float
-        get() = minGainMb / 100f
-
-    val maxGainDb: Float
-        get() = maxGainMb / 100f
-}
-
-/**
- * Full state for audio effects and graphic equalizer
- */
-data class AudioEffectsState(
-    val masterEnabled: Boolean = true,
-    val equalizerEnabled: Boolean = true,
-    val isEqualizerSupported: Boolean = true,
-    val bands: List<EqualizerBand> = emptyList(),
-    val presets: List<String> = emptyList(),
-    val currentPresetIndex: Short = -1,
-    val currentPresetName: String = "Custom",
-    val minGainMb: Short = -1500,
-    val maxGainMb: Short = 1500,
-
-    // Bass Boost
-    val isBassBoostSupported: Boolean = true,
-    val bassBoostEnabled: Boolean = false,
-    val bassBoostStrength: Short = 0, // 0 to 1000
-
-    // Virtualizer / Spatial Audio (separate stereo expansion)
-    val isVirtualizerSupported: Boolean = true,
-    val virtualizerEnabled: Boolean = false,
-    val virtualizerStrength: Short = 0, // 0 to 1000
-
-    // Concert Hall (Authentic Acoustic Reverb)
-    val isReverbSupported: Boolean = true,
-    val concertHallEnabled: Boolean = false,
-    val concertHallIntensity: Int = 60, // 0 to 100%
-    val concertHallTier: String = "Medium", // "Low", "Medium", "High"
-    val isEnvironmentalReverbActive: Boolean = false,
-    val currentReverbPreset: Short = PresetReverb.PRESET_NONE
-)
-
-/**
- * Manages real-time Android AudioFX:
- * - Equalizer (hardware graphic equalizer attached to audio session)
- * - BassBoost (low-end frequency harmonic exciter)
- * - Virtualizer (stereo-widening spatial audio)
- * - EnvironmentalReverb / PresetReverb (authentic Concert Hall acoustic space simulation)
+ * Unified Studio Feel Audio Effects Engine Manager.
  *
- * Persists preferences across app launches using SharedPreferences.
+ * Architecture:
+ * - Real-time Media3 [StudioFeelAudioProcessor] attached inside ExoPlayer's DefaultAudioSink,
+ *   guaranteeing genuine PCM processing for 10-band EQ, Deep/Punchy Bass, Schroeder Concert Hall,
+ *   mono-safe 3D Surround, Crystal Clarity, Loudness, Balance, Preamp/Output Gain, and Peak Limiter.
+ * - Zero conflicting native Equalizer/BassBoost/Virtualizer/Reverb handles and zero duplicate sessions.
+ * - Zero artificial delays during audio session attachment; thread-safe, lock-free audio thread updates.
+ * - Honest capability detection via AudioEffect.queryEffects() alongside live DSP telemetry.
  */
+@OptIn(UnstableApi::class)
 object AudioEffectsManager {
 
     private const val TAG = "AudioEffectsManager"
-    private const val PREFS_NAME = "usman_audio_effects_prefs"
+    private const val PREFS_NAME = "usman_studio_audio_effects_prefs"
+    private const val KEY_STATE_JSON = "studio_state_v1"
+    private const val KEY_CUSTOM_EQ_PRESETS = "custom_eq_presets_v1"
+    private const val KEY_CUSTOM_QUICK_PRESETS = "custom_quick_presets_v1"
 
-    private var currentAudioSessionId: Int = -1
-    private var equalizer: Equalizer? = null
-    private var bassBoost: BassBoost? = null
-    private var virtualizer: Virtualizer? = null
-    private var environmentalReverb: EnvironmentalReverb? = null
-    private var presetReverb: PresetReverb? = null
+    private val sessionLock = Any()
+    private val effectsScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    @Volatile
     private var prefs: SharedPreferences? = null
+
+    @Volatile
+    private var currentAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+
+    @Volatile
+    private var probedHardwareEffectTypes: Set<UUID>? = null
 
     private val _effectsState = MutableStateFlow(AudioEffectsState())
     val effectsState: StateFlow<AudioEffectsState> = _effectsState.asStateFlow()
 
-    fun init(context: Context) {
-        if (prefs == null) {
-            prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            loadSavedPreferences()
-        }
-    }
-
-    private fun loadSavedPreferences() {
-        val p = prefs ?: return
-        val master = p.getBoolean("master_enabled", true)
-        val eqEnabled = p.getBoolean("eq_enabled", true)
-        val presetIdx = p.getInt("preset_idx", -1).toShort()
-        val presetName = p.getString("preset_name", "Custom") ?: "Custom"
-
-        val bbEnabled = p.getBoolean("bb_enabled", false)
-        val bbStrength = p.getInt("bb_strength", 600).toShort()
-
-        val virtEnabled = p.getBoolean("virt_enabled", false)
-        val virtStrength = p.getInt("virt_strength", 500).toShort()
-
-        val chEnabled = p.getBoolean("ch_enabled", false)
-        val chIntensity = p.getInt("ch_intensity", 60)
-        val chTier = when {
-            chIntensity <= 40 -> "Low"
-            chIntensity <= 75 -> "Medium"
-            else -> "High"
-        }
-        val chPreset = if (chEnabled) mapIntensityToPreset(chIntensity) else PresetReverb.PRESET_NONE
-
-        _effectsState.update {
-            it.copy(
-                masterEnabled = master,
-                equalizerEnabled = eqEnabled,
-                currentPresetIndex = presetIdx,
-                currentPresetName = presetName,
-                bassBoostEnabled = bbEnabled,
-                bassBoostStrength = bbStrength,
-                virtualizerEnabled = virtEnabled,
-                virtualizerStrength = virtStrength,
-                concertHallEnabled = chEnabled,
-                concertHallIntensity = chIntensity,
-                concertHallTier = chTier,
-                currentReverbPreset = chPreset
-            )
-        }
-    }
-
-    // Session-specific cache for failed effect types to prevent repeated crashes/logs
-    private val failedEffects = mutableSetOf<String>()
-    
-    // Cached supported effects to avoid repeated expensive calls
-    private var supportedEffectTypes: Set<java.util.UUID>? = null
-
-    private fun isEffectSupported(type: java.util.UUID): Boolean {
-        if (supportedEffectTypes == null) {
-            supportedEffectTypes = AudioEffect.queryEffects().map { it.type }.toSet()
-        }
-        return supportedEffectTypes!!.contains(type)
-    }
-
-    /**
-     * Attach all audio effects to the active audio session ID from ExoPlayer
-     */
-    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-    private var attachJob: kotlinx.coroutines.Job? = null
-    private val effectsScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
-
-    fun attachAudioSession(context: Context, audioSessionId: Int) {
-        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == 0) return
-        
-        attachJob?.cancel()
-        attachJob = effectsScope.launch {
-            init(context)
-            if (currentAudioSessionId == audioSessionId) return@launch
-
-            releaseEffects()
-            
-            // Stabilization delay before any effect creation to let AudioFlinger settle
-            kotlinx.coroutines.delay(200)
-
-            currentAudioSessionId = audioSessionId
-
-            // 1. Equalizer Setup
-            initializeEffect("Equalizer", AudioEffect.EFFECT_TYPE_EQUALIZER) {
-                val eq = Equalizer(0, audioSessionId)
-                eq.enabled = _effectsState.value.masterEnabled && _effectsState.value.equalizerEnabled
-                equalizer = eq
-                _effectsState.update { it.copy(isEqualizerSupported = true) }
-                setupEqualizerBands(eq)
-            }
-            kotlinx.coroutines.delay(20)
-
-            // 2. Bass Boost Setup
-            initializeEffect("BassBoost", AudioEffect.EFFECT_TYPE_BASS_BOOST) {
-                val bb = BassBoost(0, audioSessionId)
-                val state = _effectsState.value
-                bb.enabled = state.masterEnabled && state.bassBoostEnabled
-                if (bb.strengthSupported) bb.setStrength(state.bassBoostStrength)
-                bassBoost = bb
-                _effectsState.update { it.copy(isBassBoostSupported = true) }
-            }
-            kotlinx.coroutines.delay(50)
-
-            // 3. Virtualizer Setup
-            initializeEffect("Virtualizer", AudioEffect.EFFECT_TYPE_VIRTUALIZER) {
-                val virt = Virtualizer(0, audioSessionId)
-                val state = _effectsState.value
-                virt.enabled = state.masterEnabled && state.virtualizerEnabled
-                if (virt.strengthSupported) virt.setStrength(state.virtualizerStrength)
-                virtualizer = virt
-                _effectsState.update { it.copy(isVirtualizerSupported = true) }
-            }
-            kotlinx.coroutines.delay(50)
-
-            // 4. Reverb
-            setupConcertHallReverb(audioSessionId)
-        }
-    }
-
-    private suspend fun initializeEffect(name: String, type: java.util.UUID, initBlock: suspend () -> Unit) {
-        if (!failedEffects.contains(name) && isEffectSupported(type)) {
-            try {
-                initBlock()
-            } catch (e: Throwable) {
-                Log.d(TAG, "$name initialization failed: ${e.message}")
-                failedEffects.add(name)
-            }
-        }
-    }
-
-    private fun setupConcertHallReverb(audioSessionId: Int) {
-        val state = _effectsState.value
-        val shouldEnable = state.masterEnabled && state.concertHallEnabled
-
-        // Attempt genuine parametric EnvironmentalReverb
-        if (!failedEffects.contains("EnvironmentalReverb")) {
-            try {
-                val env = EnvironmentalReverb(0, audioSessionId)
-                applyEnvironmentalSettings(env, state.concertHallIntensity)
-                env.enabled = shouldEnable
-                environmentalReverb = env
-                presetReverb = null
-                _effectsState.update { it.copy(isReverbSupported = true, isEnvironmentalReverbActive = true) }
-                return
-            } catch (e: Throwable) {
-                if (e.message?.contains("-38") == true) {
-                    Log.d(TAG, "EnvironmentalReverb temporary failure: ${e.message}")
-                } else {
-                    Log.d(TAG, "EnvironmentalReverb unsupported, trying PresetReverb fallback")
-                    failedEffects.add("EnvironmentalReverb")
-                }
-            }
-        }
-
-        // Fallback: PresetReverb
-        if (!failedEffects.contains("PresetReverb")) {
-            try {
-                val pReverb = PresetReverb(0, audioSessionId)
-                pReverb.preset = if (state.concertHallEnabled) mapIntensityToPreset(state.concertHallIntensity) else PresetReverb.PRESET_NONE
-                pReverb.enabled = shouldEnable
-                presetReverb = pReverb
-                _effectsState.update { it.copy(isReverbSupported = true, isEnvironmentalReverbActive = false, currentReverbPreset = pReverb.preset) }
-            } catch (e2: Throwable) {
-                if (e2.message?.contains("-38") == true) {
-                    Log.d(TAG, "PresetReverb temporary failure: ${e2.message}")
-                } else {
-                    Log.d(TAG, "Neither EnvironmentalReverb nor PresetReverb supported")
-                    failedEffects.add("PresetReverb")
-                    _effectsState.update { it.copy(isReverbSupported = false, isEnvironmentalReverbActive = false) }
-                }
-            }
-        }
-    }
-
-    /**
-     * Calibrate EnvironmentalReverb acoustic parameters to deliver authentic concert hall reverberation:
-     * - Smooth early reflections (20-30ms) for real physical stage dimensions without discrete echoes.
-     * - Lush, diffuse decay tail (1.4s to 3.4s) that blooms warmly behind the music.
-     * - High-frequency absorption (decayHFRatio and roomHFLevel) that prevents metallic ringing.
-     * - Balanced room level so the dry vocal and acoustic instruments remain upfront and crystal-clear.
-     */
-    private fun applyEnvironmentalSettings(reverb: EnvironmentalReverb, intensity: Int) {
-        try {
-            val clamped = intensity.coerceIn(5, 100)
-            val t = clamped / 100f // 0.05 to 1.0
-
-            // 1. Decay Time (1.3s at Low to 3.4s at High)
-            // A classical symphonic hall has an RT60 of ~2.0s - 2.6s.
-            val decayMs = (1300 + (t * 2100)).toInt()
-            reverb.decayTime = decayMs
-
-            // 2. High-Frequency Decay Ratio (HF Damping)
-            // Values < 1000 cause higher frequencies to roll off faster than low frequencies,
-            // emulating natural air and wood-paneled hall absorption without harsh ringing.
-            val hfRatio = (750 + (t * 110)).toInt().toShort() // 750 to 860 per mille
-            reverb.decayHFRatio = hfRatio
-
-            // 3. Room Level (Master Reverb Output)
-            // Kept between -1600 mB (-16 dB) and -300 mB (-3 dB) so the direct dry audio
-            // and vocal presence remain intelligible and punchy.
-            val roomLvl = (-1600 + (t * 1300)).toInt().toShort()
-            reverb.roomLevel = roomLvl
-
-            // 4. Room High-Frequency Attenuation
-            // Attenuation between -800 mB and -450 mB prevents harsh sibilance or cymbal wash.
-            val roomHFLvl = (-800 + (t * 350)).toInt().toShort()
-            reverb.roomHFLevel = roomHFLvl
-
-            // 5. Early Reflections Level & Delay
-            // Early reflections arrive 18ms to 32ms after direct sound, establishing stage size.
-            val reflLvl = (-1500 + (t * 1000)).toInt().toShort()
-            val reflDelay = (18 + (t * 14)).toInt()
-            reverb.reflectionsLevel = reflLvl
-            reverb.reflectionsDelay = reflDelay
-
-            // 6. Late Reverb Tail Level & Delay
-            // Reverb tail begins 24ms to 40ms after early reflections for a continuous diffuse bloom.
-            val revLvl = (-1200 + (t * 1000)).toInt().toShort()
-            val revDelay = (24 + (t * 16)).toInt()
-            reverb.reverbLevel = revLvl
-            reverb.reverbDelay = revDelay
-
-            // 7. Diffusion & Density
-            // Maximum diffusion (1000/1000) for silky smooth reverberation without flutter.
-            reverb.diffusion = 1000.toShort()
-            reverb.density = 1000.toShort()
-        } catch (e: Exception) {
-            Log.w(TAG, "applyEnvironmentalSettings partial failure, continuing", e)
-        }
-    }
-
-    private fun mapIntensityToPreset(intensity: Int): Short {
-        return when {
-            intensity <= 40 -> PresetReverb.PRESET_LARGEROOM // subtle room ambience
-            intensity <= 75 -> PresetReverb.PRESET_MEDIUMHALL // natural concert hall
-            else -> PresetReverb.PRESET_LARGEHALL // spacious hall
-        }
-    }
-
-    private fun setupEqualizerBands(eq: Equalizer) {
-        val numBands = eq.numberOfBands.toInt()
-        val range: ShortArray = eq.bandLevelRange // [minMb, maxMb] typically [-1500, 1500]
-        val minMb: Short = if (range.size >= 2) range[0] else (-1500).toShort()
-        val maxMb: Short = if (range.size >= 2) range[1] else (1500).toShort()
-
-        val p = prefs
-        val bandsList = mutableListOf<EqualizerBand>()
-
-        for (i in 0 until numBands) {
-            val bandIdx: Short = i.toShort()
-            val centerFreqMhz = eq.getCenterFreq(bandIdx)
-            val centerFreqHz = centerFreqMhz / 1000
-            val formatted = formatFrequency(centerFreqHz)
-
-            val savedGain: Short = (p?.getInt("band_gain_$bandIdx", 0) ?: 0).toShort()
-            val clampedGain: Short = savedGain.coerceIn(minMb, maxMb).toShort()
-
-            try {
-                eq.setBandLevel(bandIdx, clampedGain)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to apply band level $bandIdx", e)
-            }
-
-            bandsList.add(
-                EqualizerBand(
-                    bandIndex = bandIdx,
-                    centerFreqHz = centerFreqHz,
-                    formattedFreq = formatted,
-                    minGainMb = minMb,
-                    maxGainMb = maxMb,
-                    currentGainMb = clampedGain
+    private val audioProcessor = StudioFeelAudioProcessor { sampleRateHz, channelCount, encodingName, active ->
+        _effectsState.update { state ->
+            state.copy(
+                availability = state.availability.copy(
+                    sampleRateHz = if (sampleRateHz > 0) sampleRateHz else state.availability.sampleRateHz,
+                    channelCount = if (channelCount > 0) channelCount else state.availability.channelCount,
+                    encodingName = encodingName,
+                    dspEngineActive = active,
+                    outputModeDescription = buildOutputModeDescription(state, channelCount, active)
                 )
             )
         }
+    }
 
-        val hwPresets = mutableListOf<String>()
-        val numPresets = eq.numberOfPresets.toInt()
-        for (i in 0 until numPresets) {
-            val name = try { eq.getPresetName(i.toShort()) } catch (e: Exception) { "Preset $i" }
-            if (name.isNotBlank()) hwPresets.add(name)
+    fun getAudioProcessor(): StudioFeelAudioProcessor = audioProcessor
+
+    fun init(context: Context) {
+        synchronized(sessionLock) {
+            if (prefs == null) {
+                prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                loadSavedStateLocked()
+            }
+        }
+        audioProcessor.updateState(_effectsState.value)
+    }
+
+    /**
+     * Attaches cleanly to an active Media3 ExoPlayer audio session ID without artificial delays.
+     * Deduplicates repeated attachments for the same session ID.
+     */
+    fun attachAudioSession(context: Context, audioSessionId: Int) {
+        init(context)
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId <= 0) return
+
+        synchronized(sessionLock) {
+            if (currentAudioSessionId == audioSessionId) {
+                return
+            }
+            currentAudioSessionId = audioSessionId
         }
 
-        val allPresets = if (hwPresets.isNotEmpty()) {
-            hwPresets
-        } else {
-            listOf("Normal", "Flat", "Bass", "Treble", "Vocal", "Rock", "Pop", "Jazz", "Classical", "Dance", "Hip-Hop")
-        }
+        // Push active state immediately to the live DSP processor
+        audioProcessor.updateState(_effectsState.value)
 
-        _effectsState.update {
-            it.copy(
-                bands = bandsList,
-                presets = allPresets,
-                minGainMb = minMb,
-                maxGainMb = maxMb
+        // Probe hardware AudioEffect capabilities off the main thread without blocking
+        effectsScope.launch {
+            val supported = querySupportedHardwareEffects()
+            val envUuid = AudioEffect.EFFECT_TYPE_ENV_REVERB
+            val presetRevUuid = AudioEffect.EFFECT_TYPE_PRESET_REVERB
+            val loudUuid = UUID.fromString("0bed4300-ddd6-11db-8f34-0002a5d5c51b") // LoudnessEnhancer
+            val dynUuid = UUID.fromString("7261676f-6d75-7369-6364-28e2fd3ac39e")  // DynamicsProcessing
+
+            _effectsState.update { state ->
+                val hwEnv = envUuid in supported
+                val hwPresetRev = presetRevUuid in supported
+                state.copy(
+                    isEnvironmentalReverbActive = hwEnv,
+                    availability = state.availability.copy(
+                        audioSessionId = audioSessionId,
+                        hardwareEqualizerSupported = AudioEffect.EFFECT_TYPE_EQUALIZER in supported,
+                        hardwareBassBoostSupported = AudioEffect.EFFECT_TYPE_BASS_BOOST in supported,
+                        hardwareVirtualizerSupported = AudioEffect.EFFECT_TYPE_VIRTUALIZER in supported,
+                        hardwareEnvReverbSupported = hwEnv,
+                        hardwarePresetReverbSupported = hwPresetRev,
+                        hardwareLoudnessEnhancerSupported = loudUuid in supported,
+                        hardwareDynamicsSupported = if (Build.VERSION.SDK_INT >= 28) dynUuid in supported else false,
+                        peakReductionDb = audioProcessor.getLastPeakReductionDb(),
+                        outputModeDescription = buildOutputModeDescription(
+                            state,
+                            state.availability.channelCount,
+                            state.availability.dspEngineActive
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun refreshTelemetry() {
+        _effectsState.update { state ->
+            state.copy(
+                availability = state.availability.copy(
+                    peakReductionDb = audioProcessor.getLastPeakReductionDb()
+                )
             )
         }
     }
 
-    private fun formatFrequency(hz: Int): String {
-        return if (hz >= 1000) {
-            val khz = hz / 1000f
-            if (khz % 1.0f == 0.0f) "${khz.toInt()}k" else String.format("%.1fk", khz)
-        } else {
-            "${hz}Hz"
+    fun releaseEffects() {
+        synchronized(sessionLock) {
+            currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
+        }
+        audioProcessor.flush()
+        _effectsState.update { state ->
+            state.copy(
+                availability = state.availability.copy(
+                    audioSessionId = -1,
+                    dspEngineActive = false,
+                    peakReductionDb = 0f
+                )
+            )
         }
     }
 
-    // --- Interactive Controls ---
+    private fun querySupportedHardwareEffects(): Set<UUID> {
+        probedHardwareEffectTypes?.let { return it }
+        val discovered = try {
+            AudioEffect.queryEffects()?.mapNotNull { it?.type }?.toSet() ?: emptySet()
+        } catch (t: Throwable) {
+            Log.d(TAG, "AudioEffect.queryEffects unavailable: ${t.message}")
+            emptySet()
+        }
+        probedHardwareEffectTypes = discovered
+        return discovered
+    }
+
+    private fun buildOutputModeDescription(
+        state: AudioEffectsState,
+        channels: Int,
+        dspActive: Boolean
+    ): String {
+        val chLabel = when (channels) {
+            1 -> "Mono"
+            2 -> "Stereo"
+            else -> "${channels}ch"
+        }
+        val engineLabel = if (dspActive) "Studio PCM DSP Active" else "Studio DSP Ready"
+        val spatialNote = if (state.surround.enabled || state.utilities.virtualizerEnabled) {
+            " • Stereo Virtualization (Mono-Safe)"
+        } else ""
+        return "$engineLabel • $chLabel$spatialNote"
+    }
+
+    // --- State Update & Persistence Helper ---
+
+    private inline fun mutateState(
+        markCustomQuick: Boolean = false,
+        crossinline transform: (AudioEffectsState) -> AudioEffectsState
+    ) {
+        var snapshot: AudioEffectsState? = null
+        _effectsState.update { prev ->
+            val updated = transform(prev)
+            val synced = syncMirrorFields(
+                if (markCustomQuick && !updated.activeQuickPresetId.startsWith("custom_")) {
+                    updated.copy(
+                        activeQuickPresetId = "custom",
+                        activeQuickPresetName = "Custom Studio"
+                    )
+                } else {
+                    updated
+                }
+            )
+            snapshot = synced
+            synced
+        }
+        snapshot?.let {
+            audioProcessor.updateState(it)
+            persistState(it)
+        }
+    }
+
+    private fun syncMirrorFields(state: AudioEffectsState): AudioEffectsState {
+        val chInt = state.concertHall.wetDryMix.coerceIn(0, 100)
+        val tier = when {
+            chInt <= 22 -> "Low"
+            chInt <= 32 -> "Medium"
+            else -> "High"
+        }
+        val allEqNames = StudioEffectDefaults.builtInEqPresets.map { it.name } +
+            state.customEqPresets.map { it.name }
+        return state.copy(
+            presets = allEqNames,
+            bassBoostEnabled = state.utilities.bassBoostEnabled,
+            bassBoostStrength = state.utilities.bassBoostStrength,
+            virtualizerEnabled = state.surround.enabled || state.utilities.virtualizerEnabled,
+            virtualizerStrength = if (state.surround.enabled) {
+                (state.surround.intensity * 10).coerceIn(0, 1000).toShort()
+            } else {
+                state.utilities.virtualizerStrength
+            },
+            concertHallEnabled = state.concertHall.enabled,
+            concertHallIntensity = ((state.concertHall.wetDryMix / 45f) * 100f).toInt().coerceIn(0, 100),
+            concertHallTier = tier,
+            availability = state.availability.copy(
+                outputModeDescription = buildOutputModeDescription(
+                    state,
+                    state.availability.channelCount,
+                    state.availability.dspEngineActive
+                )
+            )
+        )
+    }
+
+    // --- Master & Equalizer Controls ---
 
     fun setMasterEnabled(enabled: Boolean) {
-        _effectsState.update { it.copy(masterEnabled = enabled) }
-        prefs?.edit()?.putBoolean("master_enabled", enabled)?.apply()
-
-        try {
-            equalizer?.enabled = enabled && _effectsState.value.equalizerEnabled
-            bassBoost?.enabled = enabled && _effectsState.value.bassBoostEnabled
-            virtualizer?.enabled = enabled && _effectsState.value.virtualizerEnabled
-            environmentalReverb?.enabled = enabled && _effectsState.value.concertHallEnabled
-            presetReverb?.enabled = enabled && _effectsState.value.concertHallEnabled
-        } catch (e: Exception) {
-            Log.w(TAG, "setMasterEnabled failed", e)
-        }
+        mutateState { it.copy(masterEnabled = enabled) }
     }
 
     fun setEqualizerEnabled(enabled: Boolean) {
-        _effectsState.update { it.copy(equalizerEnabled = enabled) }
-        prefs?.edit()?.putBoolean("eq_enabled", enabled)?.apply()
+        mutateState(markCustomQuick = true) { it.copy(equalizerEnabled = enabled) }
+    }
 
-        try {
-            equalizer?.enabled = _effectsState.value.masterEnabled && enabled
-        } catch (e: Exception) {
-            Log.w(TAG, "setEqualizerEnabled failed", e)
+    fun setEqStrengthPercent(strengthPercent: Int) {
+        val clamped = strengthPercent.coerceIn(0, 150)
+        mutateState(markCustomQuick = true) { it.copy(eqStrengthPercent = clamped) }
+    }
+
+    fun setPreampDb(preampDb: Float) {
+        val clamped = preampDb.coerceIn(-12f, 12f)
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(preampDb = clamped))
         }
     }
 
     fun setBandGain(bandIndex: Short, gainMb: Short) {
-        try {
-            equalizer?.setBandLevel(bandIndex, gainMb)
-        } catch (e: Exception) {
-            Log.w(TAG, "setBandLevel failed for band $bandIndex", e)
-        }
-
-        _effectsState.update { current ->
-            val updatedBands = current.bands.map {
-                if (it.bandIndex == bandIndex) it.copy(currentGainMb = gainMb) else it
+        val idx = bandIndex.toInt()
+        mutateState(markCustomQuick = true) { state ->
+            val clamped = gainMb.coerceIn(state.minGainMb, state.maxGainMb)
+            val updatedBands = state.bands.map { band ->
+                if (band.bandIndex.toInt() == idx) band.copy(currentGainMb = clamped) else band
             }
-            current.copy(
+            val customIdx = state.presets.indexOfFirst { it.equals("Custom", ignoreCase = true) }
+            state.copy(
                 bands = updatedBands,
-                currentPresetIndex = -1,
+                currentPresetIndex = customIdx.toShort(),
                 currentPresetName = "Custom"
             )
-        }
-
-        prefs?.edit()?.apply {
-            putInt("band_gain_$bandIndex", gainMb.toInt())
-            putInt("preset_idx", -1)
-            putString("preset_name", "Custom")
-            apply()
         }
     }
 
     fun selectPreset(presetIndex: Short, presetName: String) {
-        val eq = equalizer
-        if (eq != null && presetIndex >= 0) {
-            try {
-                eq.usePreset(presetIndex)
-                val updatedBands = _effectsState.value.bands.map { band ->
-                    val level = eq.getBandLevel(band.bandIndex)
-                    band.copy(currentGainMb = level)
-                }
-                _effectsState.update {
-                    it.copy(
-                        bands = updatedBands,
-                        currentPresetIndex = presetIndex,
-                        currentPresetName = presetName
-                    )
-                }
-                prefs?.edit()?.apply {
-                    putInt("preset_idx", presetIndex.toInt())
-                    putString("preset_name", presetName)
-                    updatedBands.forEach { b ->
-                        putInt("band_gain_${b.bandIndex}", b.currentGainMb.toInt())
-                    }
-                    apply()
-                }
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "eq.usePreset failed for $presetIndex", e)
-            }
+        val allPresets = StudioEffectDefaults.builtInEqPresets + _effectsState.value.customEqPresets
+        val target = allPresets.firstOrNull { it.name.equals(presetName, ignoreCase = true) }
+            ?: allPresets.getOrNull(presetIndex.toInt())
+
+        if (target == null) {
+            applyFallbackEqCurve(presetName)
+            return
         }
 
-        // Custom presets curve fallback
-        applyCustomPresetCurve(presetName)
+        mutateState(markCustomQuick = true) { state ->
+            val updatedBands = state.bands.mapIndexed { i, band ->
+                val gainDb = target.gainsDb.getOrElse(i) { 0f }
+                val gainMb = (gainDb * 100f).toInt().coerceIn(state.minGainMb.toInt(), state.maxGainMb.toInt()).toShort()
+                band.copy(currentGainMb = gainMb)
+            }
+            val resolvedIdx = state.presets.indexOfFirst { it.equals(target.name, ignoreCase = true) }
+            state.copy(
+                equalizerEnabled = true,
+                bands = updatedBands,
+                currentPresetIndex = resolvedIdx.toShort(),
+                currentPresetName = target.name,
+                utilities = state.utilities.copy(preampDb = target.preampDb)
+            )
+        }
     }
 
-    private fun applyCustomPresetCurve(name: String) {
-        val eq = equalizer
-        val minGain = _effectsState.value.minGainMb.toFloat()
-        val maxGain = _effectsState.value.maxGainMb.toFloat()
-        val range = (maxGain - minGain) / 2f
-
-        val ratios = when (name.lowercase()) {
-            "flat", "normal" -> floatArrayOf(0f, 0f, 0f, 0f, 0f)
-            "bass" -> floatArrayOf(0.85f, 0.65f, 0.1f, -0.1f, -0.2f)
-            "treble" -> floatArrayOf(-0.2f, -0.1f, 0.15f, 0.65f, 0.85f)
-            "vocal" -> floatArrayOf(-0.2f, 0.1f, 0.6f, 0.5f, 0.1f)
-            "rock" -> floatArrayOf(0.6f, 0.3f, -0.1f, 0.4f, 0.7f)
-            "pop" -> floatArrayOf(-0.1f, 0.35f, 0.6f, 0.4f, -0.1f)
-            "jazz" -> floatArrayOf(0.4f, 0.2f, 0.1f, 0.3f, 0.5f)
-            "classical" -> floatArrayOf(0.5f, 0.35f, -0.1f, 0.3f, 0.55f)
-            "dance" -> floatArrayOf(0.75f, 0.5f, 0.1f, 0.3f, 0.4f)
-            "hip-hop", "hip hop" -> floatArrayOf(0.8f, 0.55f, 0.0f, 0.25f, 0.45f)
-            else -> floatArrayOf(0f, 0f, 0f, 0f, 0f)
+    private fun applyFallbackEqCurve(name: String) {
+        val gains = when (name.lowercase()) {
+            "normal", "flat" -> List(10) { 0f }
+            "bass boost" -> listOf(6f, 5f, 3f, 0.5f, 0f, 0f, 0.5f, 1f, 1f, 0.5f)
+            "treble boost" -> listOf(-1f, -0.5f, 0f, 0.5f, 1f, 2f, 3.5f, 5f, 6f, 5.5f)
+            else -> List(10) { 0f }
         }
-
-        val updatedBands = _effectsState.value.bands.mapIndexed { idx, band ->
-            val ratio = if (idx < ratios.size) ratios[idx] else 0f
-            val gain = (ratio * (range * 0.75f)).toInt().coerceIn(minGain.toInt(), maxGain.toInt()).toShort()
-            try {
-                eq?.setBandLevel(band.bandIndex, gain)
-            } catch (e: Exception) {
-                // Ignore
+        mutateState(markCustomQuick = true) { state ->
+            val updatedBands = state.bands.mapIndexed { i, band ->
+                val gainMb = (gains[i] * 100f).toInt().coerceIn(state.minGainMb.toInt(), state.maxGainMb.toInt()).toShort()
+                band.copy(currentGainMb = gainMb)
             }
-            band.copy(currentGainMb = gain)
-        }
-
-        _effectsState.update {
-            it.copy(
+            state.copy(
                 bands = updatedBands,
                 currentPresetIndex = -1,
                 currentPresetName = name
             )
         }
-
-        prefs?.edit()?.apply {
-            putInt("preset_idx", -1)
-            putString("preset_name", name)
-            updatedBands.forEach { b ->
-                putInt("band_gain_${b.bandIndex}", b.currentGainMb.toInt())
-            }
-            apply()
-        }
     }
 
-    fun setBassBoostEnabled(enabled: Boolean) {
-        _effectsState.update { it.copy(bassBoostEnabled = enabled) }
-        prefs?.edit()?.putBoolean("bb_enabled", enabled)?.apply()
-
-        try {
-            bassBoost?.enabled = _effectsState.value.masterEnabled && enabled
-        } catch (e: Exception) {
-            Log.w(TAG, "setBassBoostEnabled failed", e)
-        }
-    }
-
-    fun setBassBoostStrength(strength: Short) {
-        val clamped = strength.coerceIn(0, 1000)
-        _effectsState.update { it.copy(bassBoostStrength = clamped) }
-        prefs?.edit()?.putInt("bb_strength", clamped.toInt())?.apply()
-
-        try {
-            bassBoost?.setStrength(clamped)
-        } catch (e: Exception) {
-            Log.w(TAG, "setBassBoostStrength failed", e)
-        }
-    }
-
-    fun setVirtualizerEnabled(enabled: Boolean) {
-        _effectsState.update { it.copy(virtualizerEnabled = enabled) }
-        prefs?.edit()?.putBoolean("virt_enabled", enabled)?.apply()
-
-        try {
-            virtualizer?.enabled = _effectsState.value.masterEnabled && enabled
-        } catch (e: Exception) {
-            Log.w(TAG, "setVirtualizerEnabled failed", e)
-        }
-    }
-
-    fun setVirtualizerStrength(strength: Short) {
-        val clamped = strength.coerceIn(0, 1000)
-        _effectsState.update { it.copy(virtualizerStrength = clamped) }
-        prefs?.edit()?.putInt("virt_strength", clamped.toInt())?.apply()
-
-        try {
-            virtualizer?.setStrength(clamped)
-        } catch (e: Exception) {
-            Log.w(TAG, "setVirtualizerStrength failed", e)
-        }
-    }
-
-    // --- Concert Hall Reverb Controls ---
-
-    fun setConcertHallEnabled(enabled: Boolean) {
-        val preset = if (enabled) mapIntensityToPreset(_effectsState.value.concertHallIntensity) else PresetReverb.PRESET_NONE
-        _effectsState.update {
-            it.copy(
-                concertHallEnabled = enabled,
-                currentReverbPreset = preset
+    fun saveCustomEqPreset(rawName: String): Boolean {
+        val cleanName = rawName.trim()
+        if (cleanName.isBlank()) return false
+        val current = _effectsState.value
+        val gains = current.bands.map { it.currentGainDb }
+        val existingIdx = current.customEqPresets.indexOfFirst { it.name.equals(cleanName, ignoreCase = true) }
+        val preset = if (existingIdx >= 0) {
+            current.customEqPresets[existingIdx].copy(
+                name = cleanName,
+                gainsDb = gains,
+                preampDb = current.utilities.preampDb,
+                isCustom = true
+            )
+        } else {
+            StudioEqPreset(
+                id = "custom_eq_${System.currentTimeMillis()}",
+                name = cleanName,
+                gainsDb = gains,
+                preampDb = current.utilities.preampDb,
+                isCustom = true
             )
         }
-        prefs?.edit()?.putBoolean("ch_enabled", enabled)?.apply()
-
-        try {
-            val master = _effectsState.value.masterEnabled
-            val shouldEnable = master && enabled
-
-            environmentalReverb?.let {
-                it.enabled = shouldEnable
-                if (enabled) {
-                    applyEnvironmentalSettings(it, _effectsState.value.concertHallIntensity)
-                }
+        mutateState { state ->
+            val updatedCustom = if (existingIdx >= 0) {
+                state.customEqPresets.toMutableList().apply { set(existingIdx, preset) }
+            } else {
+                state.customEqPresets + preset
             }
+            val synced = state.copy(customEqPresets = updatedCustom, currentPresetName = preset.name)
+            val newIdx = (StudioEffectDefaults.builtInEqPresets.map { it.name } + updatedCustom.map { it.name })
+                .indexOfFirst { it.equals(preset.name, ignoreCase = true) }
+            synced.copy(currentPresetIndex = newIdx.toShort())
+        }
+        persistCustomEqPresets(_effectsState.value.customEqPresets)
+        return true
+    }
 
-            presetReverb?.let {
-                it.enabled = shouldEnable
-                it.preset = preset
+    fun renameCustomEqPreset(presetId: String, newName: String): Boolean {
+        val cleanName = newName.trim()
+        if (cleanName.isBlank()) return false
+        var renamed = false
+        mutateState { state ->
+            val target = state.customEqPresets.firstOrNull { it.id == presetId } ?: return@mutateState state
+            renamed = true
+            val updatedCustom = state.customEqPresets.map {
+                if (it.id == presetId) it.copy(name = cleanName) else it
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "setConcertHallEnabled failed", e)
+            val wasSelected = state.currentPresetName.equals(target.name, ignoreCase = true)
+            state.copy(
+                customEqPresets = updatedCustom,
+                currentPresetName = if (wasSelected) cleanName else state.currentPresetName
+            )
+        }
+        if (renamed) {
+            persistCustomEqPresets(_effectsState.value.customEqPresets)
+        }
+        return renamed
+    }
+
+    fun deleteCustomEqPreset(presetId: String): Boolean {
+        var deleted = false
+        mutateState { state ->
+            val target = state.customEqPresets.firstOrNull { it.id == presetId } ?: return@mutateState state
+            deleted = true
+            val updatedCustom = state.customEqPresets.filterNot { it.id == presetId }
+            val wasSelected = state.currentPresetName.equals(target.name, ignoreCase = true)
+            state.copy(
+                customEqPresets = updatedCustom,
+                currentPresetName = if (wasSelected) "Custom" else state.currentPresetName,
+                currentPresetIndex = if (wasSelected) -1 else state.currentPresetIndex
+            )
+        }
+        if (deleted) {
+            persistCustomEqPresets(_effectsState.value.customEqPresets)
+        }
+        return deleted
+    }
+
+    // --- Deep Punchy Bass Engine Controls ---
+
+    fun setBassEngineEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) { it.copy(bassEngine = it.bassEngine.copy(enabled = enabled)) }
+    }
+
+    fun setDeepBass(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(deepBass = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setPunchyBass(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(punchyBass = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setSubBass(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(subBass = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setBassGainDb(gainDb: Float) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(bassGainDb = gainDb.coerceIn(-6f, 12f)))
+        }
+    }
+
+    fun setBassImpact(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(bassImpact = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setBassFrequencyHz(freqHz: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(bassFrequencyHz = freqHz.coerceIn(45, 140)))
+        }
+    }
+
+    fun setBassTightness(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(bassEngine = it.bassEngine.copy(bassTightness = value.coerceIn(0, 100)))
+        }
+    }
+
+    // --- Pure Concert Hall Reverb Controls ---
+
+    fun setConcertHallEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) { it.copy(concertHall = it.concertHall.copy(enabled = enabled)) }
+    }
+
+    fun selectConcertHallPreset(preset: ConcertHallPreset) {
+        mutateState(markCustomQuick = true) {
+            it.copy(
+                concertHall = ConcertHallState(
+                    enabled = true,
+                    presetName = preset.displayName,
+                    hallSize = preset.hallSize,
+                    reverbAmount = preset.reverbAmount,
+                    roomDepth = preset.roomDepth,
+                    earlyReflections = preset.earlyReflections,
+                    decayTimeSec = preset.decayTimeSec,
+                    wetDryMix = preset.wetDryMix,
+                    stereoWidth = preset.stereoWidth
+                )
+            )
+        }
+    }
+
+    fun setHallSize(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(hallSize = value.coerceIn(0, 100), presetName = "Custom"))
+        }
+    }
+
+    fun setReverbAmount(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(reverbAmount = value.coerceIn(0, 100), presetName = "Custom"))
+        }
+    }
+
+    fun setRoomDepth(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(roomDepth = value.coerceIn(0, 100), presetName = "Custom"))
+        }
+    }
+
+    fun setEarlyReflections(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(earlyReflections = value.coerceIn(0, 100), presetName = "Custom"))
+        }
+    }
+
+    fun setDecayTimeSec(seconds: Float) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(decayTimeSec = seconds.coerceIn(0.5f, 4.5f), presetName = "Custom"))
+        }
+    }
+
+    fun setWetDryMix(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(wetDryMix = value.coerceIn(0, 100), presetName = "Custom"))
+        }
+    }
+
+    fun setHallStereoWidth(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(concertHall = it.concertHall.copy(stereoWidth = value.coerceIn(0, 100), presetName = "Custom"))
         }
     }
 
     fun setConcertHallIntensity(intensity: Int) {
         val clamped = intensity.coerceIn(0, 100)
-        val tier = when {
-            clamped <= 40 -> "Low"
-            clamped <= 75 -> "Medium"
-            else -> "High"
-        }
-        val preset = if (_effectsState.value.concertHallEnabled) mapIntensityToPreset(clamped) else PresetReverb.PRESET_NONE
-
-        _effectsState.update {
+        val t = clamped / 100f
+        mutateState(markCustomQuick = true) {
             it.copy(
-                concertHallIntensity = clamped,
-                concertHallTier = tier,
-                currentReverbPreset = preset
+                concertHall = it.concertHall.copy(
+                    hallSize = (30 + t * 65).toInt(),
+                    reverbAmount = (25 + t * 65).toInt(),
+                    roomDepth = (25 + t * 65).toInt(),
+                    earlyReflections = (40 + t * 40).toInt(),
+                    decayTimeSec = 1.0f + t * 2.4f,
+                    wetDryMix = (12 + t * 30).toInt(),
+                    stereoWidth = (55 + t * 38).toInt(),
+                    presetName = when {
+                        clamped <= 40 -> ConcertHallPreset.SMALL_HALL.displayName
+                        clamped <= 75 -> ConcertHallPreset.GRAND_CONCERT_HALL.displayName
+                        else -> ConcertHallPreset.CATHEDRAL.displayName
+                    }
+                )
             )
-        }
-        prefs?.edit()?.putInt("ch_intensity", clamped)?.apply()
-
-        try {
-            if (_effectsState.value.masterEnabled && _effectsState.value.concertHallEnabled) {
-                environmentalReverb?.let {
-                    applyEnvironmentalSettings(it, clamped)
-                }
-                presetReverb?.let {
-                    it.preset = preset
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "setConcertHallIntensity failed", e)
         }
     }
 
     fun setConcertHallTier(tier: String) {
-        val targetIntensity = when (tier.lowercase()) {
-            "low" -> 30
-            "high" -> 90
-            else -> 60 // "medium"
+        when (tier.lowercase()) {
+            "low" -> selectConcertHallPreset(ConcertHallPreset.SMALL_HALL)
+            "high" -> selectConcertHallPreset(ConcertHallPreset.CATHEDRAL)
+            else -> selectConcertHallPreset(ConcertHallPreset.GRAND_CONCERT_HALL)
         }
-        setConcertHallIntensity(targetIntensity)
+    }
+
+    // --- 3D Surround & Mono-Safe Spatial Audio Controls ---
+
+    fun setSurroundEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) { it.copy(surround = it.surround.copy(enabled = enabled)) }
+    }
+
+    fun setSurroundIntensity(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(intensity = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setVirtualSurround(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(virtualSurround = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setSurroundStereoWidth(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(stereoWidth = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setSpatialDepth(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(spatialDepth = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun set3DSound(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(sound3D = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setStereoExpansion(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(stereoExpansion = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setImmersiveMode(enabled: Boolean) {
+        mutateState(markCustomQuick = true) {
+            it.copy(surround = it.surround.copy(immersiveMode = enabled))
+        }
+    }
+
+    // --- HD Crystal Sound Engine Controls ---
+
+    fun setCrystalEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) { it.copy(crystalSound = it.crystalSound.copy(enabled = enabled)) }
+    }
+
+    fun setVocalClarity(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(vocalClarity = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setCrystalTreble(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(crystalTreble = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setDetailEnhancer(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(detailEnhancer = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setHighFrequencyControl(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(highFrequencyControl = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setDynamicRange(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(dynamicRange = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setSoftClarity(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(crystalSound = it.crystalSound.copy(softClarity = value.coerceIn(0, 100)))
+        }
+    }
+
+    // --- Additional Pro Utilities ---
+
+    fun setBassBoostEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(bassBoostEnabled = enabled))
+        }
+    }
+
+    fun setBassBoostStrength(strength: Short) {
+        val clamped = strength.coerceIn(0, 1000)
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(bassBoostStrength = clamped))
+        }
+    }
+
+    fun setVirtualizerEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) {
+            it.copy(
+                surround = it.surround.copy(enabled = enabled),
+                utilities = it.utilities.copy(virtualizerEnabled = enabled)
+            )
+        }
+    }
+
+    fun setVirtualizerStrength(strength: Short) {
+        val clamped = strength.coerceIn(0, 1000)
+        mutateState(markCustomQuick = true) {
+            it.copy(
+                surround = it.surround.copy(intensity = (clamped / 10).coerceIn(0, 100)),
+                utilities = it.utilities.copy(virtualizerStrength = clamped)
+            )
+        }
+    }
+
+    fun setLoudnessEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(loudnessEnabled = enabled))
+        }
+    }
+
+    fun setLoudnessGain(value: Int) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(loudnessGain = value.coerceIn(0, 100)))
+        }
+    }
+
+    fun setBalance(balance: Float) {
+        val clamped = balance.coerceIn(-1f, 1f)
+        val snapped = if (kotlin.math.abs(clamped) < 0.04f) 0f else clamped
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(balance = snapped))
+        }
+    }
+
+    fun setLimiterEnabled(enabled: Boolean) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(limiterEnabled = enabled))
+        }
+    }
+
+    fun setLimiterThresholdDb(thresholdDb: Float) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(limiterThresholdDb = thresholdDb.coerceIn(-6.0f, -0.1f)))
+        }
+    }
+
+    fun setOutputGainDb(gainDb: Float) {
+        mutateState(markCustomQuick = true) {
+            it.copy(utilities = it.utilities.copy(outputGainDb = gainDb.coerceIn(-12f, 6f)))
+        }
+    }
+
+    // --- Premium One-Tap Quick Presets ---
+
+    fun selectQuickPreset(presetId: String) {
+        val current = _effectsState.value
+        val allQuick = StudioEffectDefaults.builtInQuickPresets + current.customQuickPresets
+        val preset = allQuick.firstOrNull { it.id == presetId } ?: return
+
+        val eqTarget = (StudioEffectDefaults.builtInEqPresets + current.customEqPresets)
+            .firstOrNull { it.name.equals(preset.eqPresetName, ignoreCase = true) }
+            ?: StudioEffectDefaults.builtInEqPresets.first()
+
+        mutateState { state ->
+            val updatedBands = state.bands.mapIndexed { i, band ->
+                val gainDb = eqTarget.gainsDb.getOrElse(i) { 0f }
+                val gainMb = (gainDb * 100f).toInt().coerceIn(state.minGainMb.toInt(), state.maxGainMb.toInt()).toShort()
+                band.copy(currentGainMb = gainMb)
+            }
+            val eqIdx = state.presets.indexOfFirst { it.equals(eqTarget.name, ignoreCase = true) }
+            state.copy(
+                masterEnabled = true,
+                equalizerEnabled = true,
+                bands = updatedBands,
+                currentPresetIndex = eqIdx.toShort(),
+                currentPresetName = eqTarget.name,
+                eqStrengthPercent = preset.eqStrengthPercent,
+                bassEngine = preset.bassEngine,
+                concertHall = preset.concertHall,
+                surround = preset.surround,
+                crystalSound = preset.crystalSound,
+                utilities = preset.utilities,
+                activeQuickPresetId = preset.id,
+                activeQuickPresetName = preset.name
+            )
+        }
+    }
+
+    fun saveCustomQuickPreset(rawName: String): Boolean {
+        val cleanName = rawName.trim()
+        if (cleanName.isBlank()) return false
+        val current = _effectsState.value
+        val presetId = "custom_${System.currentTimeMillis()}"
+        // Also ensure EQ curve matches current bands
+        saveCustomEqPreset("$cleanName EQ")
+        val eqName = "$cleanName EQ"
+
+        val customPreset = StudioQuickPreset(
+            id = presetId,
+            name = cleanName,
+            subtitle = "User Custom Studio Profile",
+            eqPresetName = eqName,
+            eqStrengthPercent = current.eqStrengthPercent,
+            bassEngine = current.bassEngine,
+            concertHall = current.concertHall,
+            surround = current.surround,
+            crystalSound = current.crystalSound,
+            utilities = current.utilities,
+            isCustom = true
+        )
+
+        mutateState { state ->
+            state.copy(
+                customQuickPresets = state.customQuickPresets + customPreset,
+                activeQuickPresetId = customPreset.id,
+                activeQuickPresetName = customPreset.name
+            )
+        }
+        persistCustomQuickPresets(_effectsState.value.customQuickPresets)
+        return true
+    }
+
+    fun deleteCustomQuickPreset(presetId: String): Boolean {
+        var removed = false
+        mutateState { state ->
+            if (state.customQuickPresets.none { it.id == presetId }) return@mutateState state
+            removed = true
+            val filtered = state.customQuickPresets.filterNot { it.id == presetId }
+            val wasActive = state.activeQuickPresetId == presetId
+            state.copy(
+                customQuickPresets = filtered,
+                activeQuickPresetId = if (wasActive) "custom" else state.activeQuickPresetId,
+                activeQuickPresetName = if (wasActive) "Custom Studio" else state.activeQuickPresetName
+            )
+        }
+        if (removed) {
+            persistCustomQuickPresets(_effectsState.value.customQuickPresets)
+        }
+        return removed
     }
 
     fun resetToDefaults() {
-        val eq = equalizer
-        val numBands = eq?.numberOfBands?.toInt() ?: _effectsState.value.bands.size
-
-        for (i in 0 until numBands) {
-            val bIdx = i.toShort()
-            try {
-                eq?.setBandLevel(bIdx, 0)
-            } catch (e: Exception) {
-                // Ignore
-            }
-        }
-
-        val updatedBands = _effectsState.value.bands.map { it.copy(currentGainMb = 0) }
-
-        _effectsState.update {
-            it.copy(
-                bands = updatedBands,
-                currentPresetIndex = -1,
-                currentPresetName = "Flat",
-                bassBoostStrength = 600,
-                virtualizerStrength = 500,
-                concertHallIntensity = 60,
-                concertHallTier = "Medium"
+        mutateState { state ->
+            AudioEffectsState(
+                masterEnabled = true,
+                equalizerEnabled = true,
+                bands = StudioEffectDefaults.defaultBands(),
+                currentPresetIndex = 0,
+                currentPresetName = "Studio Reference",
+                eqStrengthPercent = 100,
+                customEqPresets = state.customEqPresets,
+                customQuickPresets = state.customQuickPresets,
+                activeQuickPresetId = "balanced_reference",
+                activeQuickPresetName = "Balanced Reference",
+                availability = state.availability
             )
-        }
-
-        try {
-            bassBoost?.setStrength(600)
-            virtualizer?.setStrength(500)
-            environmentalReverb?.let { applyEnvironmentalSettings(it, 60) }
-            presetReverb?.preset = mapIntensityToPreset(60)
-        } catch (e: Exception) {
-            // Ignore
-        }
-
-        prefs?.edit()?.apply {
-            putInt("preset_idx", -1)
-            putString("preset_name", "Flat")
-            putInt("bb_strength", 600)
-            putInt("virt_strength", 500)
-            putInt("ch_intensity", 60)
-            updatedBands.forEach { b ->
-                putInt("band_gain_${b.bandIndex}", 0)
-            }
-            apply()
         }
     }
 
-    fun releaseEffects() {
-        try {
-            equalizer?.enabled = false
-            equalizer?.release()
-        } catch (e: Throwable) { /* Ignore */ }
-        equalizer = null
+    // --- JSON Serialization for SharedPreferences ---
+
+    private fun loadSavedStateLocked() {
+        val p = prefs ?: return
+        val customEq = loadCustomEqPresets(p)
+        val customQuick = loadCustomQuickPresets(p)
+        val rawJson = p.getString(KEY_STATE_JSON, null)
+        if (rawJson.isNullOrBlank()) {
+            _effectsState.update {
+                syncMirrorFields(it.copy(customEqPresets = customEq, customQuickPresets = customQuick))
+            }
+            return
+        }
 
         try {
-            bassBoost?.enabled = false
-            bassBoost?.release()
-        } catch (e: Throwable) { /* Ignore */ }
-        bassBoost = null
+            val obj = JSONObject(rawJson)
+            val bandsJson = obj.optJSONArray("bandsMb")
+            val bands = StudioEffectDefaults.defaultBands().mapIndexed { i, b ->
+                val gainMb = bandsJson?.optInt(i, b.currentGainMb.toInt())
+                    ?.coerceIn(b.minGainMb.toInt(), b.maxGainMb.toInt())
+                    ?.toShort() ?: b.currentGainMb
+                b.copy(currentGainMb = gainMb)
+            }
 
+            val bassObj = obj.optJSONObject("bassEngine")
+            val bassEngine = if (bassObj != null) {
+                BassEngineState(
+                    enabled = bassObj.optBoolean("enabled", false),
+                    deepBass = bassObj.optInt("deepBass", 35),
+                    punchyBass = bassObj.optInt("punchyBass", 40),
+                    subBass = bassObj.optInt("subBass", 25),
+                    bassGainDb = bassObj.optDouble("bassGainDb", 0.0).toFloat(),
+                    bassImpact = bassObj.optInt("bassImpact", 35),
+                    bassFrequencyHz = bassObj.optInt("bassFrequencyHz", 80),
+                    bassTightness = bassObj.optInt("bassTightness", 70)
+                )
+            } else BassEngineState()
+
+            val hallObj = obj.optJSONObject("concertHall")
+            val concertHall = if (hallObj != null) {
+                ConcertHallState(
+                    enabled = hallObj.optBoolean("enabled", false),
+                    presetName = hallObj.optString("presetName", ConcertHallPreset.GRAND_CONCERT_HALL.displayName),
+                    hallSize = hallObj.optInt("hallSize", ConcertHallPreset.GRAND_CONCERT_HALL.hallSize),
+                    reverbAmount = hallObj.optInt("reverbAmount", ConcertHallPreset.GRAND_CONCERT_HALL.reverbAmount),
+                    roomDepth = hallObj.optInt("roomDepth", ConcertHallPreset.GRAND_CONCERT_HALL.roomDepth),
+                    earlyReflections = hallObj.optInt("earlyReflections", ConcertHallPreset.GRAND_CONCERT_HALL.earlyReflections),
+                    decayTimeSec = hallObj.optDouble("decayTimeSec", ConcertHallPreset.GRAND_CONCERT_HALL.decayTimeSec.toDouble()).toFloat(),
+                    wetDryMix = hallObj.optInt("wetDryMix", ConcertHallPreset.GRAND_CONCERT_HALL.wetDryMix),
+                    stereoWidth = hallObj.optInt("stereoWidth", ConcertHallPreset.GRAND_CONCERT_HALL.stereoWidth)
+                )
+            } else ConcertHallState()
+
+            val surObj = obj.optJSONObject("surround")
+            val surround = if (surObj != null) {
+                SurroundSpatialState(
+                    enabled = surObj.optBoolean("enabled", false),
+                    intensity = surObj.optInt("intensity", 55),
+                    virtualSurround = surObj.optInt("virtualSurround", 50),
+                    stereoWidth = surObj.optInt("stereoWidth", 62),
+                    spatialDepth = surObj.optInt("spatialDepth", 45),
+                    sound3D = surObj.optInt("sound3D", 45),
+                    stereoExpansion = surObj.optInt("stereoExpansion", 50),
+                    immersiveMode = surObj.optBoolean("immersiveMode", false)
+                )
+            } else SurroundSpatialState()
+
+            val cryObj = obj.optJSONObject("crystalSound")
+            val crystal = if (cryObj != null) {
+                CrystalSoundState(
+                    enabled = cryObj.optBoolean("enabled", false),
+                    vocalClarity = cryObj.optInt("vocalClarity", 45),
+                    crystalTreble = cryObj.optInt("crystalTreble", 35),
+                    detailEnhancer = cryObj.optInt("detailEnhancer", 40),
+                    highFrequencyControl = cryObj.optInt("highFrequencyControl", 55),
+                    dynamicRange = cryObj.optInt("dynamicRange", 55),
+                    softClarity = cryObj.optInt("softClarity", 50)
+                )
+            } else CrystalSoundState()
+
+            val utilObj = obj.optJSONObject("utilities")
+            val utilities = if (utilObj != null) {
+                ProUtilitiesState(
+                    bassBoostEnabled = utilObj.optBoolean("bassBoostEnabled", false),
+                    bassBoostStrength = utilObj.optInt("bassBoostStrength", 0).toShort(),
+                    virtualizerEnabled = utilObj.optBoolean("virtualizerEnabled", false),
+                    virtualizerStrength = utilObj.optInt("virtualizerStrength", 0).toShort(),
+                    loudnessEnabled = utilObj.optBoolean("loudnessEnabled", false),
+                    loudnessGain = utilObj.optInt("loudnessGain", 35),
+                    balance = utilObj.optDouble("balance", 0.0).toFloat(),
+                    limiterEnabled = utilObj.optBoolean("limiterEnabled", true),
+                    limiterThresholdDb = utilObj.optDouble("limiterThresholdDb", -0.5).toFloat(),
+                    preampDb = utilObj.optDouble("preampDb", 0.0).toFloat(),
+                    outputGainDb = utilObj.optDouble("outputGainDb", 0.0).toFloat()
+                )
+            } else ProUtilitiesState()
+
+            val restored = AudioEffectsState(
+                masterEnabled = obj.optBoolean("masterEnabled", true),
+                equalizerEnabled = obj.optBoolean("equalizerEnabled", true),
+                bands = bands,
+                currentPresetIndex = obj.optInt("currentPresetIndex", 0).toShort(),
+                currentPresetName = obj.optString("currentPresetName", "Studio Reference"),
+                eqStrengthPercent = obj.optInt("eqStrengthPercent", 100),
+                customEqPresets = customEq,
+                bassEngine = bassEngine,
+                concertHall = concertHall,
+                surround = surround,
+                crystalSound = crystal,
+                utilities = utilities,
+                activeQuickPresetId = obj.optString("activeQuickPresetId", "balanced_reference"),
+                activeQuickPresetName = obj.optString("activeQuickPresetName", "Balanced Reference"),
+                customQuickPresets = customQuick
+            )
+            _effectsState.value = syncMirrorFields(restored)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to restore saved Studio audio state; using defaults", e)
+            _effectsState.update {
+                syncMirrorFields(it.copy(customEqPresets = customEq, customQuickPresets = customQuick))
+            }
+        }
+    }
+
+    private fun persistState(state: AudioEffectsState) {
+        val p = prefs ?: return
         try {
-            virtualizer?.enabled = false
-            virtualizer?.release()
-        } catch (e: Throwable) { /* Ignore */ }
-        virtualizer = null
+            val root = JSONObject().apply {
+                put("masterEnabled", state.masterEnabled)
+                put("equalizerEnabled", state.equalizerEnabled)
+                put("currentPresetIndex", state.currentPresetIndex.toInt())
+                put("currentPresetName", state.currentPresetName)
+                put("eqStrengthPercent", state.eqStrengthPercent)
+                put("activeQuickPresetId", state.activeQuickPresetId)
+                put("activeQuickPresetName", state.activeQuickPresetName)
+                put("bandsMb", JSONArray().apply { state.bands.forEach { put(it.currentGainMb.toInt()) } })
+                put("bassEngine", encodeBassEngine(state.bassEngine))
+                put("concertHall", encodeConcertHall(state.concertHall))
+                put("surround", encodeSurround(state.surround))
+                put("crystalSound", encodeCrystal(state.crystalSound))
+                put("utilities", encodeUtilities(state.utilities))
+            }
+            p.edit().putString(KEY_STATE_JSON, root.toString()).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to persist Studio audio state", e)
+        }
+    }
 
-        try {
-            environmentalReverb?.enabled = false
-            environmentalReverb?.release()
-        } catch (e: Throwable) { /* Ignore */ }
-        environmentalReverb = null
+    private fun persistCustomEqPresets(presets: List<StudioEqPreset>) {
+        val p = prefs ?: return
+        val arr = JSONArray()
+        presets.forEach { preset ->
+            arr.put(JSONObject().apply {
+                put("id", preset.id)
+                put("name", preset.name)
+                put("preampDb", preset.preampDb.toDouble())
+                put("gainsDb", JSONArray().apply { preset.gainsDb.forEach { put(it.toDouble()) } })
+            })
+        }
+        p.edit().putString(KEY_CUSTOM_EQ_PRESETS, arr.toString()).apply()
+    }
 
-        try {
-            presetReverb?.enabled = false
-            presetReverb?.release()
-        } catch (e: Throwable) { /* Ignore */ }
-        presetReverb = null
+    private fun loadCustomEqPresets(p: SharedPreferences): List<StudioEqPreset> {
+        val raw = p.getString(KEY_CUSTOM_EQ_PRESETS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val gainsArr = o.optJSONArray("gainsDb")
+                val gains = (0 until 10).map { g -> gainsArr?.optDouble(g, 0.0)?.toFloat() ?: 0f }
+                StudioEqPreset(
+                    id = o.optString("id", "custom_eq_$i"),
+                    name = o.optString("name", "Custom $i"),
+                    gainsDb = gains,
+                    preampDb = o.optDouble("preampDb", 0.0).toFloat(),
+                    isCustom = true
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
-        currentAudioSessionId = -1
+    private fun persistCustomQuickPresets(presets: List<StudioQuickPreset>) {
+        val p = prefs ?: return
+        val arr = JSONArray()
+        presets.forEach { q ->
+            arr.put(JSONObject().apply {
+                put("id", q.id)
+                put("name", q.name)
+                put("subtitle", q.subtitle)
+                put("eqPresetName", q.eqPresetName)
+                put("eqStrengthPercent", q.eqStrengthPercent)
+                put("bassEngine", encodeBassEngine(q.bassEngine))
+                put("concertHall", encodeConcertHall(q.concertHall))
+                put("surround", encodeSurround(q.surround))
+                put("crystalSound", encodeCrystal(q.crystalSound))
+                put("utilities", encodeUtilities(q.utilities))
+            })
+        }
+        p.edit().putString(KEY_CUSTOM_QUICK_PRESETS, arr.toString()).apply()
+    }
+
+    private fun loadCustomQuickPresets(p: SharedPreferences): List<StudioQuickPreset> {
+        val raw = p.getString(KEY_CUSTOM_QUICK_PRESETS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val b = o.optJSONObject("bassEngine")
+                val h = o.optJSONObject("concertHall")
+                val s = o.optJSONObject("surround")
+                val c = o.optJSONObject("crystalSound")
+                val u = o.optJSONObject("utilities")
+                StudioQuickPreset(
+                    id = o.optString("id", "custom_$i"),
+                    name = o.optString("name", "Custom Studio $i"),
+                    subtitle = o.optString("subtitle", "User Custom Studio Profile"),
+                    eqPresetName = o.optString("eqPresetName", "Studio Reference"),
+                    eqStrengthPercent = o.optInt("eqStrengthPercent", 100),
+                    bassEngine = if (b != null) BassEngineState(
+                        enabled = b.optBoolean("enabled", false),
+                        deepBass = b.optInt("deepBass", 35),
+                        punchyBass = b.optInt("punchyBass", 40),
+                        subBass = b.optInt("subBass", 25),
+                        bassGainDb = b.optDouble("bassGainDb", 0.0).toFloat(),
+                        bassImpact = b.optInt("bassImpact", 35),
+                        bassFrequencyHz = b.optInt("bassFrequencyHz", 80),
+                        bassTightness = b.optInt("bassTightness", 70)
+                    ) else BassEngineState(),
+                    concertHall = if (h != null) ConcertHallState(
+                        enabled = h.optBoolean("enabled", false),
+                        presetName = h.optString("presetName", "Grand Concert Hall"),
+                        hallSize = h.optInt("hallSize", 72),
+                        reverbAmount = h.optInt("reverbAmount", 65),
+                        roomDepth = h.optInt("roomDepth", 68),
+                        earlyReflections = h.optInt("earlyReflections", 64),
+                        decayTimeSec = h.optDouble("decayTimeSec", 2.25).toFloat(),
+                        wetDryMix = h.optInt("wetDryMix", 28),
+                        stereoWidth = h.optInt("stereoWidth", 82)
+                    ) else ConcertHallState(),
+                    surround = if (s != null) SurroundSpatialState(
+                        enabled = s.optBoolean("enabled", false),
+                        intensity = s.optInt("intensity", 55),
+                        virtualSurround = s.optInt("virtualSurround", 50),
+                        stereoWidth = s.optInt("stereoWidth", 62),
+                        spatialDepth = s.optInt("spatialDepth", 45),
+                        sound3D = s.optInt("sound3D", 45),
+                        stereoExpansion = s.optInt("stereoExpansion", 50),
+                        immersiveMode = s.optBoolean("immersiveMode", false)
+                    ) else SurroundSpatialState(),
+                    crystalSound = if (c != null) CrystalSoundState(
+                        enabled = c.optBoolean("enabled", false),
+                        vocalClarity = c.optInt("vocalClarity", 45),
+                        crystalTreble = c.optInt("crystalTreble", 35),
+                        detailEnhancer = c.optInt("detailEnhancer", 40),
+                        highFrequencyControl = c.optInt("highFrequencyControl", 55),
+                        dynamicRange = c.optInt("dynamicRange", 55),
+                        softClarity = c.optInt("softClarity", 50)
+                    ) else CrystalSoundState(),
+                    utilities = if (u != null) ProUtilitiesState(
+                        bassBoostEnabled = u.optBoolean("bassBoostEnabled", false),
+                        bassBoostStrength = u.optInt("bassBoostStrength", 0).toShort(),
+                        virtualizerEnabled = u.optBoolean("virtualizerEnabled", false),
+                        virtualizerStrength = u.optInt("virtualizerStrength", 0).toShort(),
+                        loudnessEnabled = u.optBoolean("loudnessEnabled", false),
+                        loudnessGain = u.optInt("loudnessGain", 35),
+                        balance = u.optDouble("balance", 0.0).toFloat(),
+                        limiterEnabled = u.optBoolean("limiterEnabled", true),
+                        limiterThresholdDb = u.optDouble("limiterThresholdDb", -0.5).toFloat(),
+                        preampDb = u.optDouble("preampDb", 0.0).toFloat(),
+                        outputGainDb = u.optDouble("outputGainDb", 0.0).toFloat()
+                    ) else ProUtilitiesState(),
+                    isCustom = true
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun encodeBassEngine(b: BassEngineState) = JSONObject().apply {
+        put("enabled", b.enabled)
+        put("deepBass", b.deepBass)
+        put("punchyBass", b.punchyBass)
+        put("subBass", b.subBass)
+        put("bassGainDb", b.bassGainDb.toDouble())
+        put("bassImpact", b.bassImpact)
+        put("bassFrequencyHz", b.bassFrequencyHz)
+        put("bassTightness", b.bassTightness)
+    }
+
+    private fun encodeConcertHall(h: ConcertHallState) = JSONObject().apply {
+        put("enabled", h.enabled)
+        put("presetName", h.presetName)
+        put("hallSize", h.hallSize)
+        put("reverbAmount", h.reverbAmount)
+        put("roomDepth", h.roomDepth)
+        put("earlyReflections", h.earlyReflections)
+        put("decayTimeSec", h.decayTimeSec.toDouble())
+        put("wetDryMix", h.wetDryMix)
+        put("stereoWidth", h.stereoWidth)
+    }
+
+    private fun encodeSurround(s: SurroundSpatialState) = JSONObject().apply {
+        put("enabled", s.enabled)
+        put("intensity", s.intensity)
+        put("virtualSurround", s.virtualSurround)
+        put("stereoWidth", s.stereoWidth)
+        put("spatialDepth", s.spatialDepth)
+        put("sound3D", s.sound3D)
+        put("stereoExpansion", s.stereoExpansion)
+        put("immersiveMode", s.immersiveMode)
+    }
+
+    private fun encodeCrystal(c: CrystalSoundState) = JSONObject().apply {
+        put("enabled", c.enabled)
+        put("vocalClarity", c.vocalClarity)
+        put("crystalTreble", c.crystalTreble)
+        put("detailEnhancer", c.detailEnhancer)
+        put("highFrequencyControl", c.highFrequencyControl)
+        put("dynamicRange", c.dynamicRange)
+        put("softClarity", c.softClarity)
+    }
+
+    private fun encodeUtilities(u: ProUtilitiesState) = JSONObject().apply {
+        put("bassBoostEnabled", u.bassBoostEnabled)
+        put("bassBoostStrength", u.bassBoostStrength.toInt())
+        put("virtualizerEnabled", u.virtualizerEnabled)
+        put("virtualizerStrength", u.virtualizerStrength.toInt())
+        put("loudnessEnabled", u.loudnessEnabled)
+        put("loudnessGain", u.loudnessGain)
+        put("balance", u.balance.toDouble())
+        put("limiterEnabled", u.limiterEnabled)
+        put("limiterThresholdDb", u.limiterThresholdDb.toDouble())
+        put("preampDb", u.preampDb.toDouble())
+        put("outputGainDb", u.outputGainDb.toDouble())
     }
 }

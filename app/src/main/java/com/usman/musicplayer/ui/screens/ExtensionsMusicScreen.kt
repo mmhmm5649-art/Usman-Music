@@ -660,7 +660,12 @@ private fun ExtensionSongItem(
                             .background(Color(0x2200E5FF))
                             .padding(horizontal = 4.dp, vertical = 1.dp)
                     ) {
-                        Text(text = song.sourceProvider.orEmpty(), color = NeonCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        val displaySource = if (song.sourceProvider.equals("JioSaavn", ignoreCase = true)) {
+                            "USMAN MUSIC"
+                        } else {
+                            song.sourceProvider.orEmpty()
+                        }
+                        Text(text = displaySource, color = NeonCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                     }
                     if (song.isFullTrackVerified) {
                         Box(

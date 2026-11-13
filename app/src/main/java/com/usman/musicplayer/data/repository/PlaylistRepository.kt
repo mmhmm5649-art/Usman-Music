@@ -101,6 +101,40 @@ class PlaylistRepository(context: Context) {
         return Pair(true, "Added \"${song.title}\" to playlist.")
     }
 
+    suspend fun addSongsToPlaylist(playlistId: Long, songs: List<Song>): Pair<Int, Int> {
+        var addedCount = 0
+        var basePosition = dao.getPlaylistSongCount(playlistId)
+        for (song in songs) {
+            val exists = dao.isSongInPlaylist(playlistId, song.id)
+            if (exists == 0) {
+                val songEntity = PlaylistSongEntity(
+                    playlistId = playlistId,
+                    songId = song.id,
+                    songTitle = song.title,
+                    songArtist = song.artist,
+                    songAlbum = song.album,
+                    durationMs = song.durationMs,
+                    filePath = song.filePath,
+                    albumArtUri = song.albumArtUri,
+                    isOnline = song.isOnline,
+                    contentUriString = song.contentUriString,
+                    position = basePosition++
+                )
+                dao.addSongToPlaylist(songEntity)
+                addedCount++
+            }
+        }
+        return addedCount to songs.size
+    }
+
+    suspend fun createPlaylistWithSongs(name: String, songs: List<Song>): Pair<Long, Int> {
+        val cover = songs.firstOrNull { !it.albumArtUri.isNullOrBlank() }?.albumArtUri
+        val entity = PlaylistEntity(name = name.trim(), coverArtUri = cover)
+        val id = dao.insertPlaylist(entity)
+        val (added, _) = if (id > 0 && songs.isNotEmpty()) addSongsToPlaylist(id, songs) else (0 to 0)
+        return id to added
+    }
+
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long) {
         dao.removeSongFromPlaylist(playlistId, songId)
     }

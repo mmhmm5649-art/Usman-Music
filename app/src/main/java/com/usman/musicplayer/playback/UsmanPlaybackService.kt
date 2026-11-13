@@ -91,8 +91,21 @@ class UsmanPlaybackService : MediaSessionService() {
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, resolvingDataSourceFactory)
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
-        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true)
+        AudioEffectsManager.init(this)
+
+        val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: android.content.Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): androidx.media3.exoplayer.audio.AudioSink {
+                return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(arrayOf(AudioEffectsManager.getAudioProcessor()))
+                    .build()
+            }
+        }.setEnableDecoderFallback(true)
 
         // 2. Build ExoPlayer with decoder fallback enabled for MediaCodec resource reclamation recovery
         val player = ExoPlayer.Builder(this, renderersFactory)
@@ -110,6 +123,9 @@ class UsmanPlaybackService : MediaSessionService() {
 
         exoPlayer = player
         currentAudioSessionId = player.audioSessionId
+        if (currentAudioSessionId > 0) {
+            AudioEffectsManager.attachAudioSession(this, currentAudioSessionId)
+        }
 
         player.addListener(object : Player.Listener {
             private var lastFailedUri: Uri? = null
@@ -117,6 +133,9 @@ class UsmanPlaybackService : MediaSessionService() {
 
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 currentAudioSessionId = audioSessionId
+                if (audioSessionId > 0) {
+                    AudioEffectsManager.attachAudioSession(this@UsmanPlaybackService, audioSessionId)
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -238,6 +257,7 @@ class UsmanPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         AudioEffectsManager.releaseEffects()
         AudioSpectrumManager.release()
         mediaSession?.run {

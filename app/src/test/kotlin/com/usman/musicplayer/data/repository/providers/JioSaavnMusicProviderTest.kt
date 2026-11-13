@@ -263,5 +263,433 @@ class JioSaavnMusicProviderTest {
         assertTrue(result.isSuccess)
         assertEquals("https://aac.saavncdn.com/track_99_320.mp4", result.getOrNull())
     }
+
+    @Test
+    fun testSearchAlbumsPublicApiParsesSoundtrackMetadata() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val albumProvider = JioSaavnMusicProvider(
+            apiService,
+            Moshi.Builder().add(KotlinJsonAdapterFactory()).build(),
+            publicApiBases = listOf(mockBase)
+        )
+
+        val albumsJson = """
+            {
+                "success": true,
+                "data": {
+                    "results": [
+                        {
+                            "id": "alb_777",
+                            "name": "Dhurandhar (Original Motion Picture Soundtrack)",
+                            "year": "2025",
+                            "songCount": 6,
+                            "artists": { "primary": [ { "name": "Shashwat Sachdev" } ] },
+                            "image": [
+                                { "quality": "500x500", "url": "https://c.saavncdn.com/dhurandhar_500.jpg" }
+                            ],
+                            "url": "https://www.jiosaavn.com/album/dhurandhar/777"
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(albumsJson).setResponseCode(200))
+
+        val result = albumProvider.searchAlbums("Dhurandhar", 10)
+        assertTrue(result.isSuccess)
+        val albums = result.getOrNull().orEmpty()
+        assertEquals(1, albums.size)
+        val album = albums[0]
+        assertEquals("alb_777", album.id)
+        assertEquals("Dhurandhar (Original Motion Picture Soundtrack)", album.title)
+        assertEquals("Dhurandhar", album.movieName)
+        assertEquals("Shashwat Sachdev", album.artist)
+        assertEquals("2025", album.year)
+        assertEquals(6, album.songCount)
+        assertEquals("https://c.saavncdn.com/dhurandhar_500.jpg", album.artworkUri)
+        assertTrue(album.isCompleteAlbum)
+    }
+
+    @Test
+    fun testSearchAlbumsOfficialFallbackDecodesEntitiesAndExplicitMovie() = runBlocking {
+        val officialJson = """
+            {
+                "results": [
+                    {
+                        "id": "alb_off_1",
+                        "title": "Rock &amp; Roll &quot;Edition&quot;",
+                        "image": "http://example.com/150x150.jpg",
+                        "more_info": {
+                            "year": "2024",
+                            "song_count": "5",
+                            "movie": "Rock Star &amp; Co",
+                            "music": "A. R. Rahman"
+                        }
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(officialJson).setResponseCode(200))
+
+        val result = provider.searchAlbums("Rock Star", 10)
+        assertTrue(result.isSuccess)
+        val albums = result.getOrNull().orEmpty()
+        assertEquals(1, albums.size)
+        assertEquals("Rock & Roll \"Edition\"", albums[0].title)
+        assertEquals("Rock Star & Co", albums[0].movieName)
+        assertEquals("A. R. Rahman", albums[0].artist)
+        assertEquals("2024", albums[0].year)
+        assertEquals(5, albums[0].songCount)
+        assertEquals("https://example.com/500x500.jpg", albums[0].artworkUri)
+    }
+
+    @Test
+    fun testGetAlbumDetailsPreservesOrderDeduplicatesAndMarksComplete() = runBlocking {
+        val officialAlbumDetails = """
+            {
+                "id": "alb_900",
+                "title": "Movie Album",
+                "year": "2025",
+                "image": "http://example.com/150x150.jpg",
+                "more_info": {
+                    "movie": "Movie Album",
+                    "song_count": "2",
+                    "music": "Composer X"
+                },
+                "list": [
+                    {
+                        "id": "t1",
+                        "song": "Track One",
+                        "more_info": {
+                            "album_id": "alb_900",
+                            "encrypted_media_url": "ID2ieOjCrwfgWvL5sXl4B1ImC5QfbsDyhG7Q4EE4gXPUMxXBqCfbGqS2zdigiLU7KoeGK03QQiciQQvruZRn0hw7tS9a8Gtq",
+                            "duration": "210"
+                        }
+                    },
+                    {
+                        "id": "t1",
+                        "song": "Track One Duplicate",
+                        "more_info": {
+                            "album_id": "alb_900",
+                            "duration": "210"
+                        }
+                    },
+                    {
+                        "id": "t2",
+                        "song": "Track Two",
+                        "more_info": {
+                            "album_id": "alb_900",
+                            "media_url": "http://aac.saavncdn.com/track2.mp4",
+                            "duration": "185"
+                        }
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(officialAlbumDetails).setResponseCode(200))
+
+        val albumRef = com.usman.musicplayer.sdk.AlbumSearchResult(
+            id = "alb_900",
+            title = "Movie Album",
+            artist = "Composer X",
+            sourceProvider = "JioSaavn"
+        )
+        val result = provider.getAlbumDetails(albumRef)
+        assertTrue(result.isSuccess)
+        val details = result.getOrNull()
+        assertNotNull(details)
+        assertTrue(details!!.isComplete)
+        assertEquals(2, details.tracks.size)
+        assertEquals("Track One", details.tracks[0].title)
+        assertEquals("Track Two", details.tracks[1].title)
+        assertTrue(details.tracks[0].contentUriString?.contains("saavncdn.com") == true)
+        assertEquals("https://aac.saavncdn.com/track2.mp4", details.tracks[1].contentUriString)
+        assertEquals("alb_900", details.tracks[0].albumId)
+        assertEquals("2025", details.tracks[0].releaseYear)
+    }
+
+    @Test
+    fun testGetAlbumDetailsMarksPartialWhenDeclaredCountExceedsTracks() = runBlocking {
+        val partialAlbumDetails = """
+            {
+                "id": "alb_partial",
+                "title": "Partial OST",
+                "more_info": { "song_count": "5" },
+                "list": [
+                    { "id": "p1", "song": "Available Single", "more_info": { "duration": "200" } }
+                ]
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(partialAlbumDetails).setResponseCode(200))
+
+        val albumRef = com.usman.musicplayer.sdk.AlbumSearchResult(
+            id = "alb_partial",
+            title = "Partial OST",
+            artist = "Various",
+            sourceProvider = "JioSaavn"
+        )
+        val details = provider.getAlbumDetails(albumRef).getOrNull()
+        assertNotNull(details)
+        assertFalse(details!!.isComplete)
+        assertEquals(5, details.songCount)
+        assertEquals(1, details.tracks.size)
+    }
+
+    @Test
+    fun testSaavnDevSearchExtractsSongLanguage() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val langProvider = JioSaavnMusicProvider(
+            apiService,
+            Moshi.Builder().add(KotlinJsonAdapterFactory()).build(),
+            publicApiBases = listOf(mockBase)
+        )
+
+        val json = """
+            {
+                "success": true,
+                "data": {
+                    "results": [
+                        {
+                            "id": "te_101",
+                            "name": "Sooseki",
+                            "language": "Telugu",
+                            "album": { "name": "Pushpa 2" },
+                            "artists": { "primary": [ { "name": "Shreya Ghoshal" } ] },
+                            "duration": 250,
+                            "downloadUrl": [
+                                { "quality": "320kbps", "url": "https://aac.saavncdn.com/te_101_320.mp4" }
+                            ]
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(json).setResponseCode(200))
+
+        val songs = langProvider.search("Sooseki", 5).getOrNull().orEmpty()
+        assertEquals(1, songs.size)
+        assertEquals("telugu", songs[0].language)
+    }
+
+    @Test
+    fun testSearchPlaylistsAndGetPlaylistDetailsSuccess() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val playlistProvider = JioSaavnMusicProvider(
+            apiService,
+            Moshi.Builder().add(KotlinJsonAdapterFactory()).build(),
+            publicApiBases = listOf(mockBase)
+        )
+
+        val searchJson = """
+            {
+                "success": true,
+                "data": {
+                    "results": [
+                        {
+                            "id": "pl_te_1",
+                            "name": "Telugu Top Hits",
+                            "subtitle": "20 Tracks",
+                            "image": [
+                                { "quality": "500x500", "url": "https://c.saavncdn.com/pl_te_1.jpg" }
+                            ]
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        val detailsJson = """
+            {
+                "success": true,
+                "data": {
+                    "id": "pl_te_1",
+                    "name": "Telugu Top Hits",
+                    "description": "Most streamed Telugu hits",
+                    "songs": [
+                        {
+                            "id": "s_1",
+                            "name": "Track One",
+                            "language": "telugu",
+                            "artists": { "primary": [ { "name": "Sid Sriram" } ] },
+                            "downloadUrl": [
+                                { "quality": "320kbps", "url": "https://aac.saavncdn.com/s1.mp4" }
+                            ]
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(searchJson).setResponseCode(200))
+        mockWebServer.enqueue(MockResponse().setBody(detailsJson).setResponseCode(200))
+
+        val playlists = playlistProvider.searchPlaylists("telugu", 5).getOrNull().orEmpty()
+        assertEquals(1, playlists.size)
+        assertEquals("pl_te_1", playlists[0].id)
+        assertEquals("Telugu Top Hits", playlists[0].title)
+        assertEquals("https://c.saavncdn.com/pl_te_1.jpg", playlists[0].coverArtUri)
+
+        val details = playlistProvider.getPlaylistDetails("pl_te_1").getOrNull()
+        assertNotNull(details)
+        assertEquals(1, details!!.songs.size)
+        assertEquals("telugu", details.songs[0].language)
+        assertEquals("https://aac.saavncdn.com/s1.mp4", details.songs[0].contentUriString)
+    }
+
+    @Test
+    fun testGetArtistDetailsPublicApiParsesTopSongsAlbumsAndLatestSingles() = runBlocking {
+        val mockBase = mockWebServer.url("/").toString().removeSuffix("/")
+        val artistProvider = JioSaavnMusicProvider(
+            apiService,
+            Moshi.Builder().add(KotlinJsonAdapterFactory()).build(),
+            publicApiBases = listOf(mockBase)
+        )
+
+        val publicArtistJson = """
+            {
+                "success": true,
+                "data": {
+                    "id": "459320",
+                    "name": "Arijit Singh",
+                    "image": [
+                        { "quality": "500x500", "url": "https://c.saavncdn.com/artists/arijit_500x500.jpg" }
+                    ],
+                    "topSongs": [
+                        {
+                            "id": "s_arijit_1",
+                            "name": "Tum Hi Ho",
+                            "language": "Hindi",
+                            "year": "2013",
+                            "album": { "id": "alb_1", "name": "Aashiqui 2" },
+                            "artists": { "primary": [ { "name": "Arijit Singh" } ] },
+                            "duration": 262,
+                            "image": [ { "quality": "500x500", "url": "https://c.saavncdn.com/tum_hi_ho.jpg" } ],
+                            "downloadUrl": [ { "quality": "320kbps", "url": "https://aac.saavncdn.com/tumhiho_320.mp4" } ]
+                        }
+                    ],
+                    "singles": [
+                        {
+                            "id": "s_arijit_2",
+                            "name": "O Maahi",
+                            "language": "Hindi",
+                            "year": "2024",
+                            "album": { "id": "alb_2", "name": "Dunki" },
+                            "artists": { "primary": [ { "name": "Arijit Singh" }, { "name": "Pritam" } ] },
+                            "duration": 233,
+                            "downloadUrl": [ { "quality": "320kbps", "url": "https://aac.saavncdn.com/omaahi_320.mp4" } ]
+                        }
+                    ],
+                    "topAlbums": [
+                        {
+                            "id": "alb_2",
+                            "name": "Dunki",
+                            "year": "2024",
+                            "songCount": 5,
+                            "artists": { "primary": [ { "name": "Arijit Singh" } ] },
+                            "image": [ { "quality": "500x500", "url": "https://c.saavncdn.com/dunki_500.jpg" } ]
+                        }
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(publicArtistJson).setResponseCode(200))
+
+        val ref = com.usman.musicplayer.model.OnlineArtistResult(
+            id = "459320",
+            name = "Arijit Singh",
+            sourceProvider = "JioSaavn",
+            languages = listOf("Hindi")
+        )
+        val result = artistProvider.getArtistDetails(ref)
+        assertTrue(result.isSuccess)
+        val details = result.getOrNull()
+        assertNotNull(details)
+        assertEquals("Arijit Singh", details!!.name)
+        assertEquals("https://c.saavncdn.com/artists/arijit_500x500.jpg", details.artworkUri)
+        assertEquals(1, details.popularSongs.size)
+        assertEquals("Tum Hi Ho", details.popularSongs[0].title)
+        assertEquals("https://aac.saavncdn.com/tumhiho_320.mp4", details.popularSongs[0].contentUriString)
+        assertEquals(1, details.latestReleases.size)
+        assertEquals("O Maahi", details.latestReleases[0].title)
+        assertEquals(1, details.albums.size)
+        assertEquals("Dunki", details.albums[0].title)
+    }
+
+    @Test
+    fun testGetArtistDetailsOfficialFallbackDecodesEntitiesAndParsesPlaylists() = runBlocking {
+        val officialArtistJson = """
+            {
+                "artistId": "456323",
+                "name": "Anirudh &amp; Crew",
+                "image": "http://c.saavncdn.com/artists/anirudh_150x150.jpg",
+                "topSongs": [
+                    {
+                        "id": "an_1",
+                        "song": "Chuttamalle",
+                        "more_info": {
+                            "album_id": "alb_devara",
+                            "album": "Devara Part 1",
+                            "year": "2024",
+                            "language": "telugu",
+                            "artistMap": {
+                                "primary_artists": [ { "name": "Anirudh Ravichander" }, { "name": "Shilpa Rao" } ]
+                            },
+                            "media_url": "http://aac.saavncdn.com/chuttamalle.mp4",
+                            "duration": "222"
+                        }
+                    }
+                ],
+                "topAlbums": [
+                    {
+                        "id": "alb_devara",
+                        "title": "Devara Part 1",
+                        "year": "2024",
+                        "more_info": {
+                            "music": "Anirudh Ravichander",
+                            "song_count": "6",
+                            "language": "telugu"
+                        }
+                    }
+                ],
+                "dedicated_artist_playlist": [
+                    {
+                        "id": "pl_ani_1",
+                        "title": "Best of Anirudh &amp; Hits",
+                        "subtitle": "JioSaavn Playlist",
+                        "image": "http://c.saavncdn.com/pl_ani_150x150.jpg"
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        mockWebServer.enqueue(MockResponse().setBody(officialArtistJson).setResponseCode(200))
+
+        val ref = com.usman.musicplayer.model.OnlineArtistResult(
+            id = "456323",
+            name = "Anirudh Ravichander",
+            sourceProvider = "JioSaavn",
+            languages = listOf("Telugu", "Tamil")
+        )
+        val details = provider.getArtistDetails(ref).getOrNull()
+        assertNotNull(details)
+        assertEquals("https://c.saavncdn.com/artists/anirudh_500x500.jpg", details!!.artworkUri)
+        assertEquals(1, details.popularSongs.size)
+        assertEquals("Chuttamalle", details.popularSongs[0].title)
+        assertEquals("https://aac.saavncdn.com/chuttamalle.mp4", details.popularSongs[0].contentUriString)
+        assertEquals(1, details.albums.size)
+        assertEquals("Devara Part 1", details.albums[0].title)
+        assertEquals(1, details.playlists.size)
+        assertEquals("Best of Anirudh & Hits", details.playlists[0].title)
+        assertEquals("https://c.saavncdn.com/pl_ani_500x500.jpg", details.playlists[0].coverArtUri)
+    }
 }
+
+
+
 

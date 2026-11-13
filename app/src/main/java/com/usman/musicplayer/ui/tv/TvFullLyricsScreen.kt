@@ -265,8 +265,14 @@ fun TvFullLyricsScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
+                        val syncLabel = when (parsedLyrics?.syncQuality) {
+                            com.usman.musicplayer.model.SyncQuality.WORD,
+                            com.usman.musicplayer.model.SyncQuality.CHARACTER -> "WORD-SYNCED LIVE LYRICS"
+                            com.usman.musicplayer.model.SyncQuality.LINE -> "LINE-SYNCED LIVE LYRICS"
+                            else -> if (isSynchronized) "LIVE SYNCHRONIZED LYRICS" else "PLAIN LYRICS"
+                        }
                         Text(
-                            text = if (isSynchronized) "LIVE SYNCHRONIZED LYRICS" else "PLAIN LYRICS",
+                            text = syncLabel,
                             color = Color.White,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,

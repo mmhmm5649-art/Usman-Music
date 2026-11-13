@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -46,7 +47,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.usman.musicplayer.model.Album
+import com.usman.musicplayer.model.AlbumSearchResult
+import com.usman.musicplayer.model.OnlineArtistResult
+import com.usman.musicplayer.model.SearchFilterCategory
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.ui.components.OnlineArtistResultRow
+import com.usman.musicplayer.ui.components.SearchFilterCategoryBar
+import com.usman.musicplayer.ui.components.TvAlbumGridCard
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 import com.usman.musicplayer.viewmodel.SearchSource
@@ -54,8 +62,8 @@ import com.usman.musicplayer.viewmodel.SearchSource
 /**
  * TV-Optimized Search Screen for Android TV / Google TV.
  * Features large accessible search field, soft keyboard support,
- * Online vs Device source toggle, recent search history chips,
- * and high-contrast result grid.
+ * Online vs Device source toggle, All/Songs/Albums/Artists filters,
+ * recent search history chips, and high-contrast result grid.
  */
 @Composable
 fun TvSearchScreen(
@@ -64,10 +72,19 @@ fun TvSearchScreen(
     onTriggerOnlineSearch: (String) -> Unit,
     onSearchSourceChange: (SearchSource) -> Unit,
     onPlaySong: (Song) -> Unit,
+    onSearchFilterCategoryChange: (SearchFilterCategory) -> Unit = {},
+    onOpenOnlineAlbum: (AlbumSearchResult) -> Unit = {},
+    onOpenOnlineArtist: (OnlineArtistResult) -> Unit = {},
+    onOpenLocalAlbum: (Album) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
-    val recentQueries = listOf("Nazar Lagi", "Sai Abhyankkar", "Telugu Hits", "Asees Kaur", "Pushpa 2", "Arjan Vailly")
+    val defaultQuickQueries = listOf("Nazar Lagi", "Sai Abhyankkar", "Telugu Hits", "Asees Kaur", "Pushpa 2", "Arjan Vailly")
+    val recentQueries = remember(uiState.searchHistory) {
+        (uiState.searchHistory + defaultQuickQueries).distinctBy { it.lowercase() }.take(10)
+    }
+    val isOnlineMode = uiState.searchSource == SearchSource.ONLINE
+    val filter = uiState.searchFilterCategory
 
     Column(
         modifier = modifier
@@ -93,31 +110,29 @@ fun TvSearchScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TvSourcePill(
                     label = "Online Catalog",
-                    isSelected = uiState.searchSource == SearchSource.ONLINE,
+                    isSelected = isOnlineMode,
                     onClick = { onSearchSourceChange(SearchSource.ONLINE) }
                 )
                 TvSourcePill(
                     label = "Device Library",
-                    isSelected = uiState.searchSource == SearchSource.DEVICE,
+                    isSelected = !isOnlineMode,
                     onClick = { onSearchSourceChange(SearchSource.DEVICE) }
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         // Large Accessible TV Search Input Bar
-        var isTextFieldFocused by remember { mutableStateOf(false) }
-
         OutlinedTextField(
             value = uiState.searchQuery,
             onValueChange = { q ->
                 onSearchQueryChange(q)
-                if (uiState.searchSource == SearchSource.ONLINE && q.trim().length >= 2) {
+                if (isOnlineMode && q.trim().length >= 2) {
                     onTriggerOnlineSearch(q.trim())
                 }
             },
-            placeholder = { Text("Search songs, artists, or albums...", color = Color(0xFF64748B), fontSize = 16.sp) },
+            placeholder = { Text("Search songs, movies, albums, or artists...", color = Color(0xFF64748B), fontSize = 16.sp) },
             leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = SoftCyan) },
             trailingIcon = {
                 if (uiState.searchQuery.isNotEmpty()) {
@@ -134,7 +149,7 @@ fun TvSearchScreen(
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = {
-                if (uiState.searchSource == SearchSource.ONLINE && uiState.searchQuery.isNotBlank()) {
+                if (isOnlineMode && uiState.searchQuery.isNotBlank()) {
                     onTriggerOnlineSearch(uiState.searchQuery.trim())
                 }
                 focusManager.clearFocus()
@@ -148,12 +163,18 @@ fun TvSearchScreen(
                 unfocusedTextColor = Color.White
             ),
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .onFocusChanged { isTextFieldFocused = it.isFocused }
+            modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Filter Category Row (All / Songs / Albums / Artists)
+        SearchFilterCategoryBar(
+            selectedCategory = filter,
+            onCategorySelected = onSearchFilterCategoryChange
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Recent Search Chips
         LazyRow(
@@ -174,7 +195,7 @@ fun TvSearchScreen(
                         .background(if (isFocused) SoftCyan.copy(alpha = 0.3f) else Color(0x221E2338))
                         .clickable {
                             onSearchQueryChange(query)
-                            if (uiState.searchSource == SearchSource.ONLINE) {
+                            if (isOnlineMode) {
                                 onTriggerOnlineSearch(query)
                             }
                         }
@@ -185,13 +206,18 @@ fun TvSearchScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Results Section
-        val results = if (uiState.searchSource == SearchSource.ONLINE) uiState.onlineSearchResults else uiState.deviceMatchingSongs
+        val hasAnyOnlineResults = uiState.onlineSearchResults.isNotEmpty() ||
+            uiState.onlineSearchAlbums.isNotEmpty() ||
+            uiState.onlineSearchArtists.isNotEmpty()
+        val hasAnyDeviceResults = uiState.deviceMatchingSongs.isNotEmpty() ||
+            uiState.deviceMatchingAlbums.isNotEmpty() ||
+            uiState.deviceMatchingArtists.isNotEmpty()
 
         when {
-            uiState.isOnlineSearching -> {
+            isOnlineMode && uiState.isOnlineSearching -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = SoftCyan, modifier = Modifier.size(44.dp))
@@ -200,10 +226,10 @@ fun TvSearchScreen(
                     }
                 }
             }
-            results.isEmpty() && uiState.searchQuery.isNotBlank() -> {
+            uiState.searchQuery.isNotBlank() && ((isOnlineMode && !hasAnyOnlineResults) || (!isOnlineMode && !hasAnyDeviceResults)) -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "No relevant songs found for '${uiState.searchQuery}'",
+                        text = "No matching results found for '${uiState.searchQuery}'",
                         color = Color(0xFF94A3B8),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium
@@ -212,18 +238,140 @@ fun TvSearchScreen(
             }
             else -> {
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 160.dp),
-                    contentPadding = PaddingValues(bottom = 40.dp),
+                    columns = GridCells.Adaptive(minSize = 168.dp),
+                    contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    items(results, key = { "${it.id}_${it.filePath}" }) { song ->
-                        TvSongCard(
-                            song = song,
-                            onClick = { onPlaySong(song) },
-                            cardWidth = 160.dp,
-                            cardHeight = 210.dp
-                        )
+                    if (isOnlineMode) {
+                        val showAlbums = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ALBUMS) &&
+                            uiState.onlineSearchAlbums.isNotEmpty()
+                        val showArtists = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ARTISTS) &&
+                            uiState.onlineSearchArtists.isNotEmpty()
+                        val showSongs = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.SONGS) &&
+                            uiState.onlineSearchResults.isNotEmpty()
+
+                        if (showAlbums) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text = "ALBUMS & MOVIE SOUNDTRACKS (${uiState.onlineSearchAlbums.size})",
+                                    color = SoftCyan,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.8.sp
+                                )
+                            }
+                            items(
+                                items = if (filter == SearchFilterCategory.ALL) uiState.onlineSearchAlbums.take(6) else uiState.onlineSearchAlbums,
+                                key = { "tv_album_${it.sourceProvider}_${it.id}" }
+                            ) { album ->
+                                TvAlbumGridCard(
+                                    album = album,
+                                    onClick = { onOpenOnlineAlbum(album) }
+                                )
+                            }
+                        }
+
+                        if (showArtists) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text = "ARTISTS (${uiState.onlineSearchArtists.size})",
+                                    color = SoftCyan,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.8.sp
+                                )
+                            }
+                            items(
+                                items = if (filter == SearchFilterCategory.ALL) uiState.onlineSearchArtists.take(4) else uiState.onlineSearchArtists,
+                                key = { "tv_artist_${it.id}_${it.name}" },
+                                span = { GridItemSpan(maxLineSpan) }
+                            ) { artist ->
+                                OnlineArtistResultRow(
+                                    artist = artist,
+                                    onClick = { onOpenOnlineArtist(artist) }
+                                )
+                            }
+                        }
+
+                        if (showSongs) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text = "SONGS (${uiState.onlineSearchResults.size})",
+                                    color = SoftCyan,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.8.sp
+                                )
+                            }
+                            items(
+                                items = uiState.onlineSearchResults,
+                                key = { "tv_song_${it.id}_${it.filePath}" }
+                            ) { song ->
+                                TvSongCard(
+                                    song = song,
+                                    onClick = { onPlaySong(song) },
+                                    cardWidth = 168.dp,
+                                    cardHeight = 216.dp
+                                )
+                            }
+                        }
+                    } else {
+                        val showAlbums = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ALBUMS) &&
+                            uiState.deviceMatchingAlbums.isNotEmpty()
+                        val showSongs = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.SONGS) &&
+                            uiState.deviceMatchingSongs.isNotEmpty()
+
+                        if (showAlbums) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text = "DEVICE ALBUMS (${uiState.deviceMatchingAlbums.size})",
+                                    color = SoftCyan,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            items(
+                                items = uiState.deviceMatchingAlbums,
+                                key = { "tv_dev_album_${it.id}_${it.title}" }
+                            ) { album ->
+                                val summary = AlbumSearchResult(
+                                    id = album.id.toString(),
+                                    title = album.title,
+                                    artist = album.artist,
+                                    songCount = album.songCount,
+                                    artworkUri = album.artworkUri,
+                                    sourceProvider = "Device Library",
+                                    isCompleteAlbum = true
+                                )
+                                TvAlbumGridCard(
+                                    album = summary,
+                                    onClick = { onOpenLocalAlbum(album) }
+                                )
+                            }
+                        }
+
+                        if (showSongs) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text = "DEVICE SONGS (${uiState.deviceMatchingSongs.size})",
+                                    color = SoftCyan,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            items(
+                                items = uiState.deviceMatchingSongs,
+                                key = { "tv_dev_song_${it.id}_${it.filePath}" }
+                            ) { song ->
+                                TvSongCard(
+                                    song = song,
+                                    onClick = { onPlaySong(song) },
+                                    cardWidth = 168.dp,
+                                    cardHeight = 216.dp
+                                )
+                            }
+                        }
                     }
                 }
             }

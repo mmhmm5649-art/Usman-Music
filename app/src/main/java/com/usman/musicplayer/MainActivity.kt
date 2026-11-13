@@ -74,7 +74,10 @@ import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.components.AppDestination
 import com.usman.musicplayer.ui.components.CompactNowPlayingBar
 import com.usman.musicplayer.ui.components.UsmanGlassBottomNav
+import com.usman.musicplayer.ui.screens.AlbumDetailsScreen
+import com.usman.musicplayer.ui.screens.ArtistDetailsScreen
 import com.usman.musicplayer.ui.screens.EqualizerScreen
+import com.usman.musicplayer.ui.screens.HomeCollectionDetailSheet
 import com.usman.musicplayer.ui.screens.HomeScreen
 import com.usman.musicplayer.ui.screens.LibraryScreen
 import com.usman.musicplayer.ui.screens.NowPlayingScreen
@@ -253,6 +256,9 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         }
     }
 
+    val isAlbumDetailsOpen = uiState.selectedAlbumSummary != null || uiState.selectedAlbumDetails != null
+    val isArtistDetailsOpen = uiState.selectedArtistSummary != null || uiState.selectedArtistDetails != null
+
     // Predictive back gesture & modal back navigation
     BackHandler(enabled = isPluginManagerExpanded) {
         isPluginManagerExpanded = false
@@ -270,7 +276,19 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         isNowPlayingExpanded = false
     }
 
-    BackHandler(enabled = !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded && currentDestination != AppDestination.HOME) {
+    BackHandler(enabled = isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+        viewModel.closeAlbumDetails()
+    }
+
+    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet != null && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+        viewModel.closeHomeCollectionSheet()
+    }
+
+    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet == null && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+        viewModel.closeArtistDetails()
+    }
+
+    BackHandler(enabled = !isArtistDetailsOpen && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded && currentDestination != AppDestination.HOME) {
         viewModel.clearFilters()
         currentDestination = AppDestination.HOME
     }
@@ -278,22 +296,42 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
     val hazeState = if (isTv) null else remember { HazeState() }
 
+    LaunchedEffect(uiState.userProfile.gateDestination) {
+        if (uiState.userProfile.gateDestination == com.usman.musicplayer.model.AuthGateDestination.LOGIN_SCREEN) {
+            isPluginManagerExpanded = false
+            isSettingsExpanded = false
+            isEqualizerExpanded = false
+            isNowPlayingExpanded = false
+            isDiagnosticExpanded = false
+            currentDestination = AppDestination.HOME
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(AmoledBlack)
     ) {
-        // Main App Content Container
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = appScale
-                    scaleY = appScale
-                    alpha = appAlpha
-                }
-        ) {
-            if (isTv) {
+        if (uiState.userProfile.gateDestination == com.usman.musicplayer.model.AuthGateDestination.LOGIN_SCREEN) {
+            com.usman.musicplayer.ui.screens.LoginScreen(
+                isAuthInProgress = uiState.userProfile.isAuthInProgress,
+                authError = uiState.userProfile.authError,
+                sessionNotice = uiState.userProfile.sessionNotice,
+                onContinueWithGoogle = { viewModel.signInWithGoogle(context) },
+                onContinueAsGuest = { viewModel.continueAsGuest() }
+            )
+        } else {
+            // Main App Content Container
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = appScale
+                        scaleY = appScale
+                        alpha = appAlpha
+                    }
+            ) {
+                if (isTv) {
                 // --- ANDROID TV DEDICATED PRESENTATION LAYER ---
                 Row(modifier = Modifier.fillMaxSize()) {
                     com.usman.musicplayer.ui.tv.TvNavigationRail(
@@ -328,7 +366,31 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                         isNowPlayingExpanded = true
                                     },
                                     onTabGenreSelected = { tab -> viewModel.setActiveHomeGenreTab(tab) },
-                                    onOpenSettings = { currentDestination = AppDestination.NEW }
+                                    onOpenSettings = { currentDestination = AppDestination.NEW },
+                                    onSelectHomeLanguage = { lang -> viewModel.selectHomeLanguage(lang) },
+                                    onRequestSectionLoad = { secId -> viewModel.requestHomeSectionLoad(secId) },
+                                    onLoadMoreSection = { secId -> viewModel.loadMoreHomeSection(secId) },
+                                    onOpenQuickCard = { card -> viewModel.openHomeQuickCard(card) },
+                                    onOpenCuratedPlaylist = { playlist -> viewModel.openCuratedHomePlaylist(playlist) },
+                                    onCloseCollectionSheet = { viewModel.closeHomeCollectionSheet() },
+                                    onOpenSeeAllSection = { secId -> viewModel.openHomeSeeAll(secId) },
+                                    onCloseSeeAllSection = { viewModel.closeHomeSeeAll() },
+                                    onPlayQueue = { song, queue ->
+                                        viewModel.playSong(song, explicitQueue = queue)
+                                        isNowPlayingExpanded = true
+                                    },
+                                    onShuffleQueue = { songs ->
+                                        viewModel.playQueueShuffled(songs)
+                                        isNowPlayingExpanded = true
+                                    },
+                                    onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                                    onOpenAlbum = { album -> viewModel.openAlbum(album) },
+                                    onOpenArtist = { artist ->
+                                        viewModel.openArtistDetails(artist)
+                                    },
+                                    onSavePlaylistToLibrary = { title, songs, cb ->
+                                        viewModel.savePlaylistToLibrary(title, songs, cb)
+                                    }
                                 )
 
                                 AppDestination.SEARCH -> com.usman.musicplayer.ui.tv.TvSearchScreen(
@@ -339,7 +401,11 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     onPlaySong = { song ->
                                         viewModel.playSong(song)
                                         isNowPlayingExpanded = true
-                                    }
+                                    },
+                                    onSearchFilterCategoryChange = { cat -> viewModel.setSearchFilterCategory(cat) },
+                                    onOpenOnlineAlbum = { album -> viewModel.openAlbum(album) },
+                                    onOpenOnlineArtist = { artist -> viewModel.openOnlineArtist(artist) },
+                                    onOpenLocalAlbum = { album -> viewModel.openLocalAlbum(album) }
                                 )
 
                                 AppDestination.LIBRARY -> com.usman.musicplayer.ui.tv.TvLibraryScreen(
@@ -348,13 +414,18 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     onPlaySong = { song ->
                                         viewModel.playSong(song)
                                         isNowPlayingExpanded = true
-                                    }
+                                    },
+                                    onOpenSavedAlbum = { details -> viewModel.openSavedAlbum(details) },
+                                    onOpenLocalAlbum = { album -> viewModel.openLocalAlbum(album) }
                                 )
 
                                 AppDestination.NEW -> com.usman.musicplayer.ui.tv.TvSettingsScreen(
                                     onOpenEqualizer = { isEqualizerExpanded = true },
                                     onOpenPlugins = { isPluginManagerExpanded = true },
-                                    onRescanLibrary = { viewModel.scanMusicLibrary() }
+                                    onRescanLibrary = { viewModel.scanMusicLibrary() },
+                                    userProfile = uiState.userProfile,
+                                    onSignInClick = { viewModel.signInWithGoogle(context) },
+                                    onSignOutClick = { viewModel.signOut(context) }
                                 )
                             }
                         }
@@ -405,7 +476,32 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onRescanClick = { viewModel.scanMusicLibrary() },
                             onRequestPermissionClick = { requestRequiredPermissions() },
                             onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
-                            onOpenSettings = { isSettingsExpanded = true }
+                            onOpenSettings = { isSettingsExpanded = true },
+                            onSelectHomeLanguage = { lang -> viewModel.selectHomeLanguage(lang) },
+                            onRequestSectionLoad = { secId -> viewModel.requestHomeSectionLoad(secId) },
+                            onLoadMoreSection = { secId -> viewModel.loadMoreHomeSection(secId) },
+                            onOpenQuickCard = { card -> viewModel.openHomeQuickCard(card) },
+                            onOpenCuratedPlaylist = { playlist -> viewModel.openCuratedHomePlaylist(playlist) },
+                            onCloseCollectionSheet = { viewModel.closeHomeCollectionSheet() },
+                            onOpenSeeAllSection = { secId -> viewModel.openHomeSeeAll(secId) },
+                            onCloseSeeAllSection = { viewModel.closeHomeSeeAll() },
+                            onPlayQueue = { song, queue ->
+                                viewModel.playSong(song, explicitQueue = queue)
+                                isNowPlayingExpanded = true
+                            },
+                            onShuffleQueue = { songs ->
+                                viewModel.playQueueShuffled(songs)
+                                isNowPlayingExpanded = true
+                            },
+                            onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                            onDownloadSong = { song -> viewModel.downloadSong(song) },
+                            onOpenAlbum = { album -> viewModel.openAlbum(album) },
+                            onOpenArtist = { artist ->
+                                viewModel.openArtistDetails(artist)
+                            },
+                            onSavePlaylistToLibrary = { title, songs, cb ->
+                                viewModel.savePlaylistToLibrary(title, songs, cb)
+                            }
                         )
 
                         AppDestination.NEW -> HomeScreen(
@@ -435,7 +531,32 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onRescanClick = { viewModel.scanMusicLibrary() },
                             onRequestPermissionClick = { requestRequiredPermissions() },
                             onRetryTelugu = { viewModel.retryLoadTeluguMusic() },
-                            onOpenSettings = { isSettingsExpanded = true }
+                            onOpenSettings = { isSettingsExpanded = true },
+                            onSelectHomeLanguage = { lang -> viewModel.selectHomeLanguage(lang) },
+                            onRequestSectionLoad = { secId -> viewModel.requestHomeSectionLoad(secId) },
+                            onLoadMoreSection = { secId -> viewModel.loadMoreHomeSection(secId) },
+                            onOpenQuickCard = { card -> viewModel.openHomeQuickCard(card) },
+                            onOpenCuratedPlaylist = { playlist -> viewModel.openCuratedHomePlaylist(playlist) },
+                            onCloseCollectionSheet = { viewModel.closeHomeCollectionSheet() },
+                            onOpenSeeAllSection = { secId -> viewModel.openHomeSeeAll(secId) },
+                            onCloseSeeAllSection = { viewModel.closeHomeSeeAll() },
+                            onPlayQueue = { song, queue ->
+                                viewModel.playSong(song, explicitQueue = queue)
+                                isNowPlayingExpanded = true
+                            },
+                            onShuffleQueue = { songs ->
+                                viewModel.playQueueShuffled(songs)
+                                isNowPlayingExpanded = true
+                            },
+                            onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                            onDownloadSong = { song -> viewModel.downloadSong(song) },
+                            onOpenAlbum = { album -> viewModel.openAlbum(album) },
+                            onOpenArtist = { artist ->
+                                viewModel.openArtistDetails(artist)
+                            },
+                            onSavePlaylistToLibrary = { title, songs, cb ->
+                                viewModel.savePlaylistToLibrary(title, songs, cb)
+                            }
                         )
 
                         AppDestination.SEARCH -> SearchScreen(
@@ -451,10 +572,11 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onOpenService = { ctx, song, service ->
                                 viewModel.openInOfficialService(ctx, song, service)
                             },
+                            onSearchFilterCategoryChange = { cat -> viewModel.setSearchFilterCategory(cat) },
+                            onOpenOnlineAlbum = { album -> viewModel.openAlbum(album) },
+                            onOpenOnlineArtist = { artist -> viewModel.openOnlineArtist(artist) },
                             onAlbumClick = { album ->
-                                viewModel.filterByAlbum(album.title)
-                                viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
-                                currentDestination = AppDestination.LIBRARY
+                                viewModel.openLocalAlbum(album)
                             },
                             onArtistClick = { artist ->
                                 viewModel.filterByArtist(artist.name)
@@ -477,8 +599,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                 isNowPlayingExpanded = true
                             },
                             onAlbumSelected = { album ->
-                                viewModel.filterByAlbum(album.title)
-                                viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
+                                viewModel.openLocalAlbum(album)
                             },
                             onArtistSelected = { artist ->
                                 viewModel.filterByArtist(artist.name)
@@ -488,6 +609,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                 viewModel.filterByFolder(folder.name)
                                 viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
                             },
+                            onSavedAlbumSelected = { details -> viewModel.openSavedAlbum(details) },
                             onSelectPlaylist = { playlist -> viewModel.selectPlaylist(playlist) },
                             onCreatePlaylistClick = {
                                 viewModel.createPlaylist("New Playlist")
@@ -510,7 +632,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
 
                 // Persistent Floating Liquid Glass Mini Player + Bottom Navigation Bar (Phone Only)
                 AnimatedVisibility(
-                    visible = !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded,
+                    visible = !isArtistDetailsOpen && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded,
                     enter = fadeIn(animationSpec = tween(300)) + slideInVertically(
                         initialOffsetY = { it / 2 },
                         animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
@@ -562,6 +684,142 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     }
                 }
             }
+        }
+
+        // Artist Details Overlay (Phone & TV) — layered beneath Album Details so tapping an album stacks cleanly
+        AnimatedVisibility(
+            visible = isArtistDetailsOpen && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(tween(220)),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(tween(180))
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                ArtistDetailsScreen(
+                    artistSummary = uiState.selectedArtistSummary,
+                    artistDetails = uiState.selectedArtistDetails,
+                    isLoading = uiState.isArtistDetailsLoading,
+                    error = uiState.artistDetailsError,
+                    currentSong = uiState.currentSong,
+                    isPlaying = uiState.isPlaying,
+                    isTv = isTv,
+                    onBack = { viewModel.closeArtistDetails() },
+                    onRetry = { summary -> viewModel.openArtistDetails(summary) },
+                    onPlayAll = { tracks ->
+                        viewModel.playAlbum(tracks, startIndex = 0, shuffle = false)
+                        isNowPlayingExpanded = true
+                    },
+                    onShuffleAll = { tracks ->
+                        viewModel.playQueueShuffled(tracks)
+                        isNowPlayingExpanded = true
+                    },
+                    onPlaySong = { song, queue ->
+                        viewModel.playSong(song, explicitQueue = queue)
+                        isNowPlayingExpanded = true
+                    },
+                    onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                    onDownloadSong = { song -> viewModel.downloadSong(song) },
+                    onOpenAlbum = { album -> viewModel.openAlbum(album) },
+                    onOpenPlaylist = { playlist -> viewModel.openCuratedHomePlaylist(playlist) },
+                    onSaveMixToLibrary = { title, songs, cb ->
+                        viewModel.savePlaylistToLibrary(title, songs, cb)
+                    }
+                )
+
+                val artistPlaylistSheet = uiState.activeHomeCollectionSheet
+                if (artistPlaylistSheet != null) {
+                    if (isTv) {
+                        com.usman.musicplayer.ui.tv.TvHomeCollectionOverlay(
+                            playlist = artistPlaylistSheet,
+                            isLoading = uiState.isHomeCollectionLoading,
+                            currentSong = uiState.currentSong,
+                            onBack = { viewModel.closeHomeCollectionSheet() },
+                            onPlaySong = { song, queue ->
+                                viewModel.playSong(song, explicitQueue = queue)
+                                isNowPlayingExpanded = true
+                            },
+                            onShuffleAll = { songs ->
+                                viewModel.playQueueShuffled(songs)
+                                isNowPlayingExpanded = true
+                            },
+                            onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                            onSaveToLibrary = { title, songs, cb ->
+                                viewModel.savePlaylistToLibrary(title, songs, cb)
+                            }
+                        )
+                    } else {
+                        HomeCollectionDetailSheet(
+                            playlist = artistPlaylistSheet,
+                            isLoading = uiState.isHomeCollectionLoading,
+                            currentSong = uiState.currentSong,
+                            isPlaying = uiState.isPlaying,
+                            onDismiss = { viewModel.closeHomeCollectionSheet() },
+                            onPlaySong = { song, queue ->
+                                viewModel.playSong(song, explicitQueue = queue)
+                                isNowPlayingExpanded = true
+                            },
+                            onShuffleAll = { songs ->
+                                viewModel.playQueueShuffled(songs)
+                                isNowPlayingExpanded = true
+                            },
+                            onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
+                            onDownloadSong = { song -> viewModel.downloadSong(song) },
+                            onSaveToLibrary = { title, songs, cb ->
+                                viewModel.savePlaylistToLibrary(title, songs, cb)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Album Details Overlay (Phone & TV)
+        AnimatedVisibility(
+            visible = isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(tween(220)),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(tween(180))
+        ) {
+            val currentAlbumId = uiState.selectedAlbumDetails?.id ?: uiState.selectedAlbumSummary?.id
+            val currentProvider = uiState.selectedAlbumDetails?.sourceProvider ?: uiState.selectedAlbumSummary?.sourceProvider
+            val isSaved = currentAlbumId != null && uiState.savedAlbums.any {
+                it.id == currentAlbumId && it.sourceProvider.equals(currentProvider, ignoreCase = true)
+            }
+            AlbumDetailsScreen(
+                albumSummary = uiState.selectedAlbumSummary,
+                albumDetails = uiState.selectedAlbumDetails,
+                isLoading = uiState.isAlbumDetailsLoading,
+                error = uiState.albumDetailsError,
+                playlists = uiState.playlists,
+                isSavedToLibrary = isSaved,
+                currentSong = uiState.currentSong,
+                isPlaying = uiState.isPlaying,
+                isTv = isTv,
+                onBack = { viewModel.closeAlbumDetails() },
+                onRetry = { summary -> viewModel.openAlbum(summary) },
+                onPlayAll = { tracks ->
+                    viewModel.playAlbum(tracks, startIndex = 0, shuffle = false)
+                    isNowPlayingExpanded = true
+                },
+                onShuffleAll = { tracks ->
+                    viewModel.playAlbum(tracks, startIndex = 0, shuffle = true)
+                    isNowPlayingExpanded = true
+                },
+                onPlayTrack = { tracks, index ->
+                    viewModel.playAlbum(tracks, startIndex = index, shuffle = false)
+                    isNowPlayingExpanded = true
+                },
+                onToggleSaveLibrary = { details, callback ->
+                    viewModel.toggleSaveAlbumToLibrary(details, callback)
+                },
+                onAddAlbumToPlaylist = { playlistId, tracks, callback ->
+                    viewModel.addAlbumToPlaylist(playlistId, tracks, callback)
+                },
+                onCreatePlaylistFromAlbum = { name, tracks, callback ->
+                    viewModel.createPlaylistFromAlbum(name, tracks, callback)
+                },
+                onDownloadAlbum = { tracks, callback ->
+                    viewModel.downloadAlbum(tracks, callback)
+                },
+                onDownloadSong = { song -> viewModel.downloadSong(song) }
+            )
         }
 
         // Shared-Element Container Transform into Fullscreen Now Playing Screen
@@ -617,6 +875,15 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             )
         }
 
+        // Equalizer / Studio Feel Audio Engine Slide-In Transition
+        AnimatedVisibility(
+            visible = isEqualizerExpanded,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            EqualizerScreen(onBackClick = { isEqualizerExpanded = false })
+        }
+
         // Diagnostic Screen Slide-In Transition
         AnimatedVisibility(
             visible = isDiagnosticExpanded,
@@ -636,7 +903,9 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     uiState = uiState,
                     onRescanClick = { viewModel.scanMusicLibrary() },
                     onOpenExtensions = { isPluginManagerExpanded = true },
-                    onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) }
+                    onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) },
+                    onSignInClick = { viewModel.signInWithGoogle(context) },
+                    onSignOutClick = { viewModel.signOut(context) }
                 )
         }
 
@@ -647,6 +916,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
             PluginManagerScreen(onBackClick = { isPluginManagerExpanded = false })
+        }
         }
 
         // Cinematic App-Opening Logo Flare Overlay (Fades out seamlessly)

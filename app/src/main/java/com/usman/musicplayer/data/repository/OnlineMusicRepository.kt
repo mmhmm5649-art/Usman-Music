@@ -6,15 +6,13 @@ import android.net.Uri
 import android.util.Log
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
-import com.usman.musicplayer.data.remote.AudiusApiService
-import com.usman.musicplayer.data.remote.AudiusTrackDto
-import com.usman.musicplayer.data.remote.ITunesTrackDto
-import com.usman.musicplayer.data.remote.MusicApiService
+import com.usman.musicplayer.data.remote.JioSaavnApiService
+import com.usman.musicplayer.data.repository.providers.JioSaavnMusicProvider
 import com.usman.musicplayer.model.PlaybackType
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.sdk.ProviderRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -23,7 +21,6 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 enum class ExternalServiceType(val displayName: String) {
     SPOTIFY("Spotify"),
@@ -40,8 +37,6 @@ data class MusicGenreCategory(
 object OnlineMusicRepository {
 
     private const val TAG = "OnlineMusicRepo"
-    private const val BASE_URL = "https://itunes.apple.com/"
-    private const val AUDIUS_BASE_URL = "https://discoveryprovider.audius.co/v1/"
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -55,19 +50,23 @@ object OnlineMusicRepository {
         .add(KotlinJsonAdapterFactory())
         .build()
 
-    private val apiService: MusicApiService = Retrofit.Builder()
-        .baseUrl(BASE_URL)
+    private val jioSaavnApiService: JioSaavnApiService = Retrofit.Builder()
+        .baseUrl("https://www.jiosaavn.com/")
         .client(okHttpClient)
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
-        .create(MusicApiService::class.java)
+        .create(JioSaavnApiService::class.java)
 
-    private val audiusApiService: AudiusApiService = Retrofit.Builder()
-        .baseUrl(AUDIUS_BASE_URL)
-        .client(okHttpClient)
-        .addConverterFactory(MoshiConverterFactory.create(moshi))
-        .build()
-        .create(AudiusApiService::class.java)
+    private val fallbackJioSaavnProvider: JioSaavnMusicProvider by lazy {
+        JioSaavnMusicProvider(jioSaavnApiService, moshi)
+    }
+
+    private fun jioSaavnProvider(): JioSaavnMusicProvider {
+        return ProviderRegistry.activeProviders
+            .filterIsInstance<JioSaavnMusicProvider>()
+            .firstOrNull()
+            ?: fallbackJioSaavnProvider
+    }
 
     // Predefined curated categories requested by user
     val INDIAN_CATEGORIES = listOf(
@@ -139,7 +138,7 @@ object OnlineMusicRepository {
         MusicGenreCategory("Global Trending", "global viral hits", null, "Global")
     )
 
-    // In-memory cache for search queries to prevent repeat network hits
+    // In-memory cache for JioSaavn search queries to prevent repeat network hits
     private val queryCache = java.util.concurrent.ConcurrentHashMap<String, List<Song>>()
 
     suspend fun searchOnline(
@@ -147,36 +146,24 @@ object OnlineMusicRepository {
         country: String? = null,
         limit: Int = 30
     ): Result<List<Song>> = withContext(Dispatchers.IO) {
-        val cacheKey = "${query.trim().lowercase()}_${country ?: "global"}_$limit"
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return@withContext Result.success(emptyList())
+
+        val cacheKey = "${trimmed.lowercase()}_${country ?: "global"}_$limit"
         queryCache[cacheKey]?.let {
             return@withContext Result.success(it)
         }
 
         try {
-            // Parallel search across iTunes and Audius
-            val iTunesDeferred = async {
-                try {
-                    apiService.searchTracks(term = query, limit = limit / 2, country = country).results
-                } catch (e: Exception) {
-                    emptyList()
+            val songs = jioSaavnProvider().searchPaginated(trimmed, limit, page = 1)
+                .getOrDefault(emptyList())
+                .filter {
+                    it.playbackType == PlaybackType.FULL &&
+                        it.sourceProvider.equals("JioSaavn", ignoreCase = true) &&
+                        (it.isStreamable || !it.contentUriString.isNullOrBlank())
                 }
-            }
-
-            val audiusDeferred = async {
-                try {
-                    audiusApiService.searchTracks(query = query, limit = limit / 2).data
-                } catch (e: Exception) {
-                    emptyList()
-                }
-            }
-
-            val iTunesResults = iTunesDeferred.await()
-            val audiusResults = audiusDeferred.await()
-
-            val songs = (
-                audiusResults.map { mapAudiusDtoToSong(it) } +
-                iTunesResults.map { mapDtoToSong(it) }
-            ).distinctBy { "${it.title}_${it.artist}".lowercase() }
+                .distinctBy { "${it.title}_${it.artist}".lowercase() }
+                .take(limit)
 
             if (songs.isNotEmpty()) {
                 queryCache[cacheKey] = songs
@@ -185,92 +172,13 @@ object OnlineMusicRepository {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "searchOnline network error for query '$query': ${e.message}")
+            Log.w(TAG, "searchOnline JioSaavn error for query '$trimmed': ${e.message}")
             Result.failure(e)
         }
     }
 
     suspend fun fetchCategorySongs(category: MusicGenreCategory, limit: Int = 25): Result<List<Song>> {
         return searchOnline(category.searchTerm, category.country, limit)
-    }
-
-    suspend fun fetchAudiusTrending(limit: Int = 20): Result<List<Song>> = withContext(Dispatchers.IO) {
-        try {
-            val response = audiusApiService.getTrendingTracks(limit = limit)
-            val songs = response.data.map { mapAudiusDtoToSong(it) }
-            Result.success(songs)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchAudiusTrending failed", e)
-            Result.failure(e)
-        }
-    }
-
-    private fun mapDtoToSong(dto: ITunesTrackDto): Song {
-        val songId = dto.trackId ?: abs(("${dto.trackName}_${dto.artistName}").hashCode().toLong())
-        val highResArt = dto.artworkUrl100
-            ?.replace("100x100bb", "600x600bb")
-            ?.replace("60x60bb", "600x600bb")
-            ?: dto.artworkUrl60
-
-        val securePreviewUrl = dto.previewUrl?.takeIf { it.isNotBlank() }?.let {
-            if (it.startsWith("http://")) it.replace("http://", "https://") else it
-        }
-        val hasPreview = !securePreviewUrl.isNullOrBlank()
-        val duration = if (hasPreview) {
-            // Official preview streams are 30 seconds (30,000ms)
-            30_000L
-        } else {
-            dto.trackTimeMillis ?: 180_000L
-        }
-
-        return Song(
-            id = songId,
-            title = dto.trackName ?: "Unknown Track",
-            artist = dto.artistName ?: "Unknown Artist",
-            album = dto.collectionName ?: "Single",
-            durationMs = duration,
-            filePath = securePreviewUrl ?: "",
-            folderName = "iTunes Discovery",
-            albumArtUri = highResArt,
-            contentUriString = securePreviewUrl,
-            mimeType = "audio/mp4",
-            sizeBytes = 0L,
-            isFavorite = false,
-            isOnline = true,
-            playbackType = if (hasPreview) PlaybackType.PREVIEW else PlaybackType.EXTERNAL_SERVICE,
-            externalUrl = dto.trackViewUrl,
-            genre = dto.primaryGenreName,
-            language = dto.country,
-            sourceProvider = "iTunes"
-        )
-    }
-
-    private fun mapAudiusDtoToSong(dto: AudiusTrackDto): Song {
-        val trackId = dto.trackId ?: dto.id?.hashCode()?.toLong() ?: 0L
-        val streamUrl = "${AUDIUS_BASE_URL}tracks/${dto.id}/stream?app_name=USMAN_MUSIC_PLAYER"
-        val highResArt = dto.artwork?.art1000 ?: dto.artwork?.art480 ?: dto.artwork?.art150
-
-        return Song(
-            id = trackId,
-            title = dto.title ?: "Unknown Audius Track",
-            artist = dto.user?.name ?: "Unknown Artist",
-            album = "Audius",
-            durationMs = (dto.duration ?: 180).toLong() * 1000L,
-            filePath = streamUrl,
-            folderName = "Audius Discovery",
-            albumArtUri = highResArt,
-            contentUriString = streamUrl,
-            mimeType = "audio/mpeg",
-            sizeBytes = 0L,
-            isFavorite = false,
-            isOnline = true,
-            playbackType = PlaybackType.FULL,
-            externalUrl = "https://audius.co${dto.permalink}",
-            genre = dto.genre,
-            sourceProvider = "Audius"
-        )
     }
 
     fun openInOfficialService(context: Context, song: Song, serviceType: ExternalServiceType) {

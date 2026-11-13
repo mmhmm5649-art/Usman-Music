@@ -30,11 +30,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.usman.musicplayer.data.local.DownloadEntity
 import com.usman.musicplayer.model.Album
+import com.usman.musicplayer.model.AlbumDetails
 import com.usman.musicplayer.model.Artist
 import com.usman.musicplayer.model.LibraryTab
 import com.usman.musicplayer.model.MusicFolder
 import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.ui.components.AlbumArtThumbnail
 import com.usman.musicplayer.ui.components.GlassButtonSurface
 import com.usman.musicplayer.ui.components.LiquidGlassPanel
 import com.usman.musicplayer.ui.components.SongAlbumArtwork
@@ -50,6 +52,7 @@ fun LibraryScreen(
     onAlbumSelected: (Album) -> Unit,
     onArtistSelected: (Artist) -> Unit,
     onFolderSelected: (MusicFolder) -> Unit,
+    onSavedAlbumSelected: (AlbumDetails) -> Unit = {},
     onSelectPlaylist: (Playlist?) -> Unit = {},
     onCreatePlaylistClick: () -> Unit = {},
     onDeletePlaylist: (Long) -> Unit = {},
@@ -269,7 +272,9 @@ fun LibraryScreen(
                     LibraryTab.ALBUMS -> {
                         AlbumsGrid(
                             albums = uiState.albums,
-                            onAlbumClick = onAlbumSelected
+                            savedAlbums = uiState.savedAlbums,
+                            onAlbumClick = onAlbumSelected,
+                            onSavedAlbumClick = onSavedAlbumSelected
                         )
                     }
                     LibraryTab.ARTISTS -> {
@@ -761,9 +766,14 @@ private fun AllSongsList(
 }
 
 @Composable
-private fun AlbumsGrid(albums: List<Album>, onAlbumClick: (Album) -> Unit) {
-    if (albums.isEmpty()) {
-        EmptyLibraryState(message = "No albums found in local storage.")
+private fun AlbumsGrid(
+    albums: List<Album>,
+    savedAlbums: List<AlbumDetails> = emptyList(),
+    onAlbumClick: (Album) -> Unit,
+    onSavedAlbumClick: (AlbumDetails) -> Unit = {}
+) {
+    if (albums.isEmpty() && savedAlbums.isEmpty()) {
+        EmptyLibraryState(message = "No albums saved or found in local storage.")
     } else {
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
@@ -772,6 +782,52 @@ private fun AlbumsGrid(albums: List<Album>, onAlbumClick: (Album) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            items(savedAlbums, key = { "saved_album_${it.sourceProvider}_${it.id}" }) { saved ->
+                LiquidGlassPanel(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onSavedAlbumClick(saved) }
+                        .testTag("saved_album_card_${saved.id}"),
+                    shape = RoundedCornerShape(20.dp),
+                    backgroundColor = Color(0x3314182E)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(130.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                        ) {
+                            AlbumArtThumbnail(
+                                artworkUri = saved.artworkUri,
+                                title = saved.title,
+                                artist = saved.artist,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 14.dp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = saved.title,
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${saved.artist} • ${saved.tracks.size.coerceAtLeast(saved.songCount)} tracks",
+                            color = SoftCyan,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
             items(albums, key = { "album_${it.id}_${it.title}" }) { album ->
                 LiquidGlassPanel(
                     modifier = Modifier

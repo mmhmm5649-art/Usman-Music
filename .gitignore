@@ -27,3 +27,7 @@ debug.keystore.base64
 
 # Kotlin
 .kotlin
+
+# Firebase CLI debug logs
+*-debug.log
+

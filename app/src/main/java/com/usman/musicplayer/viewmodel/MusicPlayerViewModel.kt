@@ -19,22 +19,49 @@ import androidx.media3.session.SessionToken
 import com.usman.musicplayer.data.LocalMusicScanner
 import com.usman.musicplayer.data.SongDownloadManager
 import com.usman.musicplayer.data.local.DownloadEntity
+import com.usman.musicplayer.data.repository.AlbumLibraryRepository
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.data.repository.MusicGenreCategory
 import com.usman.musicplayer.data.repository.OnlineMusicRepository
 import com.usman.musicplayer.data.repository.PlaylistRepository
 import com.usman.musicplayer.data.repository.UnifiedMusicRepository
 
+import com.usman.musicplayer.data.repository.HomeDiscoveryCatalog
+import com.usman.musicplayer.data.repository.HomeDiscoveryRepository
+import com.usman.musicplayer.data.repository.HomeUserSignalsStore
+import com.usman.musicplayer.data.repository.PersistedPlayStat
+import com.usman.musicplayer.data.auth.GoogleAuthHelper
+import com.usman.musicplayer.data.repository.PersistedAuthMode
+import com.usman.musicplayer.data.repository.UserProfilePreferencesStore
+import com.usman.musicplayer.data.repository.UserProfileRepository
+import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.auth
 import com.usman.musicplayer.model.Album
+import com.usman.musicplayer.model.AlbumDetails
+import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.Artist
+import com.usman.musicplayer.model.ArtistDetailsData
+import com.usman.musicplayer.model.AuthGateDestination
 import com.usman.musicplayer.model.CuratedPlaylist
+import com.usman.musicplayer.model.HomeDiscoverySection
+import com.usman.musicplayer.model.HomeHeroFeature
+import com.usman.musicplayer.model.HomeLanguageFilter
+import com.usman.musicplayer.model.HomeLanguagePolicy
+import com.usman.musicplayer.model.HomeNotificationItem
+import com.usman.musicplayer.model.HomeQuickAccessCard
+import com.usman.musicplayer.model.HomeQuickAccessType
+import com.usman.musicplayer.model.HomeSectionContentType
 import com.usman.musicplayer.model.LibraryTab
 import com.usman.musicplayer.model.MusicFolder
+import com.usman.musicplayer.model.OnlineArtistResult
 import com.usman.musicplayer.model.PlaybackProgress
 import com.usman.musicplayer.model.PlaybackType
 import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.RepeatMode
+import com.usman.musicplayer.model.SearchFilterCategory
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.model.UserProfileState
 import com.usman.musicplayer.playback.AudioEffectsManager
 import com.usman.musicplayer.playback.AudioSpectrumManager
 import com.usman.musicplayer.playback.UsmanPlaybackService
@@ -101,9 +128,19 @@ data class MusicPlayerUiState(
 
     // Online Global Music Discovery & Search State
     val searchSource: SearchSource = SearchSource.ONLINE,
+    val searchFilterCategory: SearchFilterCategory = SearchFilterCategory.ALL,
+    val searchHistory: List<String> = emptyList(),
     val onlineSearchResults: List<Song> = emptyList(),
+    val onlineSearchAlbums: List<AlbumSearchResult> = emptyList(),
+    val onlineSearchArtists: List<OnlineArtistResult> = emptyList(),
     val isOnlineSearching: Boolean = false,
     val onlineSearchError: String? = null,
+    val selectedAlbumSummary: AlbumSearchResult? = null,
+    val selectedAlbumDetails: AlbumDetails? = null,
+    val isAlbumDetailsLoading: Boolean = false,
+    val albumDetailsError: String? = null,
+    val savedAlbums: List<AlbumDetails> = emptyList(),
+    val activePlaybackQueue: List<Song> = emptyList(),
     val onlineTrendingSongs: List<Song> = emptyList(),
     val onlineTeluguSongs: List<Song> = emptyList(),
     val isTeluguLoading: Boolean = false,
@@ -121,6 +158,24 @@ data class MusicPlayerUiState(
     val categorySongs: List<Song> = emptyList(),
     val isCategoryLoading: Boolean = false,
 
+    // Spotify-Style Home Discovery State (4 Languages Only: Telugu, Tamil, English, Hindi)
+    val favoriteSongs: List<Song> = emptyList(),
+    val selectedHomeLanguage: HomeLanguageFilter = HomeLanguageFilter.ALL,
+    val homeSections: List<HomeDiscoverySection> = emptyList(),
+    val homeQuickCards: List<HomeQuickAccessCard> = emptyList(),
+    val homeHeroFeature: HomeHeroFeature? = null,
+    val homeNotifications: List<HomeNotificationItem> = emptyList(),
+    val isHomeInitialLoading: Boolean = true,
+    val activeHomeCollectionSheet: CuratedPlaylist? = null,
+    val isHomeCollectionLoading: Boolean = false,
+    val selectedHomeSeeAllSectionId: String? = null,
+
+    // Dedicated Artist Details State
+    val selectedArtistSummary: OnlineArtistResult? = null,
+    val selectedArtistDetails: ArtistDetailsData? = null,
+    val isArtistDetailsLoading: Boolean = false,
+    val artistDetailsError: String? = null,
+
     // Music Sources & Providers
     val musicProviders: List<com.usman.musicplayer.sdk.MusicProvider> = emptyList(),
     val enabledProviders: Map<String, Boolean> = emptyMap(),
@@ -128,7 +183,10 @@ data class MusicPlayerUiState(
     // Downloads
     val downloadedSongs: List<Song> = emptyList(),
     val activeDownloads: List<DownloadEntity> = emptyList(),
-    val completedDownloads: List<DownloadEntity> = emptyList()
+    val completedDownloads: List<DownloadEntity> = emptyList(),
+
+    // User Account & Personalized Greeting Profile
+    val userProfile: UserProfileState = UserProfileState()
 )
 
 @UnstableApi
@@ -136,16 +194,26 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val scanner = LocalMusicScanner(application)
     private val playlistRepository = PlaylistRepository(application)
+    private val albumLibraryRepository = AlbumLibraryRepository(application)
     private val musicRepository = UnifiedMusicRepository(application)
     private val downloadManager = SongDownloadManager(application)
+    private val searchPrefs = application.getSharedPreferences(SEARCH_PREFS_NAME, Context.MODE_PRIVATE)
+    private val signalsStore = HomeUserSignalsStore(application)
+    private val homeDiscoveryRepository = HomeDiscoveryRepository()
+    private val homeSectionsById = java.util.concurrent.ConcurrentHashMap<String, HomeDiscoverySection>()
+    private val inFlightSectionJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private var persistedPlayStats: List<PersistedPlayStat> = emptyList()
     val localSearchIndexer = LocalSearchIndexer()
     private val searchQueryStateFlow = MutableStateFlow("")
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchExecutionJob: Job? = null
+    private var albumFetchJob: Job? = null
+    private var artistFetchJob: Job? = null
     private var latestSearchQuery: String = ""
     private var categoryFetchJob: Job? = null
     private var playlistSongsJob: Job? = null
+    private var homeCollectionJob: Job? = null
 
     // Media3 MediaController connected to UsmanPlaybackService
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -158,13 +226,362 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _playbackProgress = MutableStateFlow(PlaybackProgress())
     val playbackProgress: StateFlow<PlaybackProgress> = _playbackProgress.asStateFlow()
 
+    // User Profile & Auth Sync
+    private val profilePrefsStore = UserProfilePreferencesStore(application)
+    private var userProfileRepository: UserProfileRepository? = null
+    private var firebaseAuth: FirebaseAuth? = null
+    private var authStateListener: FirebaseAuth.AuthStateListener? = null
+    private var profileObserverJob: Job? = null
+    private var profileSyncJob: Job? = null
+    private var activeObservedProfileUid: String? = null
+
     init {
+        AudioEffectsManager.init(application)
+        loadSearchHistory()
+        loadUserPlaybackSignals()
+        initializeUserProfileAndAuthObserver(application)
         initializeMedia3Controller()
         loadInitialOnlineMusic()
         observePlaylists()
+        observeSavedAlbums()
         observeDownloads()
         updateProviderStates()
         setupSearchPipeline()
+    }
+
+    private fun getOrCreateUserProfileRepository(): UserProfileRepository? {
+        userProfileRepository?.let { return it }
+        return try {
+            val app = getApplication<Application>()
+            if (!GoogleAuthHelper.isFirebaseAvailable(app)) return null
+            UserProfileRepository(app).also { userProfileRepository = it }
+        } catch (e: Exception) {
+            Log.w("UserProfileVM", "Firestore profile repository unavailable: ${e.message}")
+            null
+        }
+    }
+
+    private fun initializeUserProfileAndAuthObserver(application: Application) {
+        val persistedMode = profilePrefsStore.getPersistedAuthMode()
+
+        if (!GoogleAuthHelper.isFirebaseAvailable(application)) {
+            val fallbackGate = if (persistedMode == PersistedAuthMode.GUEST) {
+                AuthGateDestination.HOME_GUEST
+            } else {
+                AuthGateDestination.LOGIN_SCREEN
+            }
+            _uiState.update {
+                it.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = fallbackGate,
+                        isGuestMode = fallbackGate == AuthGateDestination.HOME_GUEST
+                    )
+                )
+            }
+            return
+        }
+
+        val auth = try {
+            Firebase.auth
+        } catch (e: Exception) {
+            Log.w("UserProfileVM", "FirebaseAuth unavailable: ${e.message}")
+            val fallbackGate = if (persistedMode == PersistedAuthMode.GUEST) {
+                AuthGateDestination.HOME_GUEST
+            } else {
+                AuthGateDestination.LOGIN_SCREEN
+            }
+            _uiState.update {
+                it.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = fallbackGate,
+                        isGuestMode = fallbackGate == AuthGateDestination.HOME_GUEST
+                    )
+                )
+            }
+            return
+        }
+        firebaseAuth = auth
+
+        val listener = FirebaseAuth.AuthStateListener { fa ->
+            handleFirebaseAuthChange(fa.currentUser)
+        }
+        authStateListener = listener
+        auth.addAuthStateListener(listener)
+
+        val initialUser = auth.currentUser
+        if (initialUser != null) {
+            // Automatically restore authenticated session on subsequent launches
+            profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
+            handleFirebaseAuthChange(initialUser)
+        } else if (persistedMode == PersistedAuthMode.GUEST) {
+            // Remember guest session across app restarts
+            _uiState.update {
+                it.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = AuthGateDestination.HOME_GUEST,
+                        isSignedIn = false,
+                        isGuestMode = true
+                    )
+                )
+            }
+        } else if (persistedMode == PersistedAuthMode.GOOGLE) {
+            // Previous Google session is no longer active (e.g., revoked/expired token); try silent restore safely
+            _uiState.update {
+                it.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = AuthGateDestination.LOGIN_SCREEN,
+                        isAuthInProgress = true
+                    )
+                )
+            }
+            GoogleAuthHelper.attemptSilentSignIn(
+                context = application,
+                scope = viewModelScope,
+                onAuthSuccess = {
+                    profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
+                },
+                onUnauthenticated = {
+                    profilePrefsStore.clearAuthMode()
+                    _uiState.update {
+                        it.copy(
+                            userProfile = UserProfileState(
+                                gateDestination = AuthGateDestination.LOGIN_SCREEN,
+                                isAuthInProgress = false,
+                                sessionNotice = "Your session expired. Please continue with Google or as Guest."
+                            )
+                        )
+                    }
+                }
+            )
+        } else {
+            // First launch or explicitly signed out -> Show Login screen
+            _uiState.update {
+                it.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = AuthGateDestination.LOGIN_SCREEN
+                    )
+                )
+            }
+        }
+    }
+
+    private fun handleFirebaseAuthChange(user: com.google.firebase.auth.FirebaseUser?) {
+        if (user == null) {
+            profileObserverJob?.cancel()
+            profileObserverJob = null
+            profileSyncJob?.cancel()
+            profileSyncJob = null
+            activeObservedProfileUid = null
+
+            val persistedMode = profilePrefsStore.getPersistedAuthMode()
+            val destination = if (persistedMode == PersistedAuthMode.GUEST) {
+                AuthGateDestination.HOME_GUEST
+            } else {
+                AuthGateDestination.LOGIN_SCREEN
+            }
+            _uiState.update { state ->
+                state.copy(
+                    userProfile = UserProfileState(
+                        gateDestination = destination,
+                        isSignedIn = false,
+                        isGuestMode = destination == AuthGateDestination.HOME_GUEST,
+                        uid = null,
+                        googleDisplayName = null,
+                        email = null,
+                        photoUrl = null,
+                        isAuthInProgress = false,
+                        authError = state.userProfile.authError,
+                        sessionNotice = state.userProfile.sessionNotice
+                    )
+                )
+            }
+            return
+        }
+
+        val uid = user.uid
+        val googleName = user.displayName?.trim()?.takeIf { it.isNotEmpty() }
+        val email = user.email?.trim()?.takeIf { it.isNotEmpty() }
+        val photoUrl = user.photoUrl?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+
+        profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
+
+        _uiState.update {
+            it.copy(
+                userProfile = UserProfileState(
+                    gateDestination = AuthGateDestination.HOME_AUTHENTICATED,
+                    isSignedIn = true,
+                    isGuestMode = false,
+                    uid = uid,
+                    googleDisplayName = googleName,
+                    email = email,
+                    photoUrl = photoUrl,
+                    isAuthInProgress = false,
+                    authError = null,
+                    sessionNotice = null
+                )
+            )
+        }
+
+        if (activeObservedProfileUid == uid && profileObserverJob?.isActive == true) {
+            return
+        }
+
+        profileObserverJob?.cancel()
+        profileSyncJob?.cancel()
+        activeObservedProfileUid = uid
+
+        val repo = getOrCreateUserProfileRepository() ?: return
+
+        profileObserverJob = viewModelScope.launch {
+            try {
+                repo.observeUserProfile(uid).collect { doc ->
+                    val currentUid = firebaseAuth?.currentUser?.uid
+                    if (currentUid != uid) return@collect
+                    _uiState.update { state ->
+                        if (state.userProfile.uid != uid) state
+                        else state.copy(
+                            userProfile = state.userProfile.copy(
+                                googleDisplayName = doc?.googleDisplayName?.takeIf { it.isNotBlank() }
+                                    ?: state.userProfile.googleDisplayName,
+                                email = doc?.email?.takeIf { it.isNotBlank() } ?: state.userProfile.email,
+                                photoUrl = doc?.photoUrl?.takeIf { it.isNotBlank() } ?: state.userProfile.photoUrl
+                            )
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("UserProfileVM", "Profile observer ended: ${e.message}")
+            }
+        }
+
+        profileSyncJob = viewModelScope.launch {
+            repo.syncSignedInUserProfile(
+                googleDisplayName = googleName,
+                email = email,
+                photoUrl = photoUrl
+            )
+        }
+    }
+
+    fun continueAsGuest() {
+        profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GUEST)
+        _uiState.update {
+            it.copy(
+                userProfile = UserProfileState(
+                    gateDestination = AuthGateDestination.HOME_GUEST,
+                    isSignedIn = false,
+                    isGuestMode = true,
+                    authError = null,
+                    sessionNotice = null
+                )
+            )
+        }
+    }
+
+    fun signInWithGoogle(activityContext: Context) {
+        _uiState.update {
+            it.copy(
+                userProfile = it.userProfile.copy(
+                    isAuthInProgress = true,
+                    authError = null,
+                    sessionNotice = null
+                )
+            )
+        }
+        GoogleAuthHelper.signInWithGoogle(
+            context = activityContext,
+            scope = viewModelScope,
+            onAuthSuccess = {
+                profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
+                _uiState.update {
+                    it.copy(
+                        userProfile = it.userProfile.copy(
+                            isAuthInProgress = false,
+                            authError = null,
+                            sessionNotice = null
+                        )
+                    )
+                }
+            },
+            onAuthCancelled = {
+                _uiState.update {
+                    it.copy(
+                        userProfile = it.userProfile.copy(
+                            isAuthInProgress = false
+                        )
+                    )
+                }
+            },
+            onAuthError = { errorMsg ->
+                _uiState.update {
+                    it.copy(
+                        userProfile = it.userProfile.copy(
+                            isAuthInProgress = false,
+                            authError = errorMsg
+                        )
+                    )
+                }
+            }
+        )
+    }
+
+    fun signOut(context: Context) {
+        profilePrefsStore.clearAuthMode()
+        profileObserverJob?.cancel()
+        profileObserverJob = null
+        profileSyncJob?.cancel()
+        profileSyncJob = null
+        activeObservedProfileUid = null
+
+        _uiState.update {
+            it.copy(
+                userProfile = it.userProfile.copy(
+                    isAuthInProgress = true,
+                    authError = null,
+                    sessionNotice = null
+                )
+            )
+        }
+        GoogleAuthHelper.signOut(
+            context = context,
+            scope = viewModelScope,
+            onSignOutComplete = {
+                _uiState.update {
+                    it.copy(
+                        userProfile = UserProfileState(
+                            gateDestination = AuthGateDestination.LOGIN_SCREEN,
+                            isSignedIn = false,
+                            isGuestMode = false,
+                            isAuthInProgress = false
+                        )
+                    )
+                }
+            }
+        )
+    }
+
+    private fun loadSearchHistory() {
+        val raw = searchPrefs.getString(KEY_SEARCH_HISTORY, null).orEmpty()
+        val items = raw.split("\n")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .take(MAX_SEARCH_HISTORY)
+        if (items.isNotEmpty()) {
+            _uiState.update { it.copy(searchHistory = items) }
+        }
+    }
+
+    fun recordSearchQuery(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.length < 2) return
+        val updated = (listOf(trimmed) + _uiState.value.searchHistory)
+            .distinctBy { it.lowercase() }
+            .take(MAX_SEARCH_HISTORY)
+        _uiState.update { it.copy(searchHistory = updated) }
+        searchPrefs.edit().putString(KEY_SEARCH_HISTORY, updated.joinToString("\n")).apply()
     }
 
     private fun observeDownloads() {
@@ -180,11 +597,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         completedDownloads = completed
                     )
                 }
+                refreshDerivedHomeUi()
             }
         }
     }
 
     fun downloadSong(song: Song) {
+        if (!isAllowedUserFacingSong(song)) return
         viewModelScope.launch {
             val url = if (song.filePath.startsWith("http://") || song.filePath.startsWith("https://")) {
                 song.filePath
@@ -202,7 +621,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun removeDownload(songId: Long) { downloadManager.removeDownload(songId) }
 
     private fun updateProviderStates() {
-        val providers = com.usman.musicplayer.sdk.ProviderRegistry.providers
+        val providers = com.usman.musicplayer.sdk.ProviderRegistry.providers.filter {
+            !it.metadata.id.equals("itunes_catalog_provider", ignoreCase = true) &&
+                !it.metadata.name.equals("iTunes", ignoreCase = true)
+        }
         val enabledMap = providers.associate { it.metadata.id to com.usman.musicplayer.sdk.ProviderRegistry.isProviderEnabled(it.metadata.id) }
         _uiState.update { it.copy(musicProviders = providers, enabledProviders = enabledMap) }
     }
@@ -275,6 +697,20 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private fun observeSavedAlbums() {
+        viewModelScope.launch {
+            albumLibraryRepository.savedAlbums.collect { list ->
+                val filtered = list
+                    .filter { !it.sourceProvider.equals("iTunes", ignoreCase = true) }
+                    .mapNotNull { details ->
+                        val cleanTracks = details.tracks.filter(::isAllowedUserFacingSong)
+                        if (cleanTracks.isEmpty()) null else details.copy(tracks = cleanTracks)
+                    }
+                _uiState.update { it.copy(savedAlbums = filtered) }
+            }
+        }
+    }
+
 
     private fun initializeMedia3Controller() {
         val context = getApplication<Application>()
@@ -326,12 +762,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                                 startProgressTracker()
                                 val sessionId = UsmanPlaybackService.currentAudioSessionId
                                 if (sessionId > 0) {
-                                    // Delay slightly to ensure AudioSession is fully initialized and ready
-                                    viewModelScope.launch {
-                                        delay(100)
-                                        AudioSpectrumManager.attachAudioSession(context, sessionId)
-                                        AudioEffectsManager.attachAudioSession(context, sessionId)
-                                    }
+                                    AudioEffectsManager.attachAudioSession(context, sessionId)
+                                    AudioSpectrumManager.attachAudioSession(context, sessionId)
                                 }
                             } else {
                                 AudioSpectrumManager.clearSpectrum()
@@ -347,19 +779,25 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                             if (mediaItem != null) {
                                 val songId = mediaItem.mediaId.toLongOrNull() ?: return
                                 val state = _uiState.value
-                                
-                                // Efficient lookup through specific lists to avoid giant flattened list construction
-                                val song = state.songs.find { it.id == songId }
+
+                                // Search active playback queue and opened album tracks first
+                                val song = state.activePlaybackQueue.find { it.id == songId }
+                                    ?: state.selectedAlbumDetails?.tracks?.find { it.id == songId }
+                                    ?: state.selectedPlaylistSongs.find { it.id == songId }
+                                    ?: state.activeHomeCollectionSheet?.songs?.find { it.id == songId }
+                                    ?: state.homeSections.asSequence().flatMap { it.songs.asSequence() }.firstOrNull { it.id == songId }
+                                    ?: state.songs.find { it.id == songId }
                                     ?: state.onlineSearchResults.find { it.id == songId }
                                     ?: state.categorySongs.find { it.id == songId }
                                     ?: state.recentlyPlayed.find { it.id == songId }
+                                    ?: state.favoriteSongs.find { it.id == songId }
                                     ?: state.onlineTrendingSongs.find { it.id == songId }
+                                    ?: state.onlineTeluguSongs.find { it.id == songId }
                                     ?: state.onlineIndianSongs.find { it.id == songId }
-                                    ?: state.onlinePhonkSongs.find { it.id == songId }
                                     ?: state.onlineEnglishSongs.find { it.id == songId }
                                     ?: state.onlineGlobalSongs.find { it.id == songId }
                                     ?: state.currentSong
-                                
+
                                 if (song != null) {
                                     onSongTransitioned(song)
                                 }
@@ -488,11 +926,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     // Attach audio session if already playing
                     val sessionId = UsmanPlaybackService.currentAudioSessionId
                     if (sessionId > 0) {
-                        viewModelScope.launch {
-                            delay(100)
-                            AudioSpectrumManager.attachAudioSession(context, sessionId)
-                            AudioEffectsManager.attachAudioSession(context, sessionId)
-                        }
+                        AudioEffectsManager.attachAudioSession(context, sessionId)
+                        AudioSpectrumManager.attachAudioSession(context, sessionId)
                     }
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
@@ -503,7 +938,25 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         )
     }
 
-    // --- Online Music Loading & Discovery ---
+    // --- Online Music Loading & Spotify-Style Home Discovery ---
+
+    private fun loadUserPlaybackSignals() {
+        val favs = signalsStore.loadFavorites().filter(::isAllowedUserFacingSong)
+        val recent = signalsStore.loadRecentlyPlayed()
+            .filter(::isAllowedUserFacingSong)
+            .map { s ->
+                val isFav = favs.any { HomeUserSignalsStore.songIdentityKey(it) == HomeUserSignalsStore.songIdentityKey(s) }
+                if (isFav) s.copy(isFavorite = true) else s
+            }
+        persistedPlayStats = signalsStore.loadPlayStats()
+        _uiState.update {
+            it.copy(
+                favoriteSongs = favs,
+                recentlyPlayed = recent
+            )
+        }
+        rebuildHomeSectionsSnapshot()
+    }
 
     fun loadInitialOnlineMusic() {
         viewModelScope.launch {
@@ -511,101 +964,417 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 it.copy(
                     isOnlineLoading = true,
                     isTeluguLoading = true,
+                    isHomeInitialLoading = true,
                     onlineTeluguError = null
                 )
             }
 
-            // 1. Trending Worldwide
-            val trendingJob = launch {
-                OnlineMusicRepository.searchOnline("top global hits", limit = 20)
-                    .onSuccess { list ->
-                        _uiState.update { it.copy(onlineTrendingSongs = list) }
-                    }
+            rebuildHomeSectionsSnapshot()
+
+            // Stage 1: Priority Quick-Access + Hero Spotlight sections loaded concurrently (capped by repository semaphore)
+            val prioritySectionIds = listOf(
+                "discovery_trending_now",
+                "discovery_made_for_you",
+                "discovery_popular_artists",
+                "telugu_top_hits",
+                "tamil_top_hits",
+                "english_global_top_hits",
+                "hindi_top_hits",
+                "discovery_new_releases",
+                "discovery_featured_albums"
+            )
+
+            val priorityJobs = prioritySectionIds.map { secId ->
+                async { loadSectionInternal(secId, forceRefresh = false) }
+            }
+            priorityJobs.awaitAll()
+
+            // Stage 2: Load remaining primary Discovery carousels silently in background
+            launch {
+                val secondaryIds = listOf(
+                    "discovery_recommended_for_you",
+                    "discovery_heavy_rotation",
+                    "discovery_movie_soundtracks"
+                )
+                secondaryIds.map { id -> async { loadSectionInternal(id, forceRefresh = false) } }.awaitAll()
             }
 
-            // 2. Telugu Music Hits
-            val teluguJob = launch {
-                OnlineMusicRepository.searchOnline("telugu hits tollywood", country = "in", limit = 25)
-                    .onSuccess { list ->
-                        _uiState.update {
-                            it.copy(
-                                onlineTeluguSongs = list,
-                                isTeluguLoading = false,
-                                onlineTeluguError = if (list.isEmpty()) "No Telugu tracks found" else null
-                            )
-                        }
-                    }
-                    .onFailure { err ->
-                        _uiState.update {
-                            it.copy(
-                                isTeluguLoading = false,
-                                onlineTeluguError = "Failed to load Telugu music. Tap to retry."
-                            )
-                        }
-                    }
+            _uiState.update {
+                it.copy(
+                    isOnlineLoading = false,
+                    isTeluguLoading = false,
+                    isHomeInitialLoading = false
+                )
             }
-
-            // 3. Bollywood / Hindi Hits
-            val bollywoodJob = launch {
-                OnlineMusicRepository.searchOnline("bollywood hindi hits", country = "in", limit = 20)
-                    .onSuccess { list ->
-                        _uiState.update { it.copy(onlineBollywoodSongs = list, onlineIndianSongs = list) }
-                    }
-            }
-
-            // 4. Phonk Station
-            val phonkJob = launch {
-                OnlineMusicRepository.searchOnline("phonk drift brazilian", limit = 20)
-                    .onSuccess { list ->
-                        _uiState.update { it.copy(onlinePhonkSongs = list) }
-                    }
-            }
-
-            // 5. English Hits
-            val englishJob = launch {
-                OnlineMusicRepository.searchOnline("english pop hits top 40", limit = 20)
-                    .onSuccess { list ->
-                        _uiState.update { it.copy(onlineEnglishSongs = list) }
-                    }
-            }
-
-            // 6. Global New Releases
-            val globalJob = launch {
-                OnlineMusicRepository.searchOnline("new music releases 2026", limit = 25)
-                    .onSuccess { list ->
-                        _uiState.update { it.copy(onlineGlobalSongs = list) }
-                    }
-            }
-
-            joinAll(trendingJob, teluguJob, bollywoodJob, phonkJob, englishJob, globalJob)
-
             buildCuratedPlaylists()
-            _uiState.update { it.copy(isOnlineLoading = false) }
         }
+    }
+
+    fun selectHomeLanguage(language: HomeLanguageFilter) {
+        if (_uiState.value.selectedHomeLanguage == language) return
+        _uiState.update { it.copy(selectedHomeLanguage = language) }
+        rebuildHomeSectionsSnapshot()
+
+        val defs = HomeDiscoveryCatalog.definitionsForFilter(language)
+        viewModelScope.launch {
+            defs.take(6).map { def ->
+                async {
+                    val existing = homeSectionsById[def.id]
+                    if (existing == null || !existing.hasAttemptedLoad) {
+                        loadSectionInternal(def.id, forceRefresh = false)
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    fun requestHomeSectionLoad(sectionId: String) {
+        val existing = homeSectionsById[sectionId]
+        if (existing != null && (existing.hasAttemptedLoad || existing.isLoading)) return
+        if (inFlightSectionJobs.containsKey(sectionId)) return
+
+        val job = viewModelScope.launch {
+            try {
+                loadSectionInternal(sectionId, forceRefresh = false)
+            } finally {
+                inFlightSectionJobs.remove(sectionId)
+            }
+        }
+        inFlightSectionJobs[sectionId] = job
+    }
+
+    fun loadMoreHomeSection(sectionId: String) {
+        val def = definitionForDynamicOrCatalog(sectionId) ?: return
+        val existing = homeSectionsById[sectionId] ?: return
+        if (existing.isLoading || !existing.canLoadMore) return
+
+        viewModelScope.launch {
+            homeSectionsById[sectionId] = existing.copy(isLoading = true)
+            rebuildHomeSectionsSnapshot()
+
+            val nextPage = existing.currentPage + 1
+            val nextSection = homeDiscoveryRepository.loadSection(
+                definition = def,
+                page = nextPage,
+                recentlyPlayed = _uiState.value.recentlyPlayed,
+                favoriteSongs = _uiState.value.favoriteSongs,
+                playStats = persistedPlayStats,
+                forceRefresh = true
+            )
+
+            val mergedSongs = (existing.songs + nextSection.songs)
+                .filter(::isAllowedUserFacingSong)
+                .distinctBy { HomeUserSignalsStore.songIdentityKey(it) }
+                .map(::applyFavoriteFlag)
+            val mergedAlbums = (existing.albums + nextSection.albums)
+                .filter(::isAllowedUserFacingAlbum)
+                .distinctBy { it.id.ifBlank { "${it.title.lowercase()}_${it.artist.lowercase()}" } }
+
+            val merged = existing.copy(
+                songs = mergedSongs,
+                albums = mergedAlbums,
+                isLoading = false,
+                hasAttemptedLoad = true,
+                currentPage = nextPage,
+                canLoadMore = nextSection.songs.isNotEmpty() || nextSection.albums.isNotEmpty()
+            )
+            homeSectionsById[sectionId] = merged
+            rebuildHomeSectionsSnapshot()
+        }
+    }
+
+    fun refreshHomeDiscovery() {
+        viewModelScope.launch {
+            homeSectionsById.clear()
+            inFlightSectionJobs.values.forEach { it.cancel() }
+            inFlightSectionJobs.clear()
+            loadInitialOnlineMusic()
+            val activeDefs = HomeDiscoveryCatalog.definitionsForFilter(_uiState.value.selectedHomeLanguage)
+            activeDefs.take(6).map { async { loadSectionInternal(it.id, forceRefresh = true) } }.awaitAll()
+        }
+    }
+
+    private suspend fun loadSectionInternal(sectionId: String, forceRefresh: Boolean) {
+        val def = definitionForDynamicOrCatalog(sectionId) ?: return
+        val prev = homeSectionsById[sectionId]
+        if (prev == null) {
+            homeSectionsById[sectionId] = HomeDiscoverySection(
+                id = def.id,
+                title = def.title,
+                subtitle = def.subtitle,
+                language = def.language,
+                contentType = def.contentType,
+                isLoading = true,
+                hasAttemptedLoad = false,
+                isPersonalized = def.isPersonalized
+            )
+            rebuildHomeSectionsSnapshot()
+        } else if (!prev.isLoading) {
+            homeSectionsById[sectionId] = prev.copy(isLoading = true)
+            rebuildHomeSectionsSnapshot()
+        }
+
+        val loaded = homeDiscoveryRepository.loadSection(
+            definition = def,
+            page = 1,
+            recentlyPlayed = _uiState.value.recentlyPlayed,
+            favoriteSongs = _uiState.value.favoriteSongs,
+            playStats = persistedPlayStats,
+            forceRefresh = forceRefresh
+        )
+
+        val cleaned = loaded.copy(
+            songs = loaded.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag),
+            albums = loaded.albums.filter(::isAllowedUserFacingAlbum),
+            artists = loaded.artists.filter(::isAllowedUserFacingArtist),
+            playlists = loaded.playlists.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) },
+            isLoading = false,
+            hasAttemptedLoad = true
+        )
+        homeSectionsById[sectionId] = cleaned
+
+        // Sync legacy fields so existing screens/tests remain consistent
+        when (sectionId) {
+            "discovery_trending_now" -> _uiState.update { it.copy(onlineTrendingSongs = cleaned.songs) }
+            "telugu_top_hits" -> _uiState.update {
+                it.copy(
+                    onlineTeluguSongs = cleaned.songs,
+                    isTeluguLoading = false,
+                    onlineTeluguError = if (cleaned.songs.isEmpty()) "No Telugu tracks found" else null
+                )
+            }
+            "hindi_top_hits" -> _uiState.update {
+                it.copy(onlineBollywoodSongs = cleaned.songs, onlineIndianSongs = cleaned.songs)
+            }
+            "english_global_top_hits" -> _uiState.update { it.copy(onlineEnglishSongs = cleaned.songs) }
+            "discovery_new_releases" -> _uiState.update { it.copy(onlineGlobalSongs = cleaned.songs) }
+        }
+        rebuildHomeSectionsSnapshot()
+    }
+
+    private fun definitionForDynamicOrCatalog(sectionId: String) =
+        HomeDiscoveryCatalog.DEFINITION_BY_ID[sectionId]
+            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.TELUGU).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.TAMIL).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.ENGLISH).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.HINDI).find { it.id == sectionId }
+
+    private fun rebuildHomeSectionsSnapshot() {
+        val state = _uiState.value
+        val activeLang = state.selectedHomeLanguage
+        val defs = HomeDiscoveryCatalog.definitionsForFilter(activeLang)
+        val orderedSections = defs.mapNotNull { def ->
+            val resolved = homeSectionsById[def.id]
+            when {
+                resolved == null -> HomeDiscoverySection(
+                    id = def.id,
+                    title = def.title,
+                    subtitle = def.subtitle,
+                    language = def.language,
+                    contentType = def.contentType,
+                    isLoading = false,
+                    hasAttemptedLoad = false,
+                    isPersonalized = def.isPersonalized
+                )
+                // Skip completely empty non-loading sections so UI never shows broken empty shelves
+                resolved.hasAttemptedLoad && !resolved.isLoading && !resolved.hasContent -> null
+                else -> resolved.copy(songs = resolved.songs.map(::applyFavoriteFlag))
+            }
+        }
+
+        val quickCards = homeDiscoveryRepository.buildQuickAccessCards(
+            sectionsById = homeSectionsById,
+            recentlyPlayed = state.recentlyPlayed,
+            favoriteSongs = state.favoriteSongs
+        )
+        val hero = homeDiscoveryRepository.buildHeroFeature(
+            activeLanguage = activeLang,
+            sectionsById = homeSectionsById,
+            recentlyPlayed = state.recentlyPlayed
+        )
+        val notifications = homeDiscoveryRepository.buildNotificationsFeed(
+            sectionsById = homeSectionsById,
+            activeDownloadCount = state.activeDownloads.size,
+            completedDownloadCount = state.completedDownloads.size
+        )
+
+        _uiState.update {
+            it.copy(
+                homeSections = orderedSections,
+                homeQuickCards = quickCards,
+                homeHeroFeature = hero,
+                homeNotifications = notifications
+            )
+        }
+    }
+
+    private fun refreshDerivedHomeUi() {
+        val state = _uiState.value
+        val quickCards = homeDiscoveryRepository.buildQuickAccessCards(
+            sectionsById = homeSectionsById,
+            recentlyPlayed = state.recentlyPlayed,
+            favoriteSongs = state.favoriteSongs
+        )
+        val hero = homeDiscoveryRepository.buildHeroFeature(
+            activeLanguage = state.selectedHomeLanguage,
+            sectionsById = homeSectionsById,
+            recentlyPlayed = state.recentlyPlayed
+        )
+        val notifications = homeDiscoveryRepository.buildNotificationsFeed(
+            sectionsById = homeSectionsById,
+            activeDownloadCount = state.activeDownloads.size,
+            completedDownloadCount = state.completedDownloads.size
+        )
+        _uiState.update {
+            it.copy(
+                homeQuickCards = quickCards,
+                homeHeroFeature = hero,
+                homeNotifications = notifications
+            )
+        }
+    }
+
+    fun openHomeQuickCard(card: HomeQuickAccessCard) {
+        homeCollectionJob?.cancel()
+        when (card.type) {
+            HomeQuickAccessType.RECENTLY_PLAYED -> {
+                val recent = _uiState.value.recentlyPlayed.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
+                _uiState.update {
+                    it.copy(
+                        activeHomeCollectionSheet = CuratedPlaylist(
+                            id = card.id,
+                            title = "Recently Played",
+                            description = "Tracks you've streamed recently on USMAN MUSIC",
+                            coverArtUri = card.artworkUri ?: recent.firstOrNull()?.albumArtUri,
+                            songs = recent
+                        ),
+                        isHomeCollectionLoading = false
+                    )
+                }
+            }
+            HomeQuickAccessType.FAVORITE_SONGS -> {
+                val favs = _uiState.value.favoriteSongs.filter(::isAllowedUserFacingSong).map { it.copy(isFavorite = true) }
+                _uiState.update {
+                    it.copy(
+                        activeHomeCollectionSheet = CuratedPlaylist(
+                            id = card.id,
+                            title = "Your Favourite Songs",
+                            description = "Your saved liked tracks",
+                            coverArtUri = card.artworkUri ?: favs.firstOrNull()?.albumArtUri,
+                            songs = favs
+                        ),
+                        isHomeCollectionLoading = false
+                    )
+                }
+            }
+            HomeQuickAccessType.TELUGU_HITS -> openQuickLanguageHitsPlaylist("telugu_top_hits", card)
+            HomeQuickAccessType.TAMIL_HITS -> openQuickLanguageHitsPlaylist("tamil_top_hits", card)
+            HomeQuickAccessType.ENGLISH_HITS -> openQuickLanguageHitsPlaylist("english_global_top_hits", card)
+            HomeQuickAccessType.HINDI_HITS -> openQuickLanguageHitsPlaylist("hindi_top_hits", card)
+        }
+    }
+
+    private fun openQuickLanguageHitsPlaylist(sectionId: String, card: HomeQuickAccessCard) {
+        val cached = homeSectionsById[sectionId]?.songs.orEmpty()
+        _uiState.update {
+            it.copy(
+                activeHomeCollectionSheet = CuratedPlaylist(
+                    id = card.id,
+                    title = card.title,
+                    description = "Verified full-length ${card.languageFilter.displayName} hits",
+                    coverArtUri = card.artworkUri ?: cached.firstOrNull()?.albumArtUri,
+                    songs = cached
+                ),
+                isHomeCollectionLoading = cached.isEmpty()
+            )
+        }
+        if (cached.isEmpty()) {
+            homeCollectionJob = viewModelScope.launch {
+                loadSectionInternal(sectionId, forceRefresh = true)
+                val fresh = homeSectionsById[sectionId]?.songs.orEmpty()
+                _uiState.update { current ->
+                    current.copy(
+                        activeHomeCollectionSheet = current.activeHomeCollectionSheet?.copy(
+                            coverArtUri = fresh.firstOrNull()?.albumArtUri ?: current.activeHomeCollectionSheet.coverArtUri,
+                            songs = fresh
+                        ),
+                        isHomeCollectionLoading = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun openCuratedHomePlaylist(playlist: CuratedPlaylist) {
+        homeCollectionJob?.cancel()
+        val cleanExisting = playlist.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
+        _uiState.update {
+            it.copy(
+                activeHomeCollectionSheet = playlist.copy(songs = cleanExisting),
+                isHomeCollectionLoading = cleanExisting.isEmpty()
+            )
+        }
+        if (cleanExisting.isEmpty()) {
+            homeCollectionJob = viewModelScope.launch {
+                val hydrated = homeDiscoveryRepository.hydratePlaylistIfNeeded(playlist)
+                val cleanSongs = hydrated.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
+                _uiState.update { current ->
+                    current.copy(
+                        activeHomeCollectionSheet = hydrated.copy(songs = cleanSongs),
+                        isHomeCollectionLoading = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeHomeCollectionSheet() {
+        homeCollectionJob?.cancel()
+        _uiState.update { it.copy(activeHomeCollectionSheet = null, isHomeCollectionLoading = false) }
+    }
+
+    fun openHomeSeeAll(sectionId: String) {
+        _uiState.update { it.copy(selectedHomeSeeAllSectionId = sectionId) }
+        requestHomeSectionLoad(sectionId)
+    }
+
+    fun closeHomeSeeAll() {
+        _uiState.update { it.copy(selectedHomeSeeAllSectionId = null) }
+    }
+
+    fun playQueueShuffled(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        playAlbum(songs, startIndex = 0, shuffle = true)
+    }
+
+    fun savePlaylistToLibrary(
+        title: String,
+        songs: List<Song>,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val playable = filterPlayableQueueTracks(songs)
+        if (playable.isEmpty()) {
+            onResult(false, "No playable tracks available to save")
+            return
+        }
+        createPlaylistFromAlbum(title, playable, onResult)
+    }
+
+    private fun isSongFavorited(song: Song): Boolean {
+        val key = HomeUserSignalsStore.songIdentityKey(song)
+        return _uiState.value.favoriteSongs.any { HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id }
+    }
+
+    private fun applyFavoriteFlag(song: Song): Song {
+        val fav = isSongFavorited(song)
+        return if (song.isFavorite == fav) song else song.copy(isFavorite = fav)
     }
 
     fun retryLoadTeluguMusic() {
         viewModelScope.launch {
             _uiState.update { it.copy(isTeluguLoading = true, onlineTeluguError = null) }
-            OnlineMusicRepository.searchOnline("telugu hits tollywood", country = "in", limit = 25)
-                .onSuccess { list ->
-                    _uiState.update {
-                        it.copy(
-                            onlineTeluguSongs = list,
-                            isTeluguLoading = false,
-                            onlineTeluguError = if (list.isEmpty()) "No Telugu tracks found" else null
-                        )
-                    }
-                    buildCuratedPlaylists()
-                }
-                .onFailure { err ->
-                    _uiState.update {
-                        it.copy(
-                            isTeluguLoading = false,
-                            onlineTeluguError = "Failed to load Telugu music. Tap to retry."
-                        )
-                    }
-                }
+            loadSectionInternal("telugu_top_hits", forceRefresh = true)
+            buildCuratedPlaylists()
         }
     }
 
@@ -615,64 +1384,68 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         val state = _uiState.value
         val list = mutableListOf<CuratedPlaylist>()
 
+        val trending = state.onlineTrendingSongs.filter(::isAllowedUserFacingSong)
+        val telugu = state.onlineTeluguSongs.filter(::isAllowedUserFacingSong)
+        val tamil = homeSectionsById["tamil_top_hits"]?.songs.orEmpty().filter(::isAllowedUserFacingSong)
+        val bollywood = state.onlineBollywoodSongs.filter(::isAllowedUserFacingSong)
+        val english = state.onlineEnglishSongs.filter(::isAllowedUserFacingSong)
 
-
-        if (state.onlineTrendingSongs.isNotEmpty()) {
+        if (trending.isNotEmpty()) {
             list.add(
                 CuratedPlaylist(
                     id = "curated_daily_mix",
                     title = "Daily Mix 1",
-                    description = "Top global chartbusters curated for you",
-                    coverArtUri = state.onlineTrendingSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlineTrendingSongs
+                    description = "Top chartbusters curated for you",
+                    coverArtUri = trending.firstOrNull()?.albumArtUri,
+                    songs = trending
                 )
             )
         }
 
-        if (state.onlineTeluguSongs.isNotEmpty()) {
+        if (telugu.isNotEmpty()) {
             list.add(
                 CuratedPlaylist(
                     id = "curated_telugu_mix",
                     title = "Tollywood & Chill",
                     description = "Best Telugu romantic & dance tracks",
-                    coverArtUri = state.onlineTeluguSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlineTeluguSongs
+                    coverArtUri = telugu.firstOrNull()?.albumArtUri,
+                    songs = telugu
                 )
             )
         }
 
-        if (state.onlineBollywoodSongs.isNotEmpty()) {
+        if (tamil.isNotEmpty()) {
+            list.add(
+                CuratedPlaylist(
+                    id = "curated_tamil_mix",
+                    title = "Kollywood Spotlight",
+                    description = "Biggest Tamil hits & Anirudh melodies",
+                    coverArtUri = tamil.firstOrNull()?.albumArtUri,
+                    songs = tamil
+                )
+            )
+        }
+
+        if (bollywood.isNotEmpty()) {
             list.add(
                 CuratedPlaylist(
                     id = "curated_bollywood_mix",
                     title = "Bollywood Romance",
                     description = "Hindi romantic hits and acoustic vibes",
-                    coverArtUri = state.onlineBollywoodSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlineBollywoodSongs
+                    coverArtUri = bollywood.firstOrNull()?.albumArtUri,
+                    songs = bollywood
                 )
             )
         }
 
-        if (state.onlinePhonkSongs.isNotEmpty()) {
-            list.add(
-                CuratedPlaylist(
-                    id = "curated_phonk_mix",
-                    title = "Phonk Night Drive",
-                    description = "Drift, Brazilian & Aggressive bass",
-                    coverArtUri = state.onlinePhonkSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlinePhonkSongs
-                )
-            )
-        }
-
-        if (state.onlineEnglishSongs.isNotEmpty()) {
+        if (english.isNotEmpty()) {
             list.add(
                 CuratedPlaylist(
                     id = "curated_discovery",
                     title = "Discovery Station",
-                    description = "Find your new favorite sound",
-                    coverArtUri = state.onlineEnglishSongs.firstOrNull()?.albumArtUri,
-                    songs = state.onlineEnglishSongs
+                    description = "Global English pop & hits",
+                    coverArtUri = english.firstOrNull()?.albumArtUri,
+                    songs = english
                 )
             )
         }
@@ -699,7 +1472,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     .onSuccess { songs ->
                         _uiState.update {
                             it.copy(
-                                categorySongs = songs,
+                                categorySongs = songs.filter(::isAllowedUserFacingSong),
                                 isCategoryLoading = false
                             )
                         }
@@ -735,6 +1508,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         executeSearch(_uiState.value.searchQuery)
     }
 
+    fun setSearchFilterCategory(category: SearchFilterCategory) {
+        _uiState.update { it.copy(searchFilterCategory = category) }
+    }
+
     fun searchOnline(query: String, debounceMs: Long = 300L) {
         val trimmed = query.trim()
         latestSearchQuery = trimmed
@@ -744,6 +1521,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _uiState.update {
                 it.copy(
                     onlineSearchResults = emptyList(),
+                    onlineSearchAlbums = emptyList(),
+                    onlineSearchArtists = emptyList(),
                     isOnlineSearching = false,
                     onlineSearchError = null
                 )
@@ -761,20 +1540,44 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             _uiState.update { it.copy(isOnlineSearching = true, onlineSearchError = null) }
             val startTime = System.currentTimeMillis()
-            
+
             searchExecutionJob = launch {
                 try {
-                    val songs = musicRepository.searchAll(trimmed, limit = 35)
+                    val songsDeferred = async { musicRepository.searchAll(trimmed, limit = 35) }
+                    val albumsDeferred = async { musicRepository.searchAlbumsAndSoundtracks(trimmed, limit = 20) }
+                    val artistsDeferred = async { musicRepository.searchArtists(trimmed, limit = 15) }
+
+                    val songs = songsDeferred.await().filter(::isAllowedUserFacingSong)
+                    var albums = albumsDeferred.await().filter(::isAllowedUserFacingAlbum)
+                    val artists = artistsDeferred.await().filter(::isAllowedUserFacingArtist)
+
+                    // Enrich soundtrack & album collections with matching individual JioSaavn songs
+                    val topIsCollection = albums.firstOrNull()?.isSoundtrackCollection == true
+                    if (songs.isNotEmpty() && (!topIsCollection || albums.size < 2)) {
+                        val enriched = musicRepository.searchAlbumsAndSoundtracks(trimmed, limit = 20, seedSongs = songs)
+                            .filter(::isAllowedUserFacingAlbum)
+                        if (enriched.isNotEmpty()) {
+                            albums = enriched
+                        }
+                    }
+
                     val totalElapsed = System.currentTimeMillis() - startTime
-                    Log.d("SearchTiming", "Total search query '$trimmed' completed in ${totalElapsed}ms, returning ${songs.size} tracks")
+                    Log.d("SearchTiming", "Total search '$trimmed' completed in ${totalElapsed}ms (songs=${songs.size}, albums=${albums.size}, artists=${artists.size})")
 
                     if (trimmed != latestSearchQuery) return@launch
 
+                    if (debounceMs == 0L || songs.isNotEmpty() || albums.isNotEmpty()) {
+                        recordSearchQuery(trimmed)
+                    }
+
+                    val noResults = songs.isEmpty() && albums.isEmpty() && artists.isEmpty()
                     _uiState.update {
                         it.copy(
                             onlineSearchResults = songs,
+                            onlineSearchAlbums = albums,
+                            onlineSearchArtists = artists,
                             isOnlineSearching = false,
-                            onlineSearchError = if (songs.isEmpty()) "No tracks found for \"$trimmed\"" else null
+                            onlineSearchError = if (noResults) "No songs or albums found for \"$trimmed\"" else null
                         )
                     }
                 } catch (ce: CancellationException) {
@@ -790,6 +1593,337 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fun openOnlineArtist(artist: OnlineArtistResult) {
+        openArtistDetails(artist)
+    }
+
+    fun openArtistDetails(artist: OnlineArtistResult) {
+        if (!isAllowedUserFacingArtist(artist)) {
+            _uiState.update {
+                it.copy(
+                    isArtistDetailsLoading = false,
+                    artistDetailsError = "This artist is currently unavailable."
+                )
+            }
+            return
+        }
+        artistFetchJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedArtistSummary = artist,
+                selectedArtistDetails = null,
+                isArtistDetailsLoading = true,
+                artistDetailsError = null
+            )
+        }
+
+        artistFetchJob = viewModelScope.launch {
+            try {
+                val loaded = homeDiscoveryRepository.loadArtistDetails(
+                    artist = artist,
+                    preferredLanguage = _uiState.value.selectedHomeLanguage
+                )
+                val favKeys = _uiState.value.favoriteSongs.map { HomeUserSignalsStore.songIdentityKey(it) }.toSet()
+                val syncedPopular = loaded.popularSongs.map { s ->
+                    if (HomeUserSignalsStore.songIdentityKey(s) in favKeys) s.copy(isFavorite = true) else s
+                }
+                val syncedLatest = loaded.latestReleases.map { s ->
+                    if (HomeUserSignalsStore.songIdentityKey(s) in favKeys) s.copy(isFavorite = true) else s
+                }
+                val finalDetails = loaded.copy(
+                    popularSongs = syncedPopular,
+                    latestReleases = syncedLatest
+                )
+                val isEmpty = finalDetails.popularSongs.isEmpty() &&
+                    finalDetails.latestReleases.isEmpty() &&
+                    finalDetails.albums.isEmpty() &&
+                    finalDetails.playlists.isEmpty()
+                _uiState.update {
+                    it.copy(
+                        selectedArtistDetails = finalDetails,
+                        isArtistDetailsLoading = false,
+                        artistDetailsError = if (isEmpty) "No tracks or albums available for ${artist.name} right now." else null
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                Log.w("MusicPlayerVM", "Failed loading artist details for '${artist.name}': ${e.message}")
+                _uiState.update {
+                    it.copy(
+                        isArtistDetailsLoading = false,
+                        artistDetailsError = "Unable to load ${artist.name}. Please try again."
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeArtistDetails() {
+        artistFetchJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedArtistSummary = null,
+                selectedArtistDetails = null,
+                isArtistDetailsLoading = false,
+                artistDetailsError = null
+            )
+        }
+    }
+
+    fun openAlbum(album: AlbumSearchResult) {
+        if (!isAllowedUserFacingAlbum(album) && !album.isSoundtrackCollection && !album.id.startsWith("soundtrack_")) {
+            _uiState.update {
+                it.copy(
+                    isAlbumDetailsLoading = false,
+                    albumDetailsError = "This album is currently unavailable."
+                )
+            }
+            return
+        }
+        albumFetchJob?.cancel()
+        val cachedSaved = _uiState.value.savedAlbums.find {
+            it.id == album.id && it.sourceProvider.equals(album.sourceProvider, ignoreCase = true)
+        }
+        _uiState.update {
+            it.copy(
+                selectedAlbumSummary = album,
+                selectedAlbumDetails = cachedSaved,
+                isAlbumDetailsLoading = true,
+                albumDetailsError = null
+            )
+        }
+
+        albumFetchJob = viewModelScope.launch {
+            val result = musicRepository.getAlbumDetails(album)
+            val rawDetails = result.getOrNull()
+            val details = rawDetails?.let {
+                val allowedTracks = it.tracks.filter(::isAllowedUserFacingSong)
+                it.copy(
+                    sourceProvider = if (it.sourceProvider.equals("iTunes", true)) "JioSaavn" else it.sourceProvider,
+                    tracks = allowedTracks,
+                    discoveredCount = allowedTracks.size,
+                    contributingProviders = it.contributingProviders.filter { p -> !p.equals("iTunes", true) }.ifEmpty { listOf("JioSaavn") }
+                )
+            }
+            if (details != null && details.tracks.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        selectedAlbumDetails = details,
+                        isAlbumDetailsLoading = false,
+                        albumDetailsError = null
+                    )
+                }
+            } else {
+                val fallbackSaved = albumLibraryRepository.getSavedAlbumDetailsSync(album)?.let { saved ->
+                    val clean = saved.tracks.filter(::isAllowedUserFacingSong)
+                    if (clean.isEmpty()) null else saved.copy(tracks = clean)
+                }
+                if (fallbackSaved != null) {
+                    _uiState.update {
+                        it.copy(
+                            selectedAlbumDetails = fallbackSaved,
+                            isAlbumDetailsLoading = false,
+                            albumDetailsError = null
+                        )
+                    }
+                } else {
+                    val matchingTracks = _uiState.value.onlineSearchResults
+                        .filter(::isAllowedUserFacingSong)
+                        .filter { song ->
+                            (!song.albumId.isNullOrBlank() && song.albumId == album.id)
+                        }
+                    if (matchingTracks.isNotEmpty()) {
+                        _uiState.update {
+                            it.copy(
+                                selectedAlbumDetails = AlbumDetails(
+                                    id = album.id,
+                                    title = album.title,
+                                    movieName = album.movieName,
+                                    artist = album.artist,
+                                    year = album.year,
+                                    songCount = maxOf(album.songCount ?: matchingTracks.size, matchingTracks.size),
+                                    artworkUri = album.artworkUri,
+                                    sourceProvider = "JioSaavn",
+                                    externalUrl = album.externalUrl,
+                                    language = album.language,
+                                    isComplete = false,
+                                    tracks = matchingTracks
+                                ),
+                                isAlbumDetailsLoading = false,
+                                albumDetailsError = null
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isAlbumDetailsLoading = false,
+                                albumDetailsError = result.exceptionOrNull()?.message ?: "Could not load full tracks for \"${album.title}\""
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun openSavedAlbum(details: AlbumDetails) {
+        albumFetchJob?.cancel()
+        val summary = AlbumSearchResult(
+            id = details.id,
+            title = details.title,
+            movieName = details.movieName,
+            artist = details.artist,
+            year = details.year,
+            songCount = details.songCount,
+            artworkUri = details.artworkUri,
+            sourceProvider = details.sourceProvider,
+            externalUrl = details.externalUrl,
+            language = details.language,
+            isCompleteAlbum = details.isComplete
+        )
+        _uiState.update {
+            it.copy(
+                selectedAlbumSummary = summary,
+                selectedAlbumDetails = details,
+                isAlbumDetailsLoading = details.tracks.isEmpty(),
+                albumDetailsError = null
+            )
+        }
+        if (details.tracks.isEmpty()) {
+            openAlbum(summary)
+        }
+    }
+
+    fun openLocalAlbum(album: Album) {
+        val tracks = _uiState.value.songs.filter { it.album == album.title }
+        val details = AlbumDetails(
+            id = album.id.toString(),
+            title = album.title,
+            movieName = null,
+            artist = album.artist,
+            year = tracks.firstOrNull { !it.releaseYear.isNullOrBlank() }?.releaseYear,
+            songCount = maxOf(album.songCount, tracks.size),
+            artworkUri = album.artworkUri ?: tracks.firstOrNull { !it.albumArtUri.isNullOrBlank() }?.albumArtUri,
+            sourceProvider = "Device Library",
+            isComplete = true,
+            tracks = tracks
+        )
+        openSavedAlbum(details)
+    }
+
+    fun closeAlbumDetails() {
+        albumFetchJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedAlbumSummary = null,
+                selectedAlbumDetails = null,
+                isAlbumDetailsLoading = false,
+                albumDetailsError = null
+            )
+        }
+    }
+
+    fun playAlbum(tracks: List<Song>, startIndex: Int = 0, shuffle: Boolean = false) {
+        if (tracks.isEmpty()) return
+        val playableTracks = filterPlayableQueueTracks(tracks)
+        if (playableTracks.isEmpty()) {
+            _uiState.update { it.copy(onlineSearchError = "No playable full tracks available in this album") }
+            return
+        }
+        val orderedTracks = if (shuffle) playableTracks.shuffled() else playableTracks
+        val safeStart = startIndex.coerceIn(0, orderedTracks.lastIndex)
+        val controller = mediaController
+        controller?.shuffleModeEnabled = false
+        _uiState.update { it.copy(isShuffleEnabled = shuffle) }
+        playSong(orderedTracks[safeStart], explicitQueue = orderedTracks)
+    }
+
+    fun toggleSaveAlbumToLibrary(details: AlbumDetails, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            try {
+                val alreadySaved = albumLibraryRepository.isAlbumSaved(details.sourceProvider, details.id)
+                if (alreadySaved) {
+                    albumLibraryRepository.removeSavedAlbum(details.sourceProvider, details.id)
+                    onResult(false, "Removed \"${details.title}\" from Library")
+                } else {
+                    albumLibraryRepository.saveAlbum(details)
+                    onResult(true, "Saved \"${details.title}\" to Library")
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                onResult(false, "Failed to update Library: ${e.message}")
+            }
+        }
+    }
+
+    fun addAlbumToPlaylist(playlistId: Long, tracks: List<Song>, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        if (tracks.isEmpty()) {
+            onResult(false, "No tracks available to add")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val (added, total) = playlistRepository.addSongsToPlaylist(playlistId, tracks)
+                val msg = if (added > 0) {
+                    "Added $added of $total tracks to playlist"
+                } else {
+                    "All tracks are already in this playlist"
+                }
+                onResult(added > 0, msg)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                onResult(false, "Failed to add album: ${e.message}")
+            }
+        }
+    }
+
+    fun createPlaylistFromAlbum(name: String, tracks: List<Song>, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            onResult(false, "Playlist name cannot be empty")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val (_, added) = playlistRepository.createPlaylistWithSongs(trimmed, tracks)
+                onResult(true, "Created \"$trimmed\" with $added tracks")
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                onResult(false, "Failed to create playlist: ${e.message}")
+            }
+        }
+    }
+
+    fun downloadAlbum(tracks: List<Song>, onFeedback: (String) -> Unit = {}) {
+        val downloadable = tracks.filter { it.playbackType == PlaybackType.FULL && (it.isStreamable || !it.isOnline) }
+        if (downloadable.isEmpty()) {
+            onFeedback("Download is not supported for this album")
+            return
+        }
+        viewModelScope.launch {
+            var startedCount = 0
+            for (track in downloadable) {
+                val url = if (!track.contentUriString.isNullOrBlank()) {
+                    track.contentUriString
+                } else if (track.filePath.startsWith("http://") || track.filePath.startsWith("https://")) {
+                    track.filePath
+                } else {
+                    musicRepository.getStreamUrl(track).getOrNull()
+                }
+                if (!url.isNullOrBlank()) {
+                    downloadManager.startDownload(track, url)
+                    startedCount++
+                }
+            }
+            if (startedCount > 0) {
+                onFeedback("Started downloading $startedCount tracks")
+            } else {
+                onFeedback("Could not resolve download streams")
             }
         }
     }
@@ -896,9 +2030,16 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun playSong(song: Song) {
+    fun playSong(song: Song, explicitQueue: List<Song>? = null) {
         // [Stage 3: playSong() input]
         Log.d("USMAN_PLAYBACK", "[Stage 3: playSong() input] ID: ${song.id}, Title: '${song.title}', Artist: '${song.artist}', Album: '${song.album}', Artwork: '${song.albumArtUri}', Duration: ${song.durationMs}")
+
+        // Block preview-only or iTunes tracks from entering playback or recently played
+        if (!isAllowedUserFacingSong(song)) {
+            Log.w("USMAN_PLAYBACK", "Blocked preview or non-JioSaavn online track from playback: '${song.title}' (${song.sourceProvider}, ${song.playbackType})")
+            _uiState.update { it.copy(onlineSearchError = "Preview tracks are disabled; only full-length streams can play.") }
+            return
+        }
 
         // Immediately update UI state to avoid placeholders
         _uiState.update {
@@ -919,17 +2060,29 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
 
             // Identify the active playlist queue for next/previous navigation
-            val currentList = when {
+            val albumTracks = _uiState.value.selectedAlbumDetails?.tracks.orEmpty()
+            val homeSectionMatchingQueue = _uiState.value.homeSections
+                .firstOrNull { sec -> sec.songs.any { it.id == song.id } }
+                ?.songs
+                .orEmpty()
+            val collectionTracks = _uiState.value.activeHomeCollectionSheet?.songs.orEmpty()
+            val rawQueue = when {
+                !explicitQueue.isNullOrEmpty() -> explicitQueue
+                albumTracks.any { it.id == song.id } -> albumTracks
+                collectionTracks.any { it.id == song.id } -> collectionTracks
+                _uiState.value.selectedPlaylistSongs.any { it.id == song.id } -> _uiState.value.selectedPlaylistSongs
+                homeSectionMatchingQueue.isNotEmpty() -> homeSectionMatchingQueue
                 _uiState.value.onlineSearchResults.any { it.id == song.id } -> _uiState.value.onlineSearchResults
                 _uiState.value.categorySongs.any { it.id == song.id } -> _uiState.value.categorySongs
                 _uiState.value.onlineTrendingSongs.any { it.id == song.id } -> _uiState.value.onlineTrendingSongs
+                _uiState.value.onlineTeluguSongs.any { it.id == song.id } -> _uiState.value.onlineTeluguSongs
                 _uiState.value.onlineIndianSongs.any { it.id == song.id } -> _uiState.value.onlineIndianSongs
-                _uiState.value.onlinePhonkSongs.any { it.id == song.id } -> _uiState.value.onlinePhonkSongs
                 _uiState.value.onlineEnglishSongs.any { it.id == song.id } -> _uiState.value.onlineEnglishSongs
                 _uiState.value.onlineGlobalSongs.any { it.id == song.id } -> _uiState.value.onlineGlobalSongs
                 _uiState.value.songs.any { it.id == song.id } -> _uiState.value.songs
                 else -> listOf(song)
             }
+            val currentList = filterPlayableQueueTracks(rawQueue)
 
             // Resolve stream URLs concurrently for online songs in queue
             val resolvedList = currentList.map { s ->
@@ -953,8 +2106,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     updated
                 }
             }.awaitAll().filter { s ->
-                if (s.isOnline && s.contentUriString.isNullOrBlank()) {
-                    Log.w("USMAN_PLAYBACK", "Dropping unavailable online song from queue: '${s.title}'")
+                if (!isAllowedUserFacingSong(s) || (s.isOnline && s.contentUriString.isNullOrBlank())) {
+                    Log.w("USMAN_PLAYBACK", "Dropping unavailable or preview online song from queue: '${s.title}'")
                     false
                 } else {
                     true
@@ -962,33 +2115,39 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
 
             val playableSong = resolvedList.find { it.id == song.id } ?: resolvedList.firstOrNull()
-            if (playableSong == null || (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank())) {
+            if (playableSong == null || !isAllowedUserFacingSong(playableSong) || (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank())) {
                 Log.e("USMAN_PLAYBACK", "Playback failure: Could not resolve playable stream for '${song.title}'")
                 _uiState.update { it.copy(onlineSearchError = "Unable to play \"${song.title}\": Stream unavailable") }
                 return@launch
             }
 
-            val updatedRecent = (_uiState.value.recentlyPlayed.filter { it.id != playableSong.id }
-                .toMutableList()).apply { add(0, playableSong) }.take(15)
+            val songWithFav = applyFavoriteFlag(playableSong)
+            val updatedRecent = (_uiState.value.recentlyPlayed
+                .filter(::isAllowedUserFacingSong)
+                .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
+                .toMutableList()).apply { add(0, songWithFav) }.take(20)
+            signalsStore.saveRecentlyPlayed(updatedRecent)
+            persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
 
             _uiState.update {
                 it.copy(
-                    currentSong = playableSong,
+                    currentSong = songWithFav,
+                    activePlaybackQueue = resolvedList,
                     isPlaying = true,
-                    durationMs = playableSong.durationMs,
+                    durationMs = songWithFav.durationMs,
                     currentPositionMs = 0L,
-                    isFavorite = playableSong.isFavorite,
+                    isFavorite = songWithFav.isFavorite,
                     recentlyPlayed = updatedRecent,
                     onlineSearchError = null
                 )
             }
+            refreshDerivedHomeUi()
 
             if (controller != null) {
                 val queue = resolvedList.map { s ->
                     Log.d("USMAN_PLAYBACK", "[Stage 5: Active queue item] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ContentUri: ${s.contentUriString}")
                     createMediaItem(s)
                 }
-
 
                 val startIndex = queue.indexOfFirst { it.mediaId == playableSong.id.toString() }
                 controller.setMediaItems(queue, startIndex.coerceAtLeast(0), 0L)
@@ -1002,18 +2161,25 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun onSongTransitioned(song: Song) {
-        val updatedRecent = (_uiState.value.recentlyPlayed.filter { it.id != song.id }
-            .toMutableList()).apply { add(0, song) }.take(15)
+        if (!isAllowedUserFacingSong(song)) return
+        val songWithFav = applyFavoriteFlag(song)
+        val updatedRecent = (_uiState.value.recentlyPlayed
+            .filter(::isAllowedUserFacingSong)
+            .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
+            .toMutableList()).apply { add(0, songWithFav) }.take(20)
+        signalsStore.saveRecentlyPlayed(updatedRecent)
+        persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
 
         _uiState.update {
             it.copy(
-                currentSong = song,
-                durationMs = song.durationMs,
+                currentSong = songWithFav,
+                durationMs = songWithFav.durationMs,
                 currentPositionMs = 0L,
-                isFavorite = song.isFavorite,
+                isFavorite = songWithFav.isFavorite,
                 recentlyPlayed = updatedRecent
             )
         }
+        refreshDerivedHomeUi()
     }
 
     fun togglePlayPause() {
@@ -1055,9 +2221,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             return
         }
 
-        // Fallback to in-memory list
+        // Fallback to active queue or library list
         val current = _uiState.value
-        val list = current.songs
+        val list = current.activePlaybackQueue.ifEmpty { current.songs }
         if (list.isEmpty()) return
 
         val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
@@ -1066,7 +2232,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         } else {
             (currentIndex + 1) % list.size
         }
-        playSong(list[nextIndex])
+        playSong(list[nextIndex], explicitQueue = list)
     }
 
     fun skipToPrevious() {
@@ -1077,12 +2243,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
 
         val current = _uiState.value
-        val list = current.songs
+        val list = current.activePlaybackQueue.ifEmpty { current.songs }
         if (list.isEmpty()) return
 
         val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
         val prevIndex = if (currentIndex > 0) currentIndex - 1 else list.size - 1
-        playSong(list[prevIndex])
+        playSong(list[prevIndex], explicitQueue = list)
     }
 
     fun seekTo(positionMs: Long) {
@@ -1142,18 +2308,64 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun toggleFavorite(song: Song) {
-        val newFav = !song.isFavorite
-        val updatedSongs = _uiState.value.songs.map {
-            if (it.id == song.id) it.copy(isFavorite = newFav) else it
+        if (!isAllowedUserFacingSong(song)) return
+        val key = HomeUserSignalsStore.songIdentityKey(song)
+        val currentlyFav = isSongFavorited(song) || song.isFavorite
+        val newFav = !currentlyFav
+
+        val currentFavList = _uiState.value.favoriteSongs.toMutableList()
+        if (newFav) {
+            if (currentFavList.none { HomeUserSignalsStore.songIdentityKey(it) == key }) {
+                currentFavList.add(0, song.copy(isFavorite = true))
+            }
+        } else {
+            currentFavList.removeAll { HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id }
         }
-        val isCurrent = _uiState.value.currentSong?.id == song.id
+        signalsStore.saveFavorites(currentFavList)
+
+        val updatedSongs = _uiState.value.songs.map {
+            if (HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id) it.copy(isFavorite = newFav) else it
+        }
+        val updatedRecent = _uiState.value.recentlyPlayed.map {
+            if (HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id) it.copy(isFavorite = newFav) else it
+        }
+        val isCurrent = _uiState.value.currentSong?.let {
+            HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id
+        } == true
+
+        val updatedSheet = _uiState.value.activeHomeCollectionSheet?.let { sheet ->
+            if (sheet.id == "qa_favorite_songs") {
+                sheet.copy(songs = currentFavList, coverArtUri = currentFavList.firstOrNull()?.albumArtUri)
+            } else {
+                sheet.copy(songs = sheet.songs.map {
+                    if (HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id) it.copy(isFavorite = newFav) else it
+                })
+            }
+        }
+
+        val updatedArtistDetails = _uiState.value.selectedArtistDetails?.let { details ->
+            details.copy(
+                popularSongs = details.popularSongs.map {
+                    if (HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id) it.copy(isFavorite = newFav) else it
+                },
+                latestReleases = details.latestReleases.map {
+                    if (HomeUserSignalsStore.songIdentityKey(it) == key || it.id == song.id) it.copy(isFavorite = newFav) else it
+                }
+            )
+        }
+
         _uiState.update {
             it.copy(
                 songs = updatedSongs,
+                recentlyPlayed = updatedRecent,
+                favoriteSongs = currentFavList,
                 currentSong = if (isCurrent) it.currentSong?.copy(isFavorite = newFav) else it.currentSong,
-                isFavorite = if (isCurrent) newFav else it.isFavorite
+                isFavorite = if (isCurrent) newFav else it.isFavorite,
+                activeHomeCollectionSheet = updatedSheet,
+                selectedArtistDetails = updatedArtistDetails
             )
         }
+        rebuildHomeSectionsSnapshot()
     }
 
     private fun setupSearchPipeline() {
@@ -1302,6 +2514,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun playNext(song: Song, onFeedback: (String) -> Unit = {}) {
+        if (!isAllowedUserFacingSong(song)) {
+            onFeedback("Preview tracks cannot be queued")
+            return
+        }
         val controller = mediaController
         if (controller != null) {
             val item = createMediaItem(song)
@@ -1314,6 +2530,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun addToQueue(song: Song, onFeedback: (String) -> Unit = {}) {
+        if (!isAllowedUserFacingSong(song)) {
+            onFeedback("Preview tracks cannot be queued")
+            return
+        }
         val controller = mediaController
         if (controller != null) {
             val item = createMediaItem(song)
@@ -1336,8 +2556,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
             RepeatMode.OFF -> {
                 val current = _uiState.value
-                val currentIndex = current.songs.indexOfFirst { it.id == current.currentSong?.id }
-                if (currentIndex < current.songs.size - 1 && currentIndex >= 0) {
+                val list = current.activePlaybackQueue.ifEmpty { current.songs }
+                val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
+                if (currentIndex < list.size - 1 && currentIndex >= 0) {
                     skipToNext()
                 } else {
                     _uiState.update { it.copy(isPlaying = false, currentPositionMs = 0L) }
@@ -1422,14 +2643,59 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
 
         super.onCleared()
+        authStateListener?.let { listener ->
+            firebaseAuth?.removeAuthStateListener(listener)
+        }
+        profileObserverJob?.cancel()
+        profileSyncJob?.cancel()
         progressTrackingJob?.cancel()
         searchDebounceJob?.cancel()
         categoryFetchJob?.cancel()
         playlistSongsJob?.cancel()
         AudioSpectrumManager.release()
-        AudioEffectsManager.releaseEffects()
+        if (UsmanPlaybackService.currentAudioSessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) {
+            AudioEffectsManager.releaseEffects()
+        }
         controllerFuture?.let { MediaController.releaseFuture(it) }
         mediaController = null
+    }
+
+    companion object {
+        private const val SEARCH_PREFS_NAME = "usman_search_prefs"
+        private const val KEY_SEARCH_HISTORY = "search_history_queries"
+        private const val MAX_SEARCH_HISTORY = 12
+
+        internal fun isAllowedUserFacingSong(song: Song): Boolean {
+            if (!song.isOnline) return true
+            val provider = song.sourceProvider.orEmpty().trim()
+            val isItunes = provider.equals("iTunes", ignoreCase = true) ||
+                song.folderName.equals("iTunes Discovery", ignoreCase = true) ||
+                song.folderName.equals("iTunes", ignoreCase = true) ||
+                song.contentUriString?.contains("itunes.apple.com", ignoreCase = true) == true ||
+                song.contentUriString?.contains("mzstatic.com", ignoreCase = true) == true
+            if (isItunes) return false
+            if (song.playbackType != PlaybackType.FULL) return false
+            if (!song.isStreamable && song.contentUriString.isNullOrBlank()) return false
+            return provider.equals("JioSaavn", ignoreCase = true)
+        }
+
+        internal fun isAllowedUserFacingAlbum(album: AlbumSearchResult): Boolean {
+            val provider = album.sourceProvider.trim()
+            if (provider.equals("iTunes", ignoreCase = true)) return false
+            return provider.equals("JioSaavn", ignoreCase = true) || provider.equals("Device Library", ignoreCase = true)
+        }
+
+        internal fun isAllowedUserFacingArtist(artist: OnlineArtistResult): Boolean {
+            val provider = artist.sourceProvider.trim()
+            return !provider.equals("iTunes", ignoreCase = true) && provider.equals("JioSaavn", ignoreCase = true)
+        }
+
+        internal fun filterPlayableQueueTracks(tracks: List<Song>): List<Song> {
+            return tracks.filter {
+                isAllowedUserFacingSong(it) &&
+                    (!it.isOnline || !it.contentUriString.isNullOrBlank() || it.isStreamable)
+            }
+        }
     }
 }
 

@@ -798,7 +798,7 @@ fun NowPlayingScreen(
                         InfoRow("Album", song.album)
                         InfoRow("Duration", formatMs(song.durationMs))
                         InfoRow("Quality", if (song.isOnline) "320 KBPS AAC HD" else "Local Storage")
-                        InfoRow("Source", song.sourceProvider ?: "JioSaavn")
+                        InfoRow("Player", "USMAN MUSIC")
                     }
                 },
                 confirmButton = {
@@ -1169,7 +1169,7 @@ private fun AlbumArtworkTrackView(
                     .padding(horizontal = 8.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = if (song?.isOnline == true) "320 KBPS AAC • JIOSAAVN HD" else "LOCAL HIGH-RES AUDIO",
+                    text = if (song?.isOnline == true) "320 KBPS AAC • USMAN MUSIC HD" else "LOCAL HIGH-RES AUDIO",
                     color = palette.accent,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,

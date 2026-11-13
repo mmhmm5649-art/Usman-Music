@@ -24,7 +24,11 @@ data class Song(
     val isStreamable: Boolean = false,
     val isFullTrackVerified: Boolean = false,
     val isRightsVerified: Boolean = false,
-    val playbackRestrictions: String? = null
+    val playbackRestrictions: String? = null,
+    val albumId: String? = null,
+    val releaseYear: String? = null,
+    val albumUrl: String? = null,
+    val trackNumber: Int? = null
 ) {
     val formattedDuration: String
         get() {

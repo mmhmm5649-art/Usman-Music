@@ -11,10 +11,17 @@ data class ITunesSearchResponse(
 
 @JsonClass(generateAdapter = true)
 data class ITunesTrackDto(
+    @Json(name = "wrapperType") val wrapperType: String? = null,
+    @Json(name = "collectionType") val collectionType: String? = null,
     @Json(name = "trackId") val trackId: Long? = null,
+    @Json(name = "collectionId") val collectionId: Long? = null,
     @Json(name = "trackName") val trackName: String? = null,
     @Json(name = "artistName") val artistName: String? = null,
     @Json(name = "collectionName") val collectionName: String? = null,
+    @Json(name = "collectionViewUrl") val collectionViewUrl: String? = null,
+    @Json(name = "trackCount") val trackCount: Int? = null,
+    @Json(name = "trackNumber") val trackNumber: Int? = null,
+    @Json(name = "discNumber") val discNumber: Int? = null,
     @Json(name = "previewUrl") val previewUrl: String? = null,
     @Json(name = "artworkUrl100") val artworkUrl100: String? = null,
     @Json(name = "artworkUrl60") val artworkUrl60: String? = null,

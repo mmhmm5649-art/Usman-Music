@@ -341,7 +341,6 @@ object ExtensionManager {
 
         scope.launch {
             val allDiscovered = mutableListOf<ExtensionPackage>()
-            val currentInstalled = _installedExtensions.value
 
             val repos = _repositories.value.filter { it.isEnabled }
             for (repo in repos) {
@@ -362,22 +361,26 @@ object ExtensionManager {
                 }
             }
 
-            // Check for updates on installed extensions
-            val updatedInstalled = currentInstalled.map { installed ->
-                val match = allDiscovered.find { it.manifest.id == installed.manifest.id }
-                if (match != null && match.latestVersion != null && isNewerVersion(match.latestVersion, installed.installedVersion)) {
-                    installed.copy(hasUpdate = true, latestVersion = match.latestVersion)
-                } else {
-                    installed
+            // Atomically check for updates on the latest installed extensions state so concurrent
+            // installs/uninstalls during network sync are never overwritten by a stale snapshot.
+            var latestUpdatedInstalled: List<ExtensionPackage> = emptyList()
+            _installedExtensions.update { currentInstalled ->
+                val updated = currentInstalled.map { installed ->
+                    val match = allDiscovered.find { it.manifest.id == installed.manifest.id }
+                    if (match != null && match.latestVersion != null && isNewerVersion(match.latestVersion, installed.installedVersion)) {
+                        installed.copy(hasUpdate = true, latestVersion = match.latestVersion)
+                    } else {
+                        installed
+                    }
                 }
+                latestUpdatedInstalled = updated
+                updated
             }
-
-            _installedExtensions.value = updatedInstalled
-            storage?.saveInstalledExtensions(updatedInstalled)
+            storage?.saveInstalledExtensions(latestUpdatedInstalled)
 
             // Deduplicate discovered extensions and mark installed states
             val distinctAvailable = allDiscovered.distinctBy { it.manifest.id }.map { ext ->
-                val isInst = updatedInstalled.any { it.manifest.id == ext.manifest.id && it.isInstalled }
+                val isInst = latestUpdatedInstalled.any { it.manifest.id == ext.manifest.id && it.isInstalled }
                 ext.copy(isInstalled = isInst)
             }
 

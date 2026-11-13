@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user profile storing Google account metadata.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this profile document."
+        },
+        "googleDisplayName": {
+          "type": "string",
+          "description": "Display name sourced from Google Sign-In profile."
+        },
+        "email": {
+          "type": "string",
+          "description": "Authenticated Google account email address."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Authenticated Google account profile picture URL."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was first created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Private user profile documents scoped strictly to the owning authenticated user."
+    }
+  }
+}

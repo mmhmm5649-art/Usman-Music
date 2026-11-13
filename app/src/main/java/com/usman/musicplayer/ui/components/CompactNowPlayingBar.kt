@@ -173,16 +173,6 @@ fun CompactNowPlayingBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    
-                    if (currentSong != null && currentSong.isOnline && !currentSong.sourceProvider.isNullOrBlank()) {
-                        Text(
-                            text = "via ${currentSong.sourceProvider}",
-                            color = SoftCyan,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 1.dp)
-                        )
-                    }
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))

@@ -5,6 +5,8 @@ import com.usman.musicplayer.sdk.PlaybackType
 
 typealias Song = com.usman.musicplayer.sdk.Song
 typealias PlaybackType = com.usman.musicplayer.sdk.PlaybackType
+typealias AlbumSearchResult = com.usman.musicplayer.sdk.AlbumSearchResult
+typealias AlbumDetails = com.usman.musicplayer.sdk.AlbumDetails
 
 
 data class Album(
@@ -14,6 +16,22 @@ data class Album(
     val songCount: Int,
     val artworkUri: String? = null
 )
+
+data class OnlineArtistResult(
+    val id: String,
+    val name: String,
+    val artworkUri: String? = null,
+    val subtitle: String? = null,
+    val sourceProvider: String = "JioSaavn",
+    val languages: List<String> = emptyList()
+)
+
+enum class SearchFilterCategory(val label: String) {
+    ALL("All"),
+    SONGS("Songs"),
+    ALBUMS("Albums"),
+    ARTISTS("Artists")
+}
 
 data class Artist(
     val name: String,
