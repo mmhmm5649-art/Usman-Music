@@ -32,6 +32,11 @@ abstract class FirestoreEmulatorTestBase {
 
     @Before
     open fun setUpFirebase() {
+        org.junit.Assume.assumeTrue(
+            "Firebase Auth ($AUTH_PORT) and Firestore ($FIRESTORE_PORT) emulators must be running for rule tests",
+            isEmulatorRunning(AUTH_PORT) && isEmulatorRunning(FIRESTORE_PORT)
+        )
+
         val context = ApplicationProvider.getApplicationContext<Context>()
         val resId = context.resources.getIdentifier("firestore_database_id", "string", context.packageName)
         databaseId = if (resId != 0) context.getString(resId) else DEFAULT_TEST_DB_ID
@@ -64,7 +69,9 @@ abstract class FirestoreEmulatorTestBase {
 
     @After
     open fun tearDownFirebase() {
-        auth.signOut()
+        if (::auth.isInitialized) {
+            auth.signOut()
+        }
     }
 
     protected suspend fun signInTestUser(email: String): String = withContext(Dispatchers.IO) {
@@ -95,5 +102,16 @@ abstract class FirestoreEmulatorTestBase {
         const val DEFAULT_TEST_DB_ID = "ai-studio-android-usmanmus-af3998a0-79b9-4954-b430-741130ce5146"
         const val DEFAULT_PASSWORD = "password123"
         const val AUTH_TIMEOUT_MS = 5000L
+
+        fun isEmulatorRunning(port: Int): Boolean {
+            return try {
+                java.net.Socket().use { socket ->
+                    socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, port), 200)
+                    true
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 }

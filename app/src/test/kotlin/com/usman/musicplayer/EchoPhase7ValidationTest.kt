@@ -1,7 +1,5 @@
 package com.usman.musicplayer
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import com.usman.musicplayer.extension.EchoMusicProviderBridge
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.sdk.ProviderMetadata
@@ -14,13 +12,8 @@ import dev.brahmkshatriya.echo.common.settings.*
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 
-@RunWith(RobolectricTestRunner::class)
 class EchoPhase7ValidationTest {
-
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
 
     // Mock Extension that implements core Echo interfaces
     class MockEchoExtension : ExtensionClient, SearchFeedClient, TrackClient {
@@ -87,22 +80,25 @@ class EchoPhase7ValidationTest {
             authRequired = false
         )
         
-        val sharedPrefs = context.getSharedPreferences("test_settings", Context.MODE_PRIVATE)
+        val storage = mutableMapOf<String, Any?>()
         val echoSettings = object : Settings {
-            override fun getString(key: String): String? = sharedPrefs.getString(key, null)
-            override fun putString(key: String, value: String?) = sharedPrefs.edit().putString(key, value).apply()
-            override fun getBoolean(key: String): Boolean? = if (sharedPrefs.contains(key)) sharedPrefs.getBoolean(key, false) else null
+            override fun getString(key: String): String? = storage[key] as? String
+            override fun putString(key: String, value: String?) {
+                if (value == null) storage.remove(key) else storage[key] = value
+            }
+            override fun getBoolean(key: String): Boolean? = storage[key] as? Boolean
             override fun putBoolean(key: String, value: Boolean?) {
-                if (value == null) sharedPrefs.edit().remove(key).apply()
-                else sharedPrefs.edit().putBoolean(key, value).apply()
+                if (value == null) storage.remove(key) else storage[key] = value
             }
-            override fun getInt(key: String): Int? = if (sharedPrefs.contains(key)) sharedPrefs.getInt(key, 0) else null
+            override fun getInt(key: String): Int? = (storage[key] as? Number)?.toInt()
             override fun putInt(key: String, value: Int?) {
-                if (value == null) sharedPrefs.edit().remove(key).apply()
-                else sharedPrefs.edit().putInt(key, value).apply()
+                if (value == null) storage.remove(key) else storage[key] = value
             }
-            override fun getStringSet(key: String): Set<String>? = sharedPrefs.getStringSet(key, null)
-            override fun putStringSet(key: String, value: Set<String>?) = sharedPrefs.edit().putStringSet(key, value).apply()
+            @Suppress("UNCHECKED_CAST")
+            override fun getStringSet(key: String): Set<String>? = storage[key] as? Set<String>
+            override fun putStringSet(key: String, value: Set<String>?) {
+                if (value == null) storage.remove(key) else storage[key] = value
+            }
         }
 
         val bridge = EchoMusicProviderBridge(mockExt, metadata, echoSettings)
@@ -130,12 +126,12 @@ class EchoPhase7ValidationTest {
         assertTrue(settingsItems[0] is SettingSwitch)
         
         bridge.updateSetting("high_quality", false)
-        assertEquals(false, sharedPrefs.getBoolean("high_quality", true))
+        assertEquals(false, storage["high_quality"])
         
         bridge.updateSetting("theme", 2)
-        assertEquals(2, sharedPrefs.getInt("theme", 0))
+        assertEquals(2, storage["theme"])
 
         bridge.updateSetting("languages", setOf("English", "Telugu"))
-        assertEquals(setOf("English", "Telugu"), sharedPrefs.getStringSet("languages", null))
+        assertEquals(setOf("English", "Telugu"), storage["languages"])
     }
 }
