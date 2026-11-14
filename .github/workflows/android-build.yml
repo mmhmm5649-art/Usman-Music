@@ -14,6 +14,8 @@ jobs:
   build:
     name: Build, Test & Export APK
     runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_SIGNING: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -156,8 +158,6 @@ jobs:
         run: ./gradlew :app:assembleDebug
 
       - name: Package Debug APK, Checksum & Build Info
-        env:
-          HAS_RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
         run: |
           set -euo pipefail
 
@@ -181,7 +181,7 @@ jobs:
           APK_SIZE_HUMAN=$(ls -lh "$EXPORT_DIR/app-debug.apk" | awk '{print $5}')
           APK_SHA256=$(awk '{print $1}' "$EXPORT_DIR/SHA256SUMS.txt")
           RELEASE_STATUS="Pending (configure RELEASE_KEYSTORE_BASE64, STORE_PASSWORD, and KEY_PASSWORD secrets for signed release APK)"
-          if [ "${HAS_RELEASE_KEYSTORE:-false}" = "true" ]; then
+          if [ "${HAS_RELEASE_SIGNING:-false}" = "true" ]; then
             RELEASE_STATUS="Configured (signing secrets present)"
           fi
 
@@ -217,7 +217,7 @@ jobs:
           if-no-files-found: error
 
       - name: Build Signed Release APK (when signing secrets are configured)
-        if: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -248,7 +248,7 @@ jobs:
           )
 
       - name: Upload Signed Release APK Artifact (when built)
-        if: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: USMAN-MUSIC-PLAYER-release-APK
