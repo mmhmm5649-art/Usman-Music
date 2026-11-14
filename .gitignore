@@ -16,6 +16,10 @@
 local.properties
 .env
 debug.keystore
+*.jks
+*.keystore
+*.p12
+app/google-services.json
 
 # UI Studio Specifics
 metadata.json
