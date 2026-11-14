@@ -24,7 +24,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [35])
 class AuthAndProfileScreensRobolectricTest {
 
     @get:Rule
@@ -170,7 +170,7 @@ class AuthAndProfileScreensRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w1280dp-h720dp-land")
+    @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
     fun tvSettingsAndTvHomeScreen_showProfileActionsAndPlainGreetingWithoutName() {
         var signOutClicked = false
         val signedInProfile = UserProfileState(
@@ -200,7 +200,7 @@ class AuthAndProfileScreensRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w1280dp-h720dp-land")
+    @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
     fun tvHomeScreen_displaysPlainTimeOfDayGreetingWithoutUserName() {
         val expectedGreeting = HomeLanguagePolicy.timeOfDayGreeting()
         val state = MusicPlayerUiState(
@@ -251,7 +251,7 @@ class AuthAndProfileScreensRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w1280dp-h720dp-land")
+    @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
     fun studioAudioEffectsPanel_switchesAllModuleTabsAndQuickPresetsInCompose() {
         com.usman.musicplayer.playback.AudioEffectsManager.resetToDefaults()
         composeRule.setContent {

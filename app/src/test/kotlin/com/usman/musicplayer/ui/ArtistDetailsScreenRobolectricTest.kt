@@ -31,7 +31,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [35])
 class ArtistDetailsScreenRobolectricTest {
 
     @get:Rule
@@ -130,7 +130,7 @@ class ArtistDetailsScreenRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w411dp-h915dp-port")
+    @Config(sdk = [35], qualifiers = "w411dp-h915dp-port")
     fun artistDetailsScreenDisplaysSongsLatestAlbumsPlaylistsAndTriggersPlayback() {
         var playAllCount = 0
         var shuffleCount = 0
@@ -206,7 +206,7 @@ class ArtistDetailsScreenRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w411dp-h915dp-port")
+    @Config(sdk = [35], qualifiers = "w411dp-h915dp-port")
     fun phoneHomePopularArtistsCarouselAndSeeAllGroupByFourLanguages() {
         var clickedArtistName: String? = null
         val artistsSection = HomeDiscoverySection(
@@ -261,7 +261,7 @@ class ArtistDetailsScreenRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w1280dp-h720dp-land")
+    @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
     fun tvHomePopularArtistsRendersAndOpensArtistDetailsCallback() {
         var openedArtistId: String? = null
         val artistsSection = HomeDiscoverySection(

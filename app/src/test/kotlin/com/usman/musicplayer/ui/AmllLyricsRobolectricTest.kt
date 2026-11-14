@@ -22,7 +22,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [35])
 class AmllLyricsRobolectricTest {
 
     @get:Rule
@@ -110,7 +110,7 @@ class AmllLyricsRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w1280dp-h720dp-land")
+    @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
     fun tvFullLyricsScreenRendersSyllableBadgeAndHandlesSeek() {
         val syllableLyrics = LyricsParser.parse(
             "[1000,2800]Nee (1000,600)ko(1600,300)sa(1900,300)me (2200,300)naa (2500,500)pranam(3000,800)"
