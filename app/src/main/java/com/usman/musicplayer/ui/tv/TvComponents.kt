@@ -242,7 +242,8 @@ fun TvSongCard(
                 song = song,
                 modifier = Modifier.fillMaxSize(),
                 cornerRadius = 12.dp,
-                showGlowBorder = false
+                showGlowBorder = false,
+                targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_CARD_THUMB_PX
             )
         }
 

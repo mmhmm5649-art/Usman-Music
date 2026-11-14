@@ -77,6 +77,21 @@ enum class AppDestination(
     SEARCH("Search", Icons.Filled.Search, Icons.Outlined.Search, "search")
 }
 
+private val NAV_ACTIVE_PILL_BG_BRUSH = Brush.verticalGradient(
+    colors = listOf(
+        Color(0x52FFFFFF),
+        Color(0x28A855F7),
+        Color(0x1800E5FF)
+    )
+)
+
+private val NAV_ACTIVE_PILL_BORDER_BRUSH = Brush.verticalGradient(
+    colors = listOf(
+        Color(0x99FFFFFF),
+        Color(0x22FFFFFF)
+    )
+)
+
 @Composable
 fun UsmanGlassBottomNav(
     currentDestination: AppDestination,
@@ -116,7 +131,6 @@ fun UsmanGlassBottomNav(
                 val tabWidth = maxWidth / tabCount
 
                 // Animated sliding active pill indicator across the dock
-                val targetOffset = tabWidth * selectedIndex
                 val animatedOffsetFraction by animateFloatAsState(
                     targetValue = selectedIndex.toFloat(),
                     animationSpec = spring(
@@ -134,19 +148,10 @@ fun UsmanGlassBottomNav(
                         .fillMaxHeight()
                         .padding(horizontal = 4.dp, vertical = 2.dp)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color(0x900284C7),
-                                    Color(0x907C3AED)
-                                )
-                            )
-                        )
+                        .background(NAV_ACTIVE_PILL_BG_BRUSH)
                         .border(
                             width = 1.dp,
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Color(0x99FFFFFF), Color(0x30FFFFFF))
-                            ),
+                            brush = NAV_ACTIVE_PILL_BORDER_BRUSH,
                             shape = RoundedCornerShape(20.dp)
                         )
                 )

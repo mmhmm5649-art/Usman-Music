@@ -53,12 +53,8 @@ class JioSaavnHomeGateway(
         Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
     }
 
-    private val okHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .build()
-    }
+    private val okHttpClient: OkHttpClient
+        get() = com.usman.musicplayer.data.AppImageLoader.getApiOkHttpClient()
 
     private val apiService: JioSaavnApiService by lazy {
         Retrofit.Builder()
@@ -149,7 +145,25 @@ class HomeDiscoveryRepository(
 
     private val sectionCache = ConcurrentHashMap<String, CachedSection>()
     private val artistDetailsCache = ConcurrentHashMap<String, CachedArtistDetails>()
-    private val requestSemaphore = Semaphore(3)
+    private val artistSummaryCache = ConcurrentHashMap<String, OnlineArtistResult>()
+    private val requestSemaphore = Semaphore(5)
+
+    fun seedFromPersistedSnapshot(sections: List<HomeDiscoverySection>) {
+        val now = System.currentTimeMillis()
+        for (section in sections) {
+            if (section.hasContent && !section.isPersonalized) {
+                sectionCache.putIfAbsent(section.id, CachedSection(section, now))
+            }
+            if (section.contentType == HomeSectionContentType.ARTISTS) {
+                section.artists.forEach { artist ->
+                    val norm = ArtistMatchingPolicy.normalizeArtistName(artist.name)
+                    if (norm.isNotBlank()) {
+                        artistSummaryCache.putIfAbsent(norm, artist)
+                    }
+                }
+            }
+        }
+    }
 
     suspend fun loadSection(
         definition: HomeSectionDefinition,
@@ -435,6 +449,12 @@ class HomeDiscoveryRepository(
         artistName: String,
         targetLanguage: HomeLanguageFilter
     ): OnlineArtistResult? {
+        val normKey = ArtistMatchingPolicy.normalizeArtistName(artistName)
+        artistSummaryCache[normKey]?.let { cached ->
+            if (!cached.artworkUri.isNullOrBlank()) {
+                return cached
+            }
+        }
         val knownLanguages = HomeDiscoveryCatalog.languagesForArtist(artistName).ifEmpty {
             if (targetLanguage != HomeLanguageFilter.ALL) listOf(targetLanguage.displayName) else emptyList()
         }
@@ -460,7 +480,7 @@ class HomeDiscoveryRepository(
                 artworkUri = resolvedArtwork,
                 subtitle = subtitle,
                 languages = (knownLanguages + bestMatch.languages).distinct()
-            )
+            ).also { artistSummaryCache[normKey] = it }
         }
 
         // Only surface artist via song availability if JioSaavn has verified matching songs
@@ -475,7 +495,7 @@ class HomeDiscoveryRepository(
             subtitle = subtitle,
             sourceProvider = "JioSaavn",
             languages = knownLanguages
-        )
+        ).also { artistSummaryCache[normKey] = it }
     }
 
     suspend fun loadArtistDetails(

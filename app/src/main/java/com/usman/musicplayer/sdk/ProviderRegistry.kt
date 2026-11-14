@@ -35,17 +35,16 @@ object ProviderRegistry {
 
     fun init(context: Context) {
         if (_providers.isNotEmpty()) return
+        synchronized(this) {
+            if (_providers.isNotEmpty()) return
 
-        val moshi = Moshi.Builder()
-            .add(KotlinJsonAdapterFactory())
-            .build()
+            val moshi = Moshi.Builder()
+                .add(KotlinJsonAdapterFactory())
+                .build()
 
-        val httpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .build()
+            val httpClient = com.usman.musicplayer.data.AppImageLoader.getApiOkHttpClient()
 
-        val moshiConverter = MoshiConverterFactory.create(moshi)
+            val moshiConverter = MoshiConverterFactory.create(moshi)
 
         val audiusApiService = Retrofit.Builder()
             .baseUrl("https://discoveryprovider.audius.co/v1/")
@@ -83,6 +82,7 @@ object ProviderRegistry {
         registerProvider(InternetArchiveMusicProvider(), enabled = true)
         registerProvider(com.usman.musicplayer.data.repository.providers.LrcLibMusicProvider(lrclibApiService), enabled = true)
         registerProvider(JioSaavnMusicProvider(jioSaavnApiService, moshi), enabled = true)
+        }
     }
 
     fun registerProvider(provider: MusicProvider, enabled: Boolean = true) {

@@ -9,6 +9,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -107,9 +108,16 @@ class UsmanPlaybackService : MediaSessionService() {
             }
         }.setEnableDecoderFallback(true)
 
-        // 2. Build ExoPlayer with decoder fallback enabled for MediaCodec resource reclamation recovery
+        // 2. Tune LoadControl for fast tap-to-play start (1s initial buffer) while keeping 50s headroom
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 50_000, 1_000, 2_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        // 3. Build ExoPlayer with decoder fallback enabled for MediaCodec resource reclamation recovery
         val player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)

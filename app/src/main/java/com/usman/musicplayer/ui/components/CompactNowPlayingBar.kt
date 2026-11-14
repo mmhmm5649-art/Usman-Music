@@ -3,6 +3,7 @@ package com.usman.musicplayer.ui.components
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -47,13 +49,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.usman.musicplayer.R
+import com.usman.musicplayer.model.PlaybackProgress
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.theme.LiquidGlassBorderBrush
 import com.usman.musicplayer.ui.theme.PlayPauseButtonBrush
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.TextSecondary
+import kotlinx.coroutines.flow.StateFlow
+
+private val MINI_PLAYER_PROGRESS_BRUSH = Brush.horizontalGradient(
+    colors = listOf(
+        Color(0xFF00E5FF),
+        Color(0xFFA855F7),
+        Color(0xFFEC4899)
+    )
+)
+
+private val MINI_PLAYER_FOCUSED_BORDER_BRUSH = Brush.linearGradient(
+    listOf(Color.White, Color(0xAAFFFFFF))
+)
 
 @Composable
 fun CompactNowPlayingBar(
@@ -66,12 +83,9 @@ fun CompactNowPlayingBar(
     modifier: Modifier = Modifier,
     currentPositionMs: Long = 0L,
     durationMs: Long = 0L,
+    playbackProgressFlow: StateFlow<PlaybackProgress>? = null,
     hazeState: dev.chrisbanes.haze.HazeState? = null
 ) {
-    val progress = remember(currentPositionMs, durationMs) {
-        if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
-    }
-
     var isBarFocused by remember { mutableStateOf(false) }
     val barScale by animateFloatAsState(
         targetValue = if (isBarFocused) 1.025f else 1f,
@@ -97,35 +111,19 @@ fun CompactNowPlayingBar(
             .focusable()
             .testTag("compact_now_playing_bar"),
         shape = RoundedCornerShape(22.dp),
-        borderBrush = if (isBarFocused) Brush.linearGradient(listOf(Color.White, Color(0xAAFFFFFF))) else LiquidGlassBorderBrush,
+        borderBrush = if (isBarFocused) MINI_PLAYER_FOCUSED_BORDER_BRUSH else LiquidGlassBorderBrush,
         backgroundColor = Color(0x38121626),
         borderWidth = if (isBarFocused) 2.dp else 1.dp,
         hazeState = hazeState,
         hazeBlurRadius = 24.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Sleek animated progress line across the top of the mini player
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.5.dp)
-                    .background(Color(0x22FFFFFF))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(fraction = progress)
-                        .height(2.5.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color(0xFF00E5FF),
-                                    Color(0xFFA855F7),
-                                    Color(0xFFEC4899)
-                                )
-                            )
-                        )
-                )
-            }
+            MiniPlayerProgressLine(
+                playbackProgressFlow = playbackProgressFlow,
+                fallbackPositionMs = currentPositionMs,
+                fallbackDurationMs = durationMs,
+                songDurationMs = currentSong?.durationMs ?: 0L
+            )
 
             Row(
                 modifier = Modifier
@@ -265,3 +263,31 @@ fun CompactNowPlayingBar(
         }
     }
 }
+
+@Composable
+private fun MiniPlayerProgressLine(
+    playbackProgressFlow: StateFlow<PlaybackProgress>?,
+    fallbackPositionMs: Long,
+    fallbackDurationMs: Long,
+    songDurationMs: Long
+) {
+    val progressState = playbackProgressFlow?.collectAsStateWithLifecycle()
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(2.5.dp)
+    ) {
+        drawRect(color = Color(0x22FFFFFF))
+        val live = progressState?.value
+        val posMs = live?.currentPositionMs ?: fallbackPositionMs
+        val durMs = (live?.durationMs ?: fallbackDurationMs).takeIf { it > 0L } ?: songDurationMs
+        val fraction = if (durMs > 0L) (posMs.toFloat() / durMs.toFloat()).coerceIn(0f, 1f) else 0f
+        if (fraction > 0f) {
+            drawRect(
+                brush = MINI_PLAYER_PROGRESS_BRUSH,
+                size = Size(width = size.width * fraction, height = size.height)
+            )
+        }
+    }
+}
+

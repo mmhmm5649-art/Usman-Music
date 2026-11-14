@@ -183,9 +183,19 @@ import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.TextSecondary
 import com.usman.musicplayer.ui.theme.rememberAlbumPalette
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private val THEME_BACKGROUND_VIGNETTE_BRUSH = Brush.verticalGradient(
+    colors = listOf(
+        Color(0x40000000),
+        Color(0x10000000),
+        Color(0xB3000000)
+    )
+)
 
 /**
  * Premium Apple Music-inspired Now Playing screen with dynamic album-color
@@ -195,7 +205,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun NowPlayingScreen(
     uiState: MusicPlayerUiState,
-    playbackProgress: PlaybackProgress,
+    playbackProgress: PlaybackProgress = PlaybackProgress(),
     onBackClick: () -> Unit,
     onPlayPauseToggle: () -> Unit,
     onSkipNext: () -> Unit,
@@ -214,7 +224,8 @@ fun NowPlayingScreen(
     onFetchLyrics: suspend (Song) -> String? = { null },
     onDownloadSong: (Song) -> Unit = {},
     isExpanded: Boolean = true,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackProgressFlow: StateFlow<PlaybackProgress>? = null
 ) {
     val context = LocalContext.current
     val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
@@ -227,11 +238,11 @@ fun NowPlayingScreen(
         songKey = "${song?.title}_${song?.artist}"
     )
 
-    val durationMs = if (playbackProgress.durationMs > 0) playbackProgress.durationMs else (song?.durationMs ?: 0L)
-    val positionMs = playbackProgress.currentPositionMs
-
-    var isDraggingSlider by remember { mutableStateOf(false) }
-    var sliderTempPosition by remember { mutableFloatStateOf(0f) }
+    val resolveDurationMs = {
+        playbackProgressFlow?.value?.durationMs?.takeIf { it > 0 }
+            ?: playbackProgress.durationMs.takeIf { it > 0 }
+            ?: (song?.durationMs ?: 0L)
+    }
 
     // Navigation and Modal dialog state
     var showLiveLyrics by remember { mutableStateOf(false) }
@@ -274,7 +285,7 @@ fun NowPlayingScreen(
             try {
                 val raw = onFetchLyrics(song)
                 if (raw != null) {
-                    val parsed = LyricsParser.parse(raw, durationMs)
+                    val parsed = LyricsParser.parse(raw, resolveDurationMs())
                     parsedLyricsState = parsed
                     android.util.Log.d("USMAN_LYRICS", "[NowPlayingScreen] Lyrics parsed successfully: count=${parsed.lines.size}, isSync=${parsed.isSynchronized}")
                 } else {
@@ -289,12 +300,6 @@ fun NowPlayingScreen(
             }
             isFetchingLyrics = false
         }
-    }
-
-    val currentSliderVal = if (isDraggingSlider) {
-        sliderTempPosition
-    } else {
-        if (durationMs > 0) positionMs.toFloat() / durationMs.toFloat() else 0f
     }
 
     LaunchedEffect(feedbackMessage) {
@@ -372,6 +377,7 @@ fun NowPlayingScreen(
                                 song = song,
                                 parsedLyrics = parsedLyricsState,
                                 playbackProgress = playbackProgress,
+                                playbackProgressFlow = playbackProgressFlow,
                                 isFetching = isFetchingLyrics,
                                 fetchError = lyricsFetchError,
                                 palette = albumPalette,
@@ -384,7 +390,7 @@ fun NowPlayingScreen(
                                             try {
                                                 val raw = onFetchLyrics(song)
                                                 if (raw != null) {
-                                                    parsedLyricsState = LyricsParser.parse(raw, durationMs)
+                                                    parsedLyricsState = LyricsParser.parse(raw, resolveDurationMs())
                                                 } else {
                                                     parsedLyricsState = com.usman.musicplayer.model.ParsedLyrics(emptyList(), isSynchronized = false)
                                                 }
@@ -404,6 +410,7 @@ fun NowPlayingScreen(
                             SynchronizedLyricsView(
                                 parsedLyrics = parsedLyricsState,
                                 playbackProgress = playbackProgress,
+                                playbackProgressFlow = playbackProgressFlow,
                                 isFetching = isFetchingLyrics,
                                 fetchError = lyricsFetchError,
                                 palette = albumPalette,
@@ -416,7 +423,7 @@ fun NowPlayingScreen(
                                             try {
                                                 val raw = onFetchLyrics(song)
                                                 if (raw != null) {
-                                                    parsedLyricsState = LyricsParser.parse(raw, durationMs)
+                                                    parsedLyricsState = LyricsParser.parse(raw, resolveDurationMs())
                                                 } else {
                                                     parsedLyricsState = com.usman.musicplayer.model.ParsedLyrics(emptyList(), isSynchronized = false)
                                                 }
@@ -436,7 +443,7 @@ fun NowPlayingScreen(
                         // ALBUM ARTWORK & TRACK IDENTITY VIEW
                         AlbumArtworkTrackView(
                             song = song,
-                            uiState = uiState,
+                            isFavorite = uiState.isFavorite,
                             palette = albumPalette,
                             onToggleFavorite = { song?.let { onToggleFavorite(it) } },
                             onAddToPlaylist = { showAddToPlaylistSheet = true },
@@ -464,50 +471,21 @@ fun NowPlayingScreen(
                 Spacer(modifier = Modifier.height(3.dp))
             }
 
-            // --- SLIDER & TIME DISPLAY ---
-            val currentDisplayedMs = if (isDraggingSlider) (sliderTempPosition * durationMs).toLong() else positionMs
-            val remainingMs = (durationMs - currentDisplayedMs).coerceAtLeast(0L)
-
-            NowPlayingProgressBar(
-                value = currentSliderVal,
-                onValueChange = {
-                    isDraggingSlider = true
-                    sliderTempPosition = it
-                },
-                onValueChangeFinished = {
-                    isDraggingSlider = false
-                    val targetMs = (sliderTempPosition * durationMs).toLong()
-                    onSeekTo(targetMs)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                testTag = "song_progress_slider"
+            // --- ISOLATED SLIDER & TIME DISPLAY (Prevents 50ms recomposition of full NowPlayingScreen) ---
+            NowPlayingProgressSection(
+                playbackProgressFlow = playbackProgressFlow,
+                fallbackProgress = playbackProgress,
+                songDurationMs = song?.durationMs ?: 0L,
+                onSeekTo = onSeekTo
             )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = formatMs(currentDisplayedMs),
-                    color = Color(0xFFCBD5E1),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "-${formatMs(remainingMs)}",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
             // --- PLAYBACK CONTROLS ROW ---
             PlaybackControlsRow(
-                uiState = uiState,
+                isPlaying = uiState.isPlaying,
+                isShuffleEnabled = uiState.isShuffleEnabled,
+                repeatMode = uiState.repeatMode,
                 palette = albumPalette,
                 onToggleShuffle = onToggleShuffle,
                 onSkipPrevious = onSkipPrevious,
@@ -831,13 +809,83 @@ fun NowPlayingScreen(
  * heavily blurred into smooth natural color fields with smooth track crossfades.
  */
 @Composable
+private fun NowPlayingProgressSection(
+    playbackProgressFlow: StateFlow<PlaybackProgress>?,
+    fallbackProgress: PlaybackProgress,
+    songDurationMs: Long,
+    onSeekTo: (Long) -> Unit
+) {
+    val liveProgress = if (playbackProgressFlow != null) {
+        playbackProgressFlow.collectAsStateWithLifecycle().value
+    } else {
+        fallbackProgress
+    }
+    val durationMs = if (liveProgress.durationMs > 0) liveProgress.durationMs else songDurationMs
+    val positionMs = liveProgress.currentPositionMs
+
+    var isDraggingSlider by remember { mutableStateOf(false) }
+    var sliderTempPosition by remember { mutableFloatStateOf(0f) }
+
+    val currentSliderVal = if (isDraggingSlider) {
+        sliderTempPosition
+    } else {
+        if (durationMs > 0) positionMs.toFloat() / durationMs.toFloat() else 0f
+    }
+
+    val currentDisplayedMs = if (isDraggingSlider) (sliderTempPosition * durationMs).toLong() else positionMs
+    val remainingMs = (durationMs - currentDisplayedMs).coerceAtLeast(0L)
+    val displayedSec = (currentDisplayedMs / 1000L).coerceAtLeast(0L)
+    val remainingSec = (remainingMs / 1000L).coerceAtLeast(0L)
+    val displayedLabel = remember(displayedSec) { formatSeconds(displayedSec) }
+    val remainingLabel = remember(remainingSec) { "-${formatSeconds(remainingSec)}" }
+
+    NowPlayingProgressBar(
+        value = currentSliderVal,
+        onValueChange = {
+            isDraggingSlider = true
+            sliderTempPosition = it
+        },
+        onValueChangeFinished = {
+            isDraggingSlider = false
+            val targetMs = (sliderTempPosition * durationMs).toLong()
+            onSeekTo(targetMs)
+        },
+        modifier = Modifier.fillMaxWidth(),
+        testTag = "song_progress_slider"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = displayedLabel,
+            color = Color(0xFFCBD5E1),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = remainingLabel,
+            color = Color(0xFF94A3B8),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
 private fun ThemeAlbumBackground(
     song: Song?,
     palette: AlbumPalette
 ) {
     val context = LocalContext.current
-    var backgroundBitmap by remember(song?.id) {
-        mutableStateOf<Bitmap?>(song?.let { AlbumArtworkCache.get("art_${it.id}_512") })
+    // Decode 256x256 for the heavily blurred ambient layer (4x fewer pixels -> ~4x faster blur & lower RAM)
+    var backgroundBitmap by remember(song?.id, song?.albumArtUri) {
+        mutableStateOf<Bitmap?>(
+            song?.let { AlbumArtworkCache.getCached(it.id, it.albumArtUri, 256, 256) }
+        )
     }
 
     LaunchedEffect(song?.id, song?.albumArtUri, song?.filePath) {
@@ -847,12 +895,23 @@ private fun ThemeAlbumBackground(
                 songId = song.id,
                 albumArtUri = song.albumArtUri,
                 filePath = song.filePath,
-                targetWidth = 512,
-                targetHeight = 512
+                targetWidth = 256,
+                targetHeight = 256
             )
         } else {
             backgroundBitmap = null
         }
+    }
+
+    val paletteGradientBrush = remember(palette.primary, palette.secondary, palette.darkBackground) {
+        Brush.verticalGradient(
+            colors = listOf(
+                palette.primary,
+                palette.secondary,
+                palette.darkBackground,
+                palette.darkBackground
+            )
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize().background(palette.darkBackground)) {
@@ -860,16 +919,7 @@ private fun ThemeAlbumBackground(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            palette.primary,
-                            palette.secondary,
-                            palette.darkBackground,
-                            palette.darkBackground
-                        )
-                    )
-                )
+                .background(paletteGradientBrush)
         )
 
         // 2. Full-screen heavily blurred album artwork with edge bleeding prevention (scale 1.08f)
@@ -877,7 +927,7 @@ private fun ThemeAlbumBackground(
         if (bmp != null) {
             Crossfade(
                 targetState = bmp,
-                animationSpec = tween(600, easing = FastOutSlowInEasing),
+                animationSpec = tween(500, easing = FastOutSlowInEasing),
                 label = "AlbumBackgroundBlurCrossfade"
             ) { bitmap ->
                 Image(
@@ -890,7 +940,7 @@ private fun ThemeAlbumBackground(
                             scaleX = 1.08f
                             scaleY = 1.08f
                         }
-                        .cloudy(radius = 45)
+                        .cloudy(radius = 38)
                 )
             }
         }
@@ -899,15 +949,7 @@ private fun ThemeAlbumBackground(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0x40000000),
-                            Color(0x10000000),
-                            Color(0xB3000000)
-                        )
-                    )
-                )
+                .background(THEME_BACKGROUND_VIGNETTE_BRUSH)
         )
     }
 }
@@ -1111,7 +1153,7 @@ private fun NowPlayingTopBar(
 @Composable
 private fun AlbumArtworkTrackView(
     song: Song?,
-    uiState: MusicPlayerUiState,
+    isFavorite: Boolean,
     palette: AlbumPalette,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
@@ -1228,13 +1270,13 @@ private fun AlbumArtworkTrackView(
                 onClick = onToggleFavorite,
                 size = 44.dp,
                 cornerRadius = 14.dp,
-                backgroundColor = if (uiState.isFavorite) Color(0x35F43F5E) else Color(0x281E2338),
+                backgroundColor = if (isFavorite) Color(0x35F43F5E) else Color(0x281E2338),
                 focusedBorderColor = NeonPink
             ) {
                 Icon(
-                    imageVector = if (uiState.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                     contentDescription = "Favorite",
-                    tint = if (uiState.isFavorite) NeonPink else Color(0xFFCBD5E1),
+                    tint = if (isFavorite) NeonPink else Color(0xFFCBD5E1),
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -1257,7 +1299,8 @@ private fun SynchronizedLyricsView(
     onSeekTo: (Long) -> Unit,
     onRetryFetch: () -> Unit,
     onCloseLyrics: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackProgressFlow: StateFlow<PlaybackProgress>? = null
 ) {
     val context = LocalContext.current
     var scriptMode by remember {
@@ -1270,37 +1313,82 @@ private fun SynchronizedLyricsView(
     val isSynchronized = activeLyrics?.isSynchronized == true
     val listState = rememberLazyListState()
 
+    val initialProgress = playbackProgressFlow?.value ?: playbackProgress
     // 1. High-precision sub-millisecond frame-clock for ultra-smooth drawing
-    val drawClockState = remember { mutableFloatStateOf(playbackProgress.interpolatedPositionMsFloat()) }
+    val drawClockState = remember { mutableFloatStateOf(initialProgress.interpolatedPositionMsFloat()) }
     // 2. Stable millisecond clock for line-switching logic (reduces re-evaluations)
-    val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
+    val logicClockState = remember { mutableLongStateOf(initialProgress.currentPositionMs) }
 
-    LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
-        if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
-            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
-            logicClockState.longValue = playbackProgress.currentPositionMs
-            return@LaunchedEffect
+    if (playbackProgressFlow != null) {
+        val flowRef = remember { arrayOf(playbackProgressFlow.value) }
+        var transportKey by remember {
+            val initVal = playbackProgressFlow.value
+            mutableStateOf(Triple(initVal.isPlaying, initVal.isBuffering, initVal.playbackSpeed))
         }
-        while (isActive) {
-            withFrameNanos {
-                val currentFloat = playbackProgress.interpolatedPositionMsFloat()
-                drawClockState.floatValue = currentFloat
-                // Only update logic clock if a millisecond has actually passed to keep line-switching stable
-                val currentLong = currentFloat.toLong()
-                if (logicClockState.longValue != currentLong) {
-                    logicClockState.longValue = currentLong
+
+        LaunchedEffect(playbackProgressFlow) {
+            playbackProgressFlow.collect { latest ->
+                flowRef[0] = latest
+                val nextKey = Triple(latest.isPlaying, latest.isBuffering, latest.playbackSpeed)
+                if (nextKey != transportKey) {
+                    transportKey = nextKey
+                }
+                if (!latest.isPlaying ||
+                    latest.isBuffering ||
+                    kotlin.math.abs(latest.currentPositionMs - logicClockState.longValue) > 250L
+                ) {
+                    drawClockState.floatValue = latest.currentPositionMs.toFloat()
+                    logicClockState.longValue = latest.currentPositionMs
                 }
             }
         }
-    }
 
-    LaunchedEffect(playbackProgress.currentPositionMs) {
-        if (!playbackProgress.isPlaying ||
-            playbackProgress.isBuffering ||
-            kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
-        ) {
-            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
-            logicClockState.longValue = playbackProgress.currentPositionMs
+        LaunchedEffect(transportKey) {
+            val (playing, buffering, _) = transportKey
+            if (!playing || buffering) {
+                val cur = flowRef[0]
+                drawClockState.floatValue = cur.currentPositionMs.toFloat()
+                logicClockState.longValue = cur.currentPositionMs
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                withFrameNanos {
+                    val currentFloat = flowRef[0].interpolatedPositionMsFloat()
+                    drawClockState.floatValue = currentFloat
+                    val currentLong = currentFloat.toLong()
+                    if (logicClockState.longValue != currentLong) {
+                        logicClockState.longValue = currentLong
+                    }
+                }
+            }
+        }
+    } else {
+        LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
+            if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
+                drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+                logicClockState.longValue = playbackProgress.currentPositionMs
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                withFrameNanos {
+                    val currentFloat = playbackProgress.interpolatedPositionMsFloat()
+                    drawClockState.floatValue = currentFloat
+                    val currentLong = currentFloat.toLong()
+                    if (logicClockState.longValue != currentLong) {
+                        logicClockState.longValue = currentLong
+                    }
+                }
+            }
+        }
+
+        LaunchedEffect(playbackProgress.currentPositionMs) {
+            if (!playbackProgress.isPlaying ||
+                playbackProgress.isBuffering ||
+                kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
+            ) {
+                drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+                logicClockState.longValue = playbackProgress.currentPositionMs
+            }
         }
     }
 
@@ -1494,7 +1582,9 @@ private fun SynchronizedLyricsView(
 
 @Composable
 private fun PlaybackControlsRow(
-    uiState: MusicPlayerUiState,
+    isPlaying: Boolean,
+    isShuffleEnabled: Boolean,
+    repeatMode: RepeatMode,
     palette: AlbumPalette,
     onToggleShuffle: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -1512,14 +1602,14 @@ private fun PlaybackControlsRow(
             onClick = onToggleShuffle,
             size = 46.dp,
             cornerRadius = 16.dp,
-            backgroundColor = if (uiState.isShuffleEnabled) palette.accent.copy(alpha = 0.35f) else Color(0x281E2338),
+            backgroundColor = if (isShuffleEnabled) palette.accent.copy(alpha = 0.35f) else Color(0x281E2338),
             focusedBorderColor = palette.accent,
             testTag = "control_shuffle_btn"
         ) {
             Icon(
                 imageVector = Icons.Default.Shuffle,
                 contentDescription = "Shuffle",
-                tint = if (uiState.isShuffleEnabled) palette.accent else Color(0xFF94A3B8),
+                tint = if (isShuffleEnabled) palette.accent else Color(0xFF94A3B8),
                 modifier = Modifier.size(20.dp)
             )
         }
@@ -1549,8 +1639,8 @@ private fun PlaybackControlsRow(
             testTag = "control_play_pause_btn"
         ) {
             Icon(
-                imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (uiState.isPlaying) "Pause" else "Play",
+                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (isPlaying) "Pause" else "Play",
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
@@ -1573,7 +1663,7 @@ private fun PlaybackControlsRow(
         }
 
         // Repeat Button
-        val isRepeatActive = uiState.repeatMode != RepeatMode.OFF
+        val isRepeatActive = repeatMode != RepeatMode.OFF
         NowPlayingControlButton(
             onClick = onToggleRepeat,
             size = 46.dp,
@@ -1583,7 +1673,7 @@ private fun PlaybackControlsRow(
             testTag = "control_repeat_btn"
         ) {
             Icon(
-                imageVector = if (uiState.repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                imageVector = if (repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                 contentDescription = "Repeat",
                 tint = if (isRepeatActive) palette.accent else Color(0xFF94A3B8),
                 modifier = Modifier.size(20.dp)
@@ -1663,12 +1753,14 @@ private fun InfoRow(label: String, value: String) {
     }
 }
 
-private fun formatMs(ms: Long): String {
-    val totalSeconds = (ms / 1000).coerceAtLeast(0)
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
+private fun formatSeconds(totalSeconds: Long): String {
+    val safeSec = totalSeconds.coerceAtLeast(0L)
+    val minutes = safeSec / 60L
+    val seconds = safeSec % 60L
     return String.format("%02d:%02d", minutes, seconds)
 }
+
+private fun formatMs(ms: Long): String = formatSeconds(ms / 1000L)
 
 private fun String.getGraphemes(): List<String> {
     if (this.isEmpty()) return emptyList()

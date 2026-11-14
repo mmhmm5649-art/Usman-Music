@@ -53,12 +53,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.CuratedPlaylist
 import com.usman.musicplayer.model.HomeDiscoverySection
@@ -429,9 +431,21 @@ fun TvHomeAlbumCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFF151B2E))
         ) {
-            if (!album.artworkUri.isNullOrBlank()) {
+            val albumArt = album.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            if (albumArt != null) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val req = remember(context, albumArt) {
+                    AppImageLoader.buildImageRequest(
+                        context,
+                        albumArt,
+                        AppImageLoader.SIZE_CARD_THUMB_PX,
+                        AppImageLoader.SIZE_CARD_THUMB_PX
+                    )
+                }
                 AsyncImage(
-                    model = album.artworkUri,
+                    model = req,
+                    imageLoader = imageLoader,
                     contentDescription = album.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -480,9 +494,16 @@ fun TvHomeArtistCard(
                 .clip(CircleShape)
                 .background(Color(0xFF182034))
         ) {
-            if (!artist.artworkUri.isNullOrBlank()) {
+            val artistArt = artist.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            if (artistArt != null) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val req = remember(context, artistArt) {
+                    AppImageLoader.buildImageRequest(context, artistArt, 260, 260)
+                }
                 AsyncImage(
-                    model = artist.artworkUri,
+                    model = req,
+                    imageLoader = imageLoader,
                     contentDescription = artist.name,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -526,9 +547,21 @@ fun TvHomePlaylistCard(
                 .background(Brush.linearGradient(listOf(Color(0xFF4C1D95), Color(0xFF1E1B4B)))),
             contentAlignment = Alignment.Center
         ) {
-            if (!playlist.coverArtUri.isNullOrBlank()) {
+            val playlistArt = playlist.coverArtUri?.trim()?.takeIf { it.isNotEmpty() }
+            if (playlistArt != null) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val req = remember(context, playlistArt) {
+                    AppImageLoader.buildImageRequest(
+                        context,
+                        playlistArt,
+                        AppImageLoader.SIZE_CARD_THUMB_PX,
+                        AppImageLoader.SIZE_CARD_THUMB_PX
+                    )
+                }
                 AsyncImage(
-                    model = playlist.coverArtUri,
+                    model = req,
+                    imageLoader = imageLoader,
                     contentDescription = playlist.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop

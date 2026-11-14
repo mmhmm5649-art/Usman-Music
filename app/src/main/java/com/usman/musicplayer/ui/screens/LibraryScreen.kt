@@ -410,7 +410,11 @@ private fun LibraryTabsRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        items(LibraryTab.entries) { tab ->
+        items(
+            items = LibraryTab.entries,
+            key = { it.name },
+            contentType = { "library_tab" }
+        ) { tab ->
             val isSelected = tab == activeTab
             val shape = RoundedCornerShape(22.dp)
 

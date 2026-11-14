@@ -36,11 +36,43 @@ class JioSaavnMusicProvider(
 
     companion object {
         private const val TAG = "USMAN_PLAYBACK"
+        private const val MIRROR_COOLDOWN_MS = 45_000L
         val PUBLIC_API_BASES = listOf(
             "https://saavn-api-tau.vercel.app",
             "https://jiosaavn-api-sage.vercel.app",
             "https://saavn.dev"
         )
+    }
+
+    @Volatile
+    private var preferredBaseUrl: String? = null
+    private val mirrorCooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun orderedPublicBases(): List<String> {
+        if (publicApiBases.size <= 1) return publicApiBases
+        val now = System.currentTimeMillis()
+        val preferred = preferredBaseUrl?.takeIf { base ->
+            base in publicApiBases && (mirrorCooldownUntil[base] ?: 0L) <= now
+        }
+        val healthy = publicApiBases.filter { it != preferred && (mirrorCooldownUntil[it] ?: 0L) <= now }
+        val cooling = publicApiBases.filter { it != preferred && (mirrorCooldownUntil[it] ?: 0L) > now }
+        return buildList {
+            if (preferred != null) add(preferred)
+            addAll(healthy)
+            addAll(cooling)
+        }
+    }
+
+    private fun markMirrorHealthy(baseUrl: String) {
+        preferredBaseUrl = baseUrl
+        mirrorCooldownUntil.remove(baseUrl)
+    }
+
+    private fun markMirrorFailed(baseUrl: String) {
+        mirrorCooldownUntil[baseUrl] = System.currentTimeMillis() + MIRROR_COOLDOWN_MS
+        if (preferredBaseUrl == baseUrl) {
+            preferredBaseUrl = null
+        }
     }
 
     override val metadata = ProviderMetadata(
@@ -61,8 +93,8 @@ class JioSaavnMusicProvider(
         val safePage = page.coerceAtLeast(1)
         Log.d(TAG, "JioSaavn search requested for query: '$trimmed' (page=$safePage)")
 
-        // Strategy 1: Try public REST API (saavn.dev / sumitkolhe API instances)
-        for (baseUrl in publicApiBases) {
+        // Strategy 1: Try public REST API (prioritizing fastest healthy mirror)
+        for (baseUrl in orderedPublicBases()) {
             try {
                 val encodedQuery = Uri.encode(trimmed)
                 val url = "$baseUrl/api/search/songs?query=$encodedQuery&page=$safePage&limit=$limit"
@@ -77,15 +109,19 @@ class JioSaavnMusicProvider(
 
                         val songMaps = extractSongListFromResponse(rawBody)
                         if (songMaps.isNotEmpty()) {
+                            markMirrorHealthy(baseUrl)
                             val songs = songMaps.map { parseSongFromMap(it) }
                             Log.d(TAG, "[Search Strategy 1] Succeeded via $baseUrl, returned ${songs.size} tracks (page=$safePage)")
                             return@withContext Result.success(songs)
                         }
                     }
+                } else if (response.code() >= 500 || response.code() == 429) {
+                    markMirrorFailed(baseUrl)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                markMirrorFailed(baseUrl)
                 Log.w(TAG, "[Search Strategy 1] Error from $baseUrl: ${e.message}")
             }
         }
@@ -237,7 +273,7 @@ class JioSaavnMusicProvider(
         val mapAdapter = moshi.adapter<Map<String, Any>>(mapType)
 
         // Strategy 1: Public REST API (/api/search/albums, with /api/search fallback only if needed)
-        for (baseUrl in publicApiBases) {
+        for (baseUrl in orderedPublicBases()) {
             try {
                 val encodedQuery = Uri.encode(trimmed)
                 val albumUrl = "$baseUrl/api/search/albums?query=$encodedQuery&page=$safePage&limit=$limit"
@@ -250,6 +286,8 @@ class JioSaavnMusicProvider(
                         val albumMaps = extractAlbumListFromResponse(rawBody)
                         collected.addAll(albumMaps.mapNotNull { parseAlbumResultFromMap(it) })
                     }
+                } else if (response.code() >= 500 || response.code() == 429) {
+                    markMirrorFailed(baseUrl)
                 }
 
                 if (collected.isEmpty() && safePage == 1) {
@@ -266,6 +304,7 @@ class JioSaavnMusicProvider(
                 }
 
                 if (collected.isNotEmpty()) {
+                    markMirrorHealthy(baseUrl)
                     val deduped = collected.distinctBy { it.id.ifBlank { "${it.title.lowercase()}_${it.artist.lowercase()}" } }
                         .take(limit)
                     Log.d(TAG, "[Album Search Strategy 1] Succeeded via $baseUrl, returned ${deduped.size} albums (page=$safePage)")
@@ -274,6 +313,7 @@ class JioSaavnMusicProvider(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                markMirrorFailed(baseUrl)
                 Log.w(TAG, "[Album Search Strategy 1] Error from $baseUrl: ${e.message}")
             }
         }
@@ -388,7 +428,7 @@ class JioSaavnMusicProvider(
         val mapType = Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)
         val mapAdapter = moshi.adapter<Map<String, Any>>(mapType)
 
-        for (baseUrl in publicApiBases) {
+        for (baseUrl in orderedPublicBases()) {
             try {
                 val url = "$baseUrl/api/search/artists?query=${Uri.encode(trimmed)}&limit=$limit"
                 val response = apiService.searchSongsCustom(url)
@@ -401,13 +441,17 @@ class JioSaavnMusicProvider(
                             .distinctBy { it.name.lowercase() }
                             .take(limit)
                         if (artists.isNotEmpty()) {
+                            markMirrorHealthy(baseUrl)
                             return@withContext Result.success(artists)
                         }
                     }
+                } else if (response.code() >= 500 || response.code() == 429) {
+                    markMirrorFailed(baseUrl)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                markMirrorFailed(baseUrl)
                 Log.w(TAG, "[Artist Search Strategy 1] Error from $baseUrl: ${e.message}")
             }
         }
@@ -440,7 +484,7 @@ class JioSaavnMusicProvider(
         val mapType = Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)
         val mapAdapter = moshi.adapter<Map<String, Any>>(mapType)
 
-        for (baseUrl in publicApiBases) {
+        for (baseUrl in orderedPublicBases()) {
             try {
                 val url = "$baseUrl/api/search/playlists?query=${Uri.encode(trimmed)}&limit=$limit"
                 val response = apiService.searchSongsCustom(url)
@@ -453,13 +497,17 @@ class JioSaavnMusicProvider(
                             .distinctBy { it.id.ifBlank { it.title.lowercase() } }
                             .take(limit)
                         if (playlists.isNotEmpty()) {
+                            markMirrorHealthy(baseUrl)
                             return@withContext Result.success(playlists)
                         }
                     }
+                } else if (response.code() >= 500 || response.code() == 429) {
+                    markMirrorFailed(baseUrl)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                markMirrorFailed(baseUrl)
                 Log.w(TAG, "[Playlist Search Strategy 1] Error from $baseUrl: ${e.message}")
             }
         }

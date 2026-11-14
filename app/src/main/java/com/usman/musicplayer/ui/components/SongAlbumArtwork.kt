@@ -1,15 +1,6 @@
 package com.usman.musicplayer.ui.components
 
 import android.graphics.Bitmap
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,8 +25,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import com.usman.musicplayer.R
 import com.usman.musicplayer.data.AlbumArtworkCache
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.model.Song
 import com.usman.musicplayer.ui.theme.NeonCyan
 import com.usman.musicplayer.ui.theme.NeonMagenta
@@ -47,43 +41,35 @@ fun SongAlbumArtwork(
     song: Song?,
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 28.dp,
-    showGlowBorder: Boolean = true
+    showGlowBorder: Boolean = true,
+    targetSizePx: Int? = null
 ) {
     val context = LocalContext.current
-    var loadedBitmap by remember(song?.id) { mutableStateOf<Bitmap?>(null) }
+    val resolvedSizePx = targetSizePx ?: when {
+        cornerRadius > 20.dp -> AppImageLoader.SIZE_FULL_ARTWORK_PX
+        cornerRadius > 10.dp -> AppImageLoader.SIZE_CARD_THUMB_PX
+        else -> AppImageLoader.SIZE_MICRO_THUMB_PX
+    }
 
-    // Load artwork asynchronously using AlbumArtworkCache
-    LaunchedEffect(song?.id, song?.albumArtUri, song?.filePath) {
-        if (song != null) {
-            val targetSize = if (cornerRadius > 20.dp) 512 else 128
-            loadedBitmap = AlbumArtworkCache.loadArtwork(
-                context = context,
-                songId = song.id,
-                albumArtUri = song.albumArtUri,
-                filePath = song.filePath,
-                targetWidth = targetSize,
-                targetHeight = targetSize
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    val borderBrush = remember(showGlowBorder) {
+        if (showGlowBorder) {
+            Brush.linearGradient(
+                colors = listOf(
+                    NeonMagenta.copy(alpha = 0.9f),
+                    NeonPurple.copy(alpha = 0.8f),
+                    NeonCyan.copy(alpha = 0.9f)
+                )
             )
         } else {
-            loadedBitmap = null
+            Brush.linearGradient(
+                colors = listOf(Color(0x33FFFFFF), Color(0x1AFFFFFF))
+            )
         }
     }
 
-    val shape = RoundedCornerShape(cornerRadius)
-
-    val borderBrush = if (showGlowBorder) {
-        Brush.linearGradient(
-            colors = listOf(
-                NeonMagenta.copy(alpha = 0.9f),
-                NeonPurple.copy(alpha = 0.8f),
-                NeonCyan.copy(alpha = 0.9f)
-            )
-        )
-    } else {
-        Brush.linearGradient(
-            colors = listOf(Color(0x33FFFFFF), Color(0x1AFFFFFF))
-        )
-    }
+    val artUri = song?.albumArtUri?.trim()?.takeIf { it.isNotEmpty() }
+    val isLocalAudioFile = song != null && song.filePath.isNotBlank() && !song.filePath.startsWith("http")
 
     Box(
         modifier = modifier
@@ -92,52 +78,142 @@ fun SongAlbumArtwork(
             .background(Color(0xFF0F1123)),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = loadedBitmap,
-            transitionSpec = {
-                (fadeIn(animationSpec = tween(320, easing = FastOutSlowInEasing)) +
-                    scaleIn(initialScale = 0.96f, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
-                    .togetherWith(fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)))
-            },
-            label = "ArtworkCrossfade"
-        ) { bitmap ->
-            if (bitmap != null) {
+        if (artUri != null) {
+            val imageLoader = remember(context) { AppImageLoader.get(context) }
+            val imageRequest = remember(context, artUri, resolvedSizePx) {
+                AppImageLoader.buildImageRequest(
+                    context = context,
+                    data = artUri,
+                    widthPx = resolvedSizePx,
+                    heightPx = resolvedSizePx,
+                    crossfadeMs = 140
+                )
+            }
+            val painter = rememberAsyncImagePainter(
+                model = imageRequest,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Crop
+            )
+            val painterState = painter.state
+
+            var embeddedFallbackBitmap by remember(song?.id, artUri, resolvedSizePx) {
+                mutableStateOf<Bitmap?>(
+                    if (isLocalAudioFile) {
+                        AlbumArtworkCache.getCached(song!!.id, null, resolvedSizePx, resolvedSizePx)
+                    } else {
+                        null
+                    }
+                )
+            }
+
+            if (painterState is AsyncImagePainter.State.Error && isLocalAudioFile && embeddedFallbackBitmap == null) {
+                LaunchedEffect(song!!.id, song.filePath, resolvedSizePx) {
+                    embeddedFallbackBitmap = AlbumArtworkCache.loadArtwork(
+                        context = context,
+                        songId = song.id,
+                        albumArtUri = null,
+                        filePath = song.filePath,
+                        targetWidth = resolvedSizePx,
+                        targetHeight = resolvedSizePx
+                    )
+                }
+            }
+
+            if (painterState !is AsyncImagePainter.State.Success) {
+                val fallback = embeddedFallbackBitmap
+                if (fallback != null) {
+                    Image(
+                        bitmap = fallback.asImageBitmap(),
+                        contentDescription = "Album Art for ${song?.title ?: "Track"}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    ProceduralSongArtworkPlaceholder(
+                        song = song,
+                        cornerRadius = cornerRadius
+                    )
+                }
+            }
+
+            if (painterState !is AsyncImagePainter.State.Error) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    painter = painter,
                     contentDescription = "Album Art for ${song?.title ?: "Track"}",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
-            } else {
-                // When song is offline and doesn't have embedded ID3 cover, generate a deterministic
-                // premium cosmic/neon gradient artwork tailored specifically to the song's title & artist
-                val seed = (song?.title?.hashCode() ?: 0) xor (song?.artist?.hashCode() ?: 0)
-                val colors = remember(seed) {
-                    generateProceduralCoverColors(seed)
-                }
+            }
+        } else if (isLocalAudioFile) {
+            var localBitmap by remember(song!!.id, song.filePath, resolvedSizePx) {
+                mutableStateOf(
+                    AlbumArtworkCache.getCached(song.id, null, resolvedSizePx, resolvedSizePx)
+                )
+            }
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.radialGradient(
-                                colors = colors,
-                                radius = 450f
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_app_logo),
-                        contentDescription = "USMAN Music Artwork",
-                        modifier = Modifier
-                            .size(if (cornerRadius > 20.dp) 110.dp else 36.dp)
-                            .clip(RoundedCornerShape(12.dp)),
-                        alpha = 0.9f
+            LaunchedEffect(song!!.id, song.filePath, resolvedSizePx) {
+                if (localBitmap == null) {
+                    localBitmap = AlbumArtworkCache.loadArtwork(
+                        context = context,
+                        songId = song.id,
+                        albumArtUri = null,
+                        filePath = song.filePath,
+                        targetWidth = resolvedSizePx,
+                        targetHeight = resolvedSizePx
                     )
                 }
             }
+
+            val bmp = localBitmap
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Album Art for ${song.title}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                ProceduralSongArtworkPlaceholder(
+                    song = song,
+                    cornerRadius = cornerRadius
+                )
+            }
+        } else {
+            ProceduralSongArtworkPlaceholder(
+                song = song,
+                cornerRadius = cornerRadius
+            )
         }
+    }
+}
+
+@Composable
+private fun ProceduralSongArtworkPlaceholder(
+    song: Song?,
+    cornerRadius: Dp
+) {
+    val seed = (song?.title?.hashCode() ?: 0) xor (song?.artist?.hashCode() ?: 0)
+    val colors = remember(seed) { generateProceduralCoverColors(seed) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.radialGradient(
+                    colors = colors,
+                    radius = 450f
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.ic_app_logo),
+            contentDescription = "USMAN Music Artwork",
+            modifier = Modifier
+                .size(if (cornerRadius > 20.dp) 110.dp else 36.dp)
+                .clip(RoundedCornerShape(12.dp)),
+            alpha = 0.9f
+        )
     }
 }
 

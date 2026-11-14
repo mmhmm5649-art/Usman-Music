@@ -131,23 +131,27 @@ fun AlbumDetailsScreen(
     }
     val totalCount = albumDetails?.songCount ?: albumSummary?.songCount ?: tracks.size
     val isComplete = albumDetails?.isComplete ?: false
-    val supportsDownload = tracks.any { it.playbackType == PlaybackType.FULL && (it.isStreamable || !it.isOnline) }
+    val supportsDownload = remember(tracks) {
+        tracks.any { it.playbackType == PlaybackType.FULL && (it.isStreamable || !it.isOnline) }
+    }
 
-    val effectiveDetails = albumDetails ?: albumSummary?.let {
-        AlbumDetails(
-            id = it.id,
-            title = it.title,
-            movieName = it.movieName,
-            artist = it.artist,
-            year = it.year,
-            songCount = it.songCount ?: tracks.size,
-            artworkUri = it.artworkUri,
-            sourceProvider = it.sourceProvider,
-            externalUrl = it.externalUrl,
-            language = it.language,
-            isComplete = false,
-            tracks = tracks
-        )
+    val effectiveDetails = remember(albumDetails, albumSummary, tracks) {
+        albumDetails ?: albumSummary?.let {
+            AlbumDetails(
+                id = it.id,
+                title = it.title,
+                movieName = it.movieName,
+                artist = it.artist,
+                year = it.year,
+                songCount = it.songCount ?: tracks.size,
+                artworkUri = it.artworkUri,
+                sourceProvider = it.sourceProvider,
+                externalUrl = it.externalUrl,
+                language = it.language,
+                isComplete = false,
+                tracks = tracks
+            )
+        }
     }
 
     Box(

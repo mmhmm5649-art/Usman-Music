@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -332,22 +334,30 @@ fun AmllLyricLineItem(
         label = "amllLineGlow_${line.id}"
     )
 
-    val shadow = if (activeGlowRadius > 0.5f) {
-        Shadow(
-            color = Color.White.copy(alpha = if (isTv) 0.35f else 0.28f),
-            blurRadius = activeGlowRadius,
-            offset = Offset.Zero
-        )
-    } else {
-        Shadow.None
+    val glowBucket = (activeGlowRadius * 2f).toInt()
+    val shadow = remember(glowBucket, isTv) {
+        if (glowBucket > 1) {
+            Shadow(
+                color = Color.White.copy(alpha = if (isTv) 0.35f else 0.28f),
+                blurRadius = glowBucket / 2f,
+                offset = Offset.Zero
+            )
+        } else {
+            Shadow.None
+        }
     }
 
-    val currentTimeMs = drawClockState.value
-    val hasInterludeBeforeLine = isSynchronized &&
-        line.isTimestamped &&
-        (line.timestampMs - prevLineEndMs) >= 5000L &&
-        currentTimeMs >= prevLineEndMs.toFloat() &&
-        currentTimeMs < line.timestampMs.toFloat()
+    val hasInterludeGap = isSynchronized && line.isTimestamped && (line.timestampMs - prevLineEndMs) >= 5000L
+    val hasInterludeBeforeLine by remember(hasInterludeGap, prevLineEndMs, line.timestampMs, drawClockState) {
+        derivedStateOf {
+            if (!hasInterludeGap) {
+                false
+            } else {
+                val t = drawClockState.value
+                t >= prevLineEndMs.toFloat() && t < line.timestampMs.toFloat()
+            }
+        }
+    }
 
     val horizontalAlignment = if (line.isOppositeAligned) Alignment.End else Alignment.Start
     val transformOriginX = if (line.isOppositeAligned) 1f else 0f
@@ -511,7 +521,9 @@ fun AmllLyricLineItem(
 
 private data class CachedWordGeometry(
     val wordPath: Path,
-    val syllablePaths: Map<Int, Path>
+    val wordBounds: Rect,
+    val syllablePaths: Map<Int, Path>,
+    val syllableBounds: Map<Int, Rect>
 )
 
 @Composable
@@ -546,14 +558,15 @@ private fun AmllWordSyllableCanvasText(
         textMeasurer.measure(text, style = textStyle)
     }
 
-    // Pre-cache word and syllable paths so drawing on every frame allocates zero new layout paths
+    // Pre-cache word and syllable paths & bounds so drawing on every frame allocates zero new layout paths or rects
     val wordGeometries = remember(lineId, words, textLayoutResult) {
         val textLen = text.length
         words.associate { word ->
             val wStart = word.charStart.coerceIn(0, textLen)
             val wEnd = word.charEnd.coerceIn(wStart, textLen)
             val wPath = textLayoutResult.getPathForRange(wStart, wEnd)
-            val sylMap = if (word.syllables.size > 1) {
+            val wBounds = if (!wPath.isEmpty) wPath.getBounds() else Rect.Zero
+            val sylPaths = if (word.syllables.size > 1) {
                 word.syllables.associate { syl ->
                     val sStart = syl.charStartInLine.takeIf { it >= 0 }?.coerceIn(0, textLen)
                         ?: (wStart + syl.charStartInWord).coerceIn(0, textLen)
@@ -564,8 +577,34 @@ private fun AmllWordSyllableCanvasText(
             } else {
                 emptyMap()
             }
-            word.index to CachedWordGeometry(wordPath = wPath, syllablePaths = sylMap)
+            val sylBounds = if (sylPaths.isNotEmpty()) {
+                sylPaths.mapValues { (_, p) -> if (!p.isEmpty) p.getBounds() else Rect.Zero }
+            } else {
+                emptyMap()
+            }
+            word.index to CachedWordGeometry(
+                wordPath = wPath,
+                wordBounds = wBounds,
+                syllablePaths = sylPaths,
+                syllableBounds = sylBounds
+            )
         }
+    }
+
+    val completedPath = remember { Path() }
+    val dimmedColor = remember(isActive, isPast, isFuture, isBackgroundVocal) {
+        when {
+            !isActive && isPast -> Color.White.copy(alpha = if (isBackgroundVocal) 0.42f else 0.56f)
+            !isActive && isFuture -> Color.White.copy(alpha = if (isBackgroundVocal) 0.24f else 0.32f)
+            isBackgroundVocal -> TextMuted.copy(alpha = 0.28f)
+            else -> Color.White.copy(alpha = 0.34f)
+        }
+    }
+    val highlightColor = remember(isBackgroundVocal) {
+        if (isBackgroundVocal) Color.White.copy(alpha = 0.78f) else Color.White
+    }
+    val featherColors = remember(highlightColor) {
+        listOf(highlightColor.copy(alpha = 0.85f), Color.Transparent)
     }
 
     Box(
@@ -575,23 +614,14 @@ private fun AmllWordSyllableCanvasText(
             .drawWithContent {
                 val currentTime = drawClockState.value
 
-                // 1. Base text color:
-                // - Past lines retain a settled completed highlight (alpha 0.56)
-                // - Future lines & un-sung words on the active line remain dimmed (alpha 0.32)
-                val dimmedColor = when {
-                    !isActive && isPast -> Color.White.copy(alpha = if (isBackgroundVocal) 0.42f else 0.56f)
-                    !isActive && isFuture -> Color.White.copy(alpha = if (isBackgroundVocal) 0.24f else 0.32f)
-                    isBackgroundVocal -> TextMuted.copy(alpha = 0.28f)
-                    else -> Color.White.copy(alpha = 0.34f)
-                }
+                // 1. Base text color
                 drawText(textLayoutResult, color = dimmedColor)
 
                 // 2. Active line word-by-word and syllable-by-syllable illumination
                 if (isActive) {
-                    val completedPath = Path()
-                    val highlightColor = if (isBackgroundVocal) Color.White.copy(alpha = 0.78f) else Color.White
-
+                    completedPath.reset()
                     var activeClipPath: Path? = null
+                    var activeClipBounds: Rect = Rect.Zero
                     var activeProgress = 0f
 
                     for (word in words) {
@@ -599,12 +629,9 @@ private fun AmllWordSyllableCanvasText(
                         if (geom.wordPath.isEmpty) continue
 
                         if (currentTime >= word.endMs.toFloat()) {
-                            // Previously sung word on the active line retains full completed highlight
                             completedPath.addPath(geom.wordPath)
                         } else if (currentTime >= word.startMs.toFloat()) {
-                            // Currently singing word
                             if (word.syllables.size > 1 && geom.syllablePaths.isNotEmpty()) {
-                                // Syllable-level timing inside this word
                                 for (syl in word.syllables) {
                                     val sPath = geom.syllablePaths[syl.index] ?: continue
                                     if (sPath.isEmpty) continue
@@ -612,6 +639,7 @@ private fun AmllWordSyllableCanvasText(
                                         completedPath.addPath(sPath)
                                     } else if (currentTime >= syl.startMs.toFloat()) {
                                         activeClipPath = sPath
+                                        activeClipBounds = geom.syllableBounds[syl.index] ?: Rect.Zero
                                         activeProgress = syl.progressAt(currentTime)
                                         break
                                     } else {
@@ -619,8 +647,8 @@ private fun AmllWordSyllableCanvasText(
                                     }
                                 }
                             } else {
-                                // Word-level timing
                                 activeClipPath = geom.wordPath
+                                activeClipBounds = geom.wordBounds
                                 activeProgress = word.progressAt(currentTime)
                             }
                         }
@@ -634,42 +662,38 @@ private fun AmllWordSyllableCanvasText(
                     }
 
                     // 4. Render the currently singing word or syllable with AMLL soft-edge horizontal gradient
-                    if (activeClipPath != null && activeProgress > 0f) {
-                        val bounds = activeClipPath.getBounds()
-                        val width = bounds.width.coerceAtLeast(1f)
-                        val fillRight = bounds.left + width * activeProgress.coerceIn(0f, 1f)
+                    if (activeClipPath != null && activeProgress > 0f && activeClipBounds.width > 0f) {
+                        val width = activeClipBounds.width.coerceAtLeast(1f)
+                        val fillRight = activeClipBounds.left + width * activeProgress.coerceIn(0f, 1f)
                         val featherWidth = (width * 0.14f).coerceIn(4f, 18f)
 
                         clipPath(activeClipPath) {
-                            // Solid highlight up to the leading edge
                             clipRect(
-                                left = bounds.left,
-                                top = bounds.top,
+                                left = activeClipBounds.left,
+                                top = activeClipBounds.top,
                                 right = fillRight,
-                                bottom = bounds.bottom
+                                bottom = activeClipBounds.bottom
                             ) {
                                 drawText(textLayoutResult, color = highlightColor)
                             }
-                            // Soft AMLL gradient feather at the singing edge for liquid-smooth motion
-                            if (activeProgress < 0.98f && fillRight < bounds.right) {
-                                val featherRight = (fillRight + featherWidth).coerceAtMost(bounds.right)
-                                clipRect(
-                                    left = fillRight,
-                                    top = bounds.top,
-                                    right = featherRight,
-                                    bottom = bounds.bottom
-                                ) {
-                                    drawText(
-                                        textLayoutResult = textLayoutResult,
-                                        brush = Brush.horizontalGradient(
-                                            colors = listOf(
-                                                highlightColor.copy(alpha = 0.85f),
-                                                Color.Transparent
-                                            ),
-                                            startX = fillRight,
-                                            endX = featherRight.coerceAtLeast(fillRight + 1f)
+                            if (activeProgress < 0.98f && fillRight < activeClipBounds.right) {
+                                val featherRight = (fillRight + featherWidth).coerceAtMost(activeClipBounds.right)
+                                if (featherRight - fillRight >= 1f) {
+                                    clipRect(
+                                        left = fillRight,
+                                        top = activeClipBounds.top,
+                                        right = featherRight,
+                                        bottom = activeClipBounds.bottom
+                                    ) {
+                                        drawText(
+                                            textLayoutResult = textLayoutResult,
+                                            brush = Brush.horizontalGradient(
+                                                colors = featherColors,
+                                                startX = fillRight,
+                                                endX = featherRight
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                             }
                         }

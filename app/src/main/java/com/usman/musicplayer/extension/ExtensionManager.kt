@@ -40,68 +40,72 @@ object ExtensionManager {
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
+    @Volatile
     private var isInitialized = false
 
     fun init(context: Context) {
         if (isInitialized) return
-        isInitialized = true
+        synchronized(this) {
+            if (isInitialized) return
+            isInitialized = true
 
-        val s = ExtensionStorage(context.applicationContext)
-        storage = s
+            val s = ExtensionStorage(context.applicationContext)
+            storage = s
 
-        // Ensure ProviderRegistry is initialized
-        ProviderRegistry.init(context.applicationContext)
+            // Ensure ProviderRegistry is initialized
+            ProviderRegistry.init(context.applicationContext)
 
-        // Restore imported declarative REST music providers
-        val declarativeSpecs = s.loadDeclarativeSpecs()
-        for (spec in declarativeSpecs) {
-            val provider = DeclarativeMusicProvider(spec)
-            ProviderRegistry.registerProvider(provider, enabled = true)
-        }
-
-        val installed = s.loadInstalledExtensions()
-        _installedExtensions.value = installed
-
-        // Restore native adapter music providers (e.g. Echo EAPK adapters)
-        for (pkg in installed) {
-            if (pkg.isEnabled && pkg.isInstalled) {
-                val adapterId = pkg.manifest.adapterId
-                if (!adapterId.isNullOrBlank() && adapterId != "echo_runtime") {
-                    val nativeProvider = EchoExtensionAdapterRegistry.createProvider(adapterId, pkg.manifest.version)
-                    if (nativeProvider != null) {
-                        ProviderRegistry.registerProvider(nativeProvider, enabled = true)
-                    }
-                }
+            // Restore imported declarative REST music providers
+            val declarativeSpecs = s.loadDeclarativeSpecs()
+            for (spec in declarativeSpecs) {
+                val provider = DeclarativeMusicProvider(spec)
+                ProviderRegistry.registerProvider(provider, enabled = true)
             }
-        }
 
-        // Restore Genuine Echo Runtime extensions (DEX-loaded)
-        val echoDir = java.io.File(context.filesDir, "echo_extensions")
-        if (echoDir.exists()) {
-            echoDir.listFiles()?.forEach { file ->
-                if (file.name.endsWith(".eapk")) {
-                    val extId = file.nameWithoutExtension
-                    val pkgMatch = installed.find { it.manifest.id == extId }
-                    if (pkgMatch != null && pkgMatch.isInstalled) {
-                        EchoExtensionLoader.loadEchoExtension(context, file).onSuccess { provider ->
-                            ProviderRegistry.registerProvider(provider, enabled = pkgMatch.isEnabled)
-                        }.onFailure {
-                            android.util.Log.e("ExtensionManager", "Failed to restore Echo runtime extension: $extId", it)
+            val installed = s.loadInstalledExtensions()
+            _installedExtensions.value = installed
+
+            // Restore native adapter music providers (e.g. Echo EAPK adapters)
+            for (pkg in installed) {
+                if (pkg.isEnabled && pkg.isInstalled) {
+                    val adapterId = pkg.manifest.adapterId
+                    if (!adapterId.isNullOrBlank() && adapterId != "echo_runtime") {
+                        val nativeProvider = EchoExtensionAdapterRegistry.createProvider(adapterId, pkg.manifest.version)
+                        if (nativeProvider != null) {
+                            ProviderRegistry.registerProvider(nativeProvider, enabled = true)
                         }
                     }
                 }
             }
-        }
 
-        val repos = s.loadRepositories()
-        _repositories.value = repos
+            // Restore Genuine Echo Runtime extensions (DEX-loaded)
+            val echoDir = java.io.File(context.filesDir, "echo_extensions")
+            if (echoDir.exists()) {
+                echoDir.listFiles()?.forEach { file ->
+                    if (file.name.endsWith(".eapk")) {
+                        val extId = file.nameWithoutExtension
+                        val pkgMatch = installed.find { it.manifest.id == extId }
+                        if (pkgMatch != null && pkgMatch.isInstalled) {
+                            EchoExtensionLoader.loadEchoExtension(context, file).onSuccess { provider ->
+                                ProviderRegistry.registerProvider(provider, enabled = pkgMatch.isEnabled)
+                            }.onFailure {
+                                android.util.Log.e("ExtensionManager", "Failed to restore Echo runtime extension: $extId", it)
+                            }
+                        }
+                    }
+                }
+            }
 
-        // Sync ProviderRegistry enablement states with installed extensions
-        syncProviderRegistry(installed)
+            val repos = s.loadRepositories()
+            _repositories.value = repos
 
-        // Initial background sync for store extensions
-        scope.launch {
-            syncRepositories()
+            // Sync ProviderRegistry enablement states with installed extensions
+            syncProviderRegistry(installed)
+
+            // Initial background sync for store extensions
+            scope.launch {
+                syncRepositories()
+            }
         }
     }
 

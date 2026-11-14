@@ -1,5 +1,8 @@
 package com.usman.musicplayer.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class ArtistDetailsData(
     val id: String,
     val name: String,

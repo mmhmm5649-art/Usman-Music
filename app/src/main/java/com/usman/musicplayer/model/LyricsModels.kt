@@ -1,6 +1,7 @@
 package com.usman.musicplayer.model
 
 import android.util.Log
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 
 enum class SyncQuality {
@@ -113,6 +114,7 @@ data class LyricLine(
     val hasSyllableSync: Boolean = false
 )
 
+@Immutable
 data class ParsedLyrics(
     val lines: List<LyricLine>,
     val isSynchronized: Boolean,
@@ -144,6 +146,20 @@ object LyricsParser {
     private val HTML_TAG_REGEX = Regex("""<[^>]*>""")
     private val YRC_LINE_REGEX = Regex("""^\[(\d+),(\d+)\](.*)$""")
     private val QRC_XML_ATTR_REGEX = Regex("""LyricContent\s*=\s*"([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
+    private val METADATA_HEADER_REGEX = Regex("""^\[(ti|ar|al|by|offset|re|ve|length|id|qq|total|language):.*\]$""", RegexOption.IGNORE_CASE)
+    private val INLINE_TTML_SPAN_REGEX = Regex("""<span\s+begin="([\d:.]+)"\s+end="([\d:.]+)"[^>]*>(.*?)</span>""")
+    private val INLINE_LRC_TAG_REGEX = Regex("""<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>""")
+    private val INLINE_BRACKET_TIMING_REGEX = Regex("""[\(\[]\d+,\d+(?:,\d+)?[\)\]]""")
+    private val YRC_TOKEN_REGEX = Regex("""[\(\[](\d+),(\d+)(?:,\d+)?[\)\]]([^\(\[]*)""")
+    private val QRC_TOKEN_REGEX = Regex("""([^\(\[]+?)\((\d+),(\d+)(?:,\d+)?\)""")
+    private val INLINE_QRC_CONTAINS_REGEX = Regex("""[^\(\[]+\(\d+,\d+(?:,\d+)?\)""")
+    private val ANY_INLINE_TAG_REGEX = Regex("""(<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>)|([\(\[](\d+),(\d+)(?:,\d+)?[\)\]])""")
+    private val TTML_P_REGEX = Regex("""<p\s+([^>]*?)begin="([^"]+)"([^>]*)>(.*?)</p>""", RegexOption.DOT_MATCHES_ALL)
+    private val TTML_ROLE_SPAN_REGEX = Regex("""<span\s+[^>]*ttm:role="([^"]+)"[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
+    private val TTML_TIMED_SPAN_REGEX = Regex("""<span\s+[^>]*begin="([^"]+)"(?:\s+[^>]*?end="([^"]+)"|\s+end="([^"]+)")?[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
+    private val TTML_SIMPLE_SPAN_REGEX = Regex("""<span\s+begin="([^"]+)"(?:\s+end="([^"]+)")?[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
+    private val TTML_END_ATTR_REGEX = Regex("""end="([^"]+)"""")
+    private val TTML_AGENT_ATTR_REGEX = Regex("""ttm:agent="([^"]+)"""")
 
     private data class RawTimedToken(
         val text: String,
@@ -196,7 +212,7 @@ object LyricsParser {
 
         for (line in rawLines) {
             // Skip metadata headers like [ti:...], [ar:...], [al:...], [by:...], [offset:...]
-            if (line.matches(Regex("""^\[(ti|ar|al|by|offset|re|ve|length|id|qq|total|language):.*\]$""", RegexOption.IGNORE_CASE))) {
+            if (METADATA_HEADER_REGEX.matches(line)) {
                 continue
             }
 
@@ -259,8 +275,7 @@ object LyricsParser {
                 var lineHasSyllables = false
 
                 // 4a. Check inline TTML spans inside an LRC line: <span begin="..." end="...">
-                val ttmlSpanRegex = Regex("""<span\s+begin="([\d:.]+)"\s+end="([\d:.]+)"[^>]*>(.*?)</span>""")
-                val ttmlMatches = ttmlSpanRegex.findAll(lineContent).toList()
+                val ttmlMatches = INLINE_TTML_SPAN_REGEX.findAll(lineContent).toList()
 
                 if (ttmlMatches.isNotEmpty()) {
                     val tokens = buildTtmlTokensFromMatches(lineContent, ttmlMatches)
@@ -288,8 +303,8 @@ object LyricsParser {
 
                 if (cleanLineText.isBlank()) {
                     cleanLineText = HTML_TAG_REGEX.replace(lineContent, "")
-                        .replace(Regex("""<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>"""), "")
-                        .replace(Regex("""[\(\[]\d+,\d+(?:,\d+)?[\)\]]"""), "")
+                        .replace(INLINE_LRC_TAG_REGEX, "")
+                        .replace(INLINE_BRACKET_TIMING_REGEX, "")
                         .trim()
                         .ifBlank { "♪" }
                 }
@@ -416,8 +431,7 @@ object LyricsParser {
         val startsWithTimingTag = trimmed.startsWith("(") || trimmed.startsWith("[")
 
         if (startsWithTimingTag) {
-            val yrcRegex = Regex("""[\(\[](\d+),(\d+)(?:,\d+)?[\)\]]([^\(\[]*)""")
-            val matches = yrcRegex.findAll(trimmed).toList()
+            val matches = YRC_TOKEN_REGEX.findAll(trimmed).toList()
             if (matches.isEmpty()) return null
 
             val rawPieces = matches.map { m ->
@@ -450,8 +464,7 @@ object LyricsParser {
             return buildWordsFromTimedTokens(tokens)
         } else {
             // QRC / Lyricify Syllable suffix format: `text(start,dur[,0])`
-            val qrcRegex = Regex("""([^\(\[]+?)\((\d+),(\d+)(?:,\d+)?\)""")
-            val matches = qrcRegex.findAll(trimmed).toList()
+            val matches = QRC_TOKEN_REGEX.findAll(trimmed).toList()
             if (matches.isEmpty()) return null
 
             val rawPieces = matches.map { m ->
@@ -492,17 +505,15 @@ object LyricsParser {
         lineContent: String,
         lineTimestampMs: Long
     ): BuiltWordList? {
-        // Case A: Inline QRC / Lyricify Syllable inside an LRC-timestamped line: `[00:01.00]Nee (1000,600)ko(1600,300)sa(1900,300)me (2200,400)`
         if (!lineContent.trimStart().startsWith("<") &&
             !lineContent.trimStart().startsWith("(") &&
             !lineContent.trimStart().startsWith("[") &&
-            Regex("""[^\(\[]+\(\d+,\d+(?:,\d+)?\)""").containsMatchIn(lineContent)
+            INLINE_QRC_CONTAINS_REGEX.containsMatchIn(lineContent)
         ) {
             return parseBracketTimedBody(lineContent, lineTimestampMs)
         }
 
-        val anyTagRegex = Regex("""(<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>)|([\(\[](\d+),(\d+)(?:,\d+)?[\)\]])""")
-        val allMatches = anyTagRegex.findAll(lineContent).toList()
+        val allMatches = ANY_INLINE_TAG_REGEX.findAll(lineContent).toList()
         if (allMatches.isEmpty()) return null
 
         val rawTokens = mutableListOf<RawTimedToken>()
@@ -715,15 +726,10 @@ object LyricsParser {
         scriptMode: LyricsScriptMode = LyricsScriptMode.ORIGINAL
     ): ParsedLyrics? {
         try {
-            val pRegex = Regex("""<p\s+([^>]*?)begin="([^"]+)"([^>]*)>(.*?)</p>""", RegexOption.DOT_MATCHES_ALL)
-            val pMatches = pRegex.findAll(raw).toList()
+            val pMatches = TTML_P_REGEX.findAll(raw).toList()
             if (pMatches.isEmpty()) return null
 
             val lines = mutableListOf<LyricLine>()
-            val roleSpanRegex = Regex("""<span\s+[^>]*ttm:role="([^"]+)"[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
-            val timedSpanRegex = Regex("""<span\s+[^>]*begin="([^"]+)"(?:\s+[^>]*?end="([^"]+)"|\s+end="([^"]+)")?[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
-            val simpleSpanRegex = Regex("""<span\s+begin="([^"]+)"(?:\s+end="([^"]+)")?[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL)
-
             var anySyllableSync = false
 
             for ((lineIdx, pMatch) in pMatches.withIndex()) {
@@ -734,10 +740,10 @@ object LyricsParser {
                 var content = pMatch.groupValues[4]
 
                 val startMs = parseTtmlTime(beginStr)
-                val endAttrMatch = Regex("""end="([^"]+)"""").find(allAttrs)
+                val endAttrMatch = TTML_END_ATTR_REGEX.find(allAttrs)
                 val endMs = if (endAttrMatch != null) parseTtmlTime(endAttrMatch.groupValues[1]) else (startMs + 4000L)
 
-                val agentMatch = Regex("""ttm:agent="([^"]+)"""").find(allAttrs)
+                val agentMatch = TTML_AGENT_ATTR_REGEX.find(allAttrs)
                 val agent = agentMatch?.groupValues?.getOrNull(1)
                 val isOppositeAligned = agent != null && !agent.equals("v1", ignoreCase = true)
 
@@ -747,7 +753,7 @@ object LyricsParser {
                 var bgVocalWords: List<LyricWord> = emptyList()
 
                 // Extract special ttm:role spans first so they don't pollute the lead vocal spans
-                val roleMatches = roleSpanRegex.findAll(content).toList()
+                val roleMatches = TTML_ROLE_SPAN_REGEX.findAll(content).toList()
                 if (roleMatches.isNotEmpty()) {
                     for (rm in roleMatches) {
                         val role = rm.groupValues[1].trim()
@@ -760,7 +766,7 @@ object LyricsParser {
                                 romanizedText = decodeXmlEntities(HTML_TAG_REGEX.replace(roleInner, "")).trim().takeIf { it.isNotEmpty() }
                             }
                             role.equals("x-bg", ignoreCase = true) -> {
-                                val bgSpans = simpleSpanRegex.findAll(roleInner).toList()
+                                val bgSpans = TTML_SIMPLE_SPAN_REGEX.findAll(roleInner).toList()
                                 if (bgSpans.isNotEmpty()) {
                                     val bgTokens = buildTtmlTokensFromMatches(roleInner, bgSpans)
                                     val builtBg = buildWordsFromTimedTokens(bgTokens)
@@ -772,15 +778,15 @@ object LyricsParser {
                             }
                         }
                     }
-                    content = roleSpanRegex.replace(content, "")
+                    content = TTML_ROLE_SPAN_REGEX.replace(content, "")
                 }
 
-                val spanMatches = simpleSpanRegex.findAll(content).toList().ifEmpty {
-                    timedSpanRegex.findAll(content).mapNotNull { m ->
+                val spanMatches = TTML_SIMPLE_SPAN_REGEX.findAll(content).toList().ifEmpty {
+                    TTML_TIMED_SPAN_REGEX.findAll(content).mapNotNull { m ->
                         val b = m.groupValues[1]
                         val e = m.groupValues[2].ifEmpty { m.groupValues[3] }
                         val txt = m.groupValues[4]
-                        simpleSpanRegex.find("""<span begin="$b" end="$e">$txt</span>""")
+                        TTML_SIMPLE_SPAN_REGEX.find("""<span begin="$b" end="$e">$txt</span>""")
                     }.toList()
                 }
 

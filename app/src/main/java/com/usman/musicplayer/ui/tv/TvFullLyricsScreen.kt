@@ -100,7 +100,8 @@ fun TvFullLyricsScreen(
     onSeekTo: (Long) -> Unit,
     onRetryFetch: () -> Unit,
     onCloseLyrics: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackProgressFlow: kotlinx.coroutines.flow.StateFlow<PlaybackProgress>? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var scriptMode by remember {
@@ -113,35 +114,81 @@ fun TvFullLyricsScreen(
     val isSynchronized = activeLyrics?.isSynchronized == true
     val listState = rememberLazyListState()
 
-    // High-precision frame-clock for ultra-smooth word highlighting
-    val drawClockState = remember { mutableFloatStateOf(playbackProgress.interpolatedPositionMsFloat()) }
-    val logicClockState = remember { mutableLongStateOf(playbackProgress.currentPositionMs) }
+    val initialProgress = playbackProgressFlow?.value ?: playbackProgress
+    // High-precision frame-clock for ultra-smooth word highlighting (never triggers parent recomposition)
+    val drawClockState = remember { mutableFloatStateOf(initialProgress.interpolatedPositionMsFloat()) }
+    val logicClockState = remember { mutableLongStateOf(initialProgress.currentPositionMs) }
 
-    LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
-        if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
-            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
-            logicClockState.longValue = playbackProgress.currentPositionMs
-            return@LaunchedEffect
+    if (playbackProgressFlow != null) {
+        val flowRef = remember { arrayOf(playbackProgressFlow.value) }
+        var transportKey by remember {
+            val initVal = playbackProgressFlow.value
+            mutableStateOf(Triple(initVal.isPlaying, initVal.isBuffering, initVal.playbackSpeed))
         }
-        while (isActive) {
-            withFrameNanos {
-                val currentFloat = playbackProgress.interpolatedPositionMsFloat()
-                drawClockState.floatValue = currentFloat
-                val currentLong = currentFloat.toLong()
-                if (logicClockState.longValue != currentLong) {
-                    logicClockState.longValue = currentLong
+
+        LaunchedEffect(playbackProgressFlow) {
+            playbackProgressFlow.collect { latest ->
+                flowRef[0] = latest
+                val nextKey = Triple(latest.isPlaying, latest.isBuffering, latest.playbackSpeed)
+                if (nextKey != transportKey) {
+                    transportKey = nextKey
+                }
+                if (!latest.isPlaying ||
+                    latest.isBuffering ||
+                    kotlin.math.abs(latest.currentPositionMs - logicClockState.longValue) > 250L
+                ) {
+                    drawClockState.floatValue = latest.currentPositionMs.toFloat()
+                    logicClockState.longValue = latest.currentPositionMs
                 }
             }
         }
-    }
 
-    LaunchedEffect(playbackProgress.currentPositionMs) {
-        if (!playbackProgress.isPlaying ||
-            playbackProgress.isBuffering ||
-            kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
-        ) {
-            drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
-            logicClockState.longValue = playbackProgress.currentPositionMs
+        LaunchedEffect(transportKey) {
+            val (playing, buffering, _) = transportKey
+            if (!playing || buffering) {
+                val cur = flowRef[0]
+                drawClockState.floatValue = cur.currentPositionMs.toFloat()
+                logicClockState.longValue = cur.currentPositionMs
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                withFrameNanos {
+                    val currentFloat = flowRef[0].interpolatedPositionMsFloat()
+                    drawClockState.floatValue = currentFloat
+                    val currentLong = currentFloat.toLong()
+                    if (logicClockState.longValue != currentLong) {
+                        logicClockState.longValue = currentLong
+                    }
+                }
+            }
+        }
+    } else {
+        LaunchedEffect(playbackProgress.isPlaying, playbackProgress.isBuffering, playbackProgress.playbackSpeed) {
+            if (!playbackProgress.isPlaying || playbackProgress.isBuffering) {
+                drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+                logicClockState.longValue = playbackProgress.currentPositionMs
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                withFrameNanos {
+                    val currentFloat = playbackProgress.interpolatedPositionMsFloat()
+                    drawClockState.floatValue = currentFloat
+                    val currentLong = currentFloat.toLong()
+                    if (logicClockState.longValue != currentLong) {
+                        logicClockState.longValue = currentLong
+                    }
+                }
+            }
+        }
+
+        LaunchedEffect(playbackProgress.currentPositionMs) {
+            if (!playbackProgress.isPlaying ||
+                playbackProgress.isBuffering ||
+                kotlin.math.abs(playbackProgress.currentPositionMs - logicClockState.longValue) > 250L
+            ) {
+                drawClockState.floatValue = playbackProgress.currentPositionMs.toFloat()
+                logicClockState.longValue = playbackProgress.currentPositionMs
+            }
         }
     }
 
@@ -174,13 +221,15 @@ fun TvFullLyricsScreen(
     }
 
     // TV Dark Album Art Gradient Background
-    val bgGradient = Brush.verticalGradient(
-        colors = listOf(
-            palette.darkBackground.copy(alpha = 0.95f),
-            Color(0xFF090D16),
-            Color(0xFF030508)
+    val bgGradient = remember(palette.darkBackground) {
+        Brush.verticalGradient(
+            colors = listOf(
+                palette.darkBackground.copy(alpha = 0.95f),
+                Color(0xFF090D16),
+                Color(0xFF030508)
+            )
         )
-    )
+    }
 
     Box(
         modifier = modifier

@@ -14,9 +14,18 @@ import com.usman.musicplayer.sdk.Song
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
+
+data class SearchSongsOutcome(
+    val songs: List<Song>,
+    val fromCache: Boolean = false,
+    val hadNetworkError: Boolean = false
+)
 
 class UnifiedMusicRepository(
     context: Context?,
@@ -28,18 +37,43 @@ class UnifiedMusicRepository(
 
     private data class CachedResult(val songs: List<Song>, val timestamp: Long)
     private data class CachedAlbums(val albums: List<AlbumSearchResult>, val timestamp: Long)
+    private data class CachedArtists(val artists: List<OnlineArtistResult>, val timestamp: Long)
     private data class CachedAlbumDetails(val details: AlbumDetails, val timestamp: Long)
+
+    private val appContext: Context? = context?.applicationContext
+    @Volatile
+    private var providersReady: Boolean = (providersOverride != null || appContext == null)
+    private val initLock = Any()
 
     private val searchCache = ConcurrentHashMap<String, CachedResult>()
     private val albumSearchCache = ConcurrentHashMap<String, CachedAlbums>()
+    private val soundtrackAlbumCache = ConcurrentHashMap<String, CachedAlbums>()
+    private val artistSearchCache = ConcurrentHashMap<String, CachedArtists>()
     private val albumDetailsCache = ConcurrentHashMap<String, CachedAlbumDetails>()
-    private val CACHE_TTL_MS = 30_000L // 30 seconds TTL for fresh online release searches
+    private val inFlightSongMutexes = ConcurrentHashMap<String, Mutex>()
+    private val inFlightAlbumMutexes = ConcurrentHashMap<String, Mutex>()
+    private val inFlightSoundtrackMutexes = ConcurrentHashMap<String, Mutex>()
+    private val inFlightArtistMutexes = ConcurrentHashMap<String, Mutex>()
+
+    private val CACHE_TTL_MS = 180_000L // 3 minutes TTL for fast repeat searches
     private val ALBUM_DETAILS_TTL_MS = 300_000L // 5 minutes TTL for album tracklists
 
-    init {
-        if (context != null && providersOverride == null) {
-            ExtensionManager.init(context)
-            ProviderRegistry.init(context)
+    fun warmUp() {
+        ensureProvidersInitialized()
+    }
+
+    private fun ensureProvidersInitialized() {
+        if (providersReady) return
+        val ctx = appContext ?: run {
+            providersReady = true
+            return
+        }
+        synchronized(initLock) {
+            if (!providersReady) {
+                ExtensionManager.init(ctx)
+                ProviderRegistry.init(ctx)
+                providersReady = true
+            }
         }
     }
 
@@ -49,6 +83,7 @@ class UnifiedMusicRepository(
     }
 
     private fun userFacingOnlineProviders(): List<MusicProvider> {
+        ensureProvidersInitialized()
         val base = (providersOverride ?: ProviderRegistry.activeProviders)
             .filter { it.metadata.id != "local_music_provider" && !isItunesProvider(it) }
         return if (providersOverride == null) {
@@ -62,6 +97,7 @@ class UnifiedMusicRepository(
     }
 
     private fun internalSoundtrackVerifier(): MusicProvider? {
+        ensureProvidersInitialized()
         return internalVerifierOverride
             ?: providersOverride?.firstOrNull { isItunesProvider(it) }
             ?: ProviderRegistry.getInternalSoundtrackVerifier()
@@ -91,142 +127,260 @@ class UnifiedMusicRepository(
         return true
     }
 
-    suspend fun searchAll(query: String, limit: Int = 35, offset: Int = 0): List<Song> = coroutineScope {
+    fun peekCachedSongs(query: String, limit: Int = 35, offset: Int = 0): List<Song>? {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) return@coroutineScope emptyList()
+        if (trimmed.isBlank()) return emptyList()
+        val cacheKey = "${trimmed.lowercase()}_${limit}_$offset"
+        val cached = searchCache[cacheKey] ?: return null
+        if ((System.currentTimeMillis() - cached.timestamp) >= CACHE_TTL_MS || cached.songs.isEmpty()) {
+            return null
+        }
+        return cached.songs
+    }
+
+    fun peekCachedAlbums(query: String, limit: Int = 20): List<AlbumSearchResult>? {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return emptyList()
+        val now = System.currentTimeMillis()
+        val prefix = "albums_${trimmed.lowercase()}_${limit}_"
+        val match = albumSearchCache.entries.firstOrNull { (k, v) ->
+            k.startsWith(prefix) && (now - v.timestamp) < CACHE_TTL_MS && v.albums.isNotEmpty()
+        }?.value
+        return match?.albums
+    }
+
+    fun peekCachedSoundtrackAlbums(query: String, limit: Int = 20): List<AlbumSearchResult>? {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return emptyList()
+        val cacheKey = "soundtrack_${trimmed.lowercase()}_$limit"
+        val cached = soundtrackAlbumCache[cacheKey] ?: return null
+        if ((System.currentTimeMillis() - cached.timestamp) >= CACHE_TTL_MS) {
+            return null
+        }
+        return cached.albums
+    }
+
+    fun peekCachedArtists(query: String, limit: Int = 15): List<OnlineArtistResult>? {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return emptyList()
+        val cacheKey = "artists_${trimmed.lowercase()}_$limit"
+        val cached = artistSearchCache[cacheKey] ?: return null
+        if ((System.currentTimeMillis() - cached.timestamp) >= CACHE_TTL_MS) {
+            return null
+        }
+        return cached.artists
+    }
+
+    suspend fun searchAll(query: String, limit: Int = 35, offset: Int = 0): List<Song> {
+        return searchAllWithStatus(query, limit, offset).songs
+    }
+
+    suspend fun searchAllWithStatus(
+        query: String,
+        limit: Int = 35,
+        offset: Int = 0
+    ): SearchSongsOutcome {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return SearchSongsOutcome(emptyList(), fromCache = true)
 
         val cacheKey = "${trimmed.lowercase()}_${limit}_$offset"
-        val cached = searchCache[cacheKey]
-        if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS && cached.songs.isNotEmpty()) {
+        peekCachedSongs(trimmed, limit, offset)?.let { hit ->
             Log.d("SearchTiming", "Cache hit for query '$trimmed' (offset $offset)")
-            return@coroutineScope cached.songs
+            return SearchSongsOutcome(hit, fromCache = true)
         }
 
-        val active = userFacingOnlineProviders()
-        val deferredList = active.map { provider ->
-            async {
-                val startTime = System.currentTimeMillis()
-                val page1 = runCatching {
-                    withTimeoutOrNull(5000L) {
-                        provider.searchPaginated(trimmed, limit, page = 1)
-                    }?.getOrNull() ?: emptyList()
-                }.getOrElse { e ->
-                    Log.w("UnifiedMusicRepo", "Provider ${provider.metadata.name} search failed: ${e.message}")
-                    emptyList()
+        val mutex = inFlightSongMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            peekCachedSongs(trimmed, limit, offset)?.let { hit ->
+                return@withLock SearchSongsOutcome(hit, fromCache = true)
+            }
+
+            coroutineScope {
+                val active = userFacingOnlineProviders()
+                var networkFailureDetected = false
+                val deferredList = active.map { provider ->
+                    async {
+                        val startTime = System.currentTimeMillis()
+                        var page1TimedOut = false
+                        val page1Result = runCatching {
+                            val res = withTimeoutOrNull(4500L) {
+                                provider.searchPaginated(trimmed, limit, page = 1)
+                            }
+                            if (res == null) {
+                                page1TimedOut = true
+                                null
+                            } else {
+                                res
+                            }
+                        }
+                        val page1Exception = page1Result.exceptionOrNull() ?: page1Result.getOrNull()?.exceptionOrNull()
+                        if (page1TimedOut || page1Exception is IOException) {
+                            networkFailureDetected = true
+                        }
+                        val page1 = page1Result.getOrNull()?.getOrNull() ?: emptyList()
+
+                        // Only hit page 2 sequentially when page 1 returned an abnormally small result set
+                        val page2Threshold = minOf(8, limit)
+                        val page2 = if (page1.isNotEmpty() && page1.size < page2Threshold) {
+                            runCatching {
+                                withTimeoutOrNull(3000L) {
+                                    provider.searchPaginated(trimmed, limit, page = 2)
+                                }?.getOrNull() ?: emptyList()
+                            }.getOrDefault(emptyList())
+                        } else {
+                            emptyList()
+                        }
+                        val elapsed = System.currentTimeMillis() - startTime
+                        val merged = page1 + page2
+                        Log.d("SearchTiming", "Provider ${provider.metadata.name} took ${elapsed}ms for query '$trimmed' (found ${merged.size} songs)")
+                        merged
+                    }
                 }
-                val page2 = if (page1.isNotEmpty() && page1.size < limit) {
-                    runCatching {
-                        withTimeoutOrNull(4000L) {
-                            provider.searchPaginated(trimmed, limit, page = 2)
-                        }?.getOrNull() ?: emptyList()
-                    }.getOrDefault(emptyList())
+
+                val allResults = deferredList.awaitAll().flatten().filter(::isAllowedUserFacingSong)
+
+                val queryTokens = tokenize(trimmed)
+                val compactQuery = queryTokens.joinToString("")
+
+                val dedupedByTrack = deduplicateSongsPreferringFullStreams(allResults)
+
+                val sortedResults = dedupedByTrack
+                    .map { song ->
+                        val score = calculateRelevanceScore(song, queryTokens, compactQuery)
+                        song to score
+                    }
+                    .filter { (song, score) ->
+                        filterRelevantSong(song, score, queryTokens)
+                    }
+                    .sortedWith(
+                        compareByDescending<Pair<Song, Int>> { it.second }
+                            .thenByDescending { it.first.isFullTrackVerified }
+                            .thenByDescending { !it.first.albumArtUri.isNullOrBlank() }
+                    )
+                    .map { it.first }
+                    .let { list ->
+                        if (offset > 0 && offset < list.size) list.drop(offset) else list
+                    }
+                    .take(limit)
+
+                if (sortedResults.isNotEmpty()) {
+                    if (searchCache.size >= MAX_SEARCH_CACHE_ENTRIES) {
+                        trimOldestEntries(searchCache)
+                    }
+                    searchCache[cacheKey] = CachedResult(sortedResults, System.currentTimeMillis())
                 } else {
-                    emptyList()
+                    searchCache.remove(cacheKey)
                 }
-                val elapsed = System.currentTimeMillis() - startTime
-                val merged = page1 + page2
-                Log.d("SearchTiming", "Provider ${provider.metadata.name} took ${elapsed}ms for query '$trimmed' (found ${merged.size} songs)")
-                merged
+
+                SearchSongsOutcome(
+                    songs = sortedResults,
+                    fromCache = false,
+                    hadNetworkError = networkFailureDetected && sortedResults.isEmpty()
+                )
             }
         }
-
-        val allResults = deferredList.awaitAll().flatten().filter(::isAllowedUserFacingSong)
-
-        val queryTokens = tokenize(trimmed)
-        val compactQuery = queryTokens.joinToString("")
-
-        val dedupedByTrack = deduplicateSongsPreferringFullStreams(allResults)
-
-        val sortedResults = dedupedByTrack
-            .map { song ->
-                val score = calculateRelevanceScore(song, queryTokens, compactQuery)
-                song to score
-            }
-            .filter { (song, score) ->
-                filterRelevantSong(song, score, queryTokens)
-            }
-            .sortedWith(
-                compareByDescending<Pair<Song, Int>> { it.second }
-                    .thenByDescending { it.first.isFullTrackVerified }
-                    .thenByDescending { !it.first.albumArtUri.isNullOrBlank() }
-            )
-            .map { it.first }
-            .let { list ->
-                if (offset > 0 && offset < list.size) list.drop(offset) else list
-            }
-            .take(limit)
-
-        if (sortedResults.isNotEmpty()) {
-            searchCache[cacheKey] = CachedResult(sortedResults, System.currentTimeMillis())
-        } else {
-            searchCache.remove(cacheKey)
-        }
-
-        sortedResults
     }
 
     suspend fun searchAlbums(
         query: String,
         limit: Int = 20,
         seedSongs: List<Song> = emptyList()
-    ): List<AlbumSearchResult> = coroutineScope {
+    ): List<AlbumSearchResult> {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) return@coroutineScope emptyList()
+        if (trimmed.isBlank()) return emptyList()
 
         val filteredSeedSongs = seedSongs.filter(::isAllowedUserFacingSong)
         val cacheKey = "albums_${trimmed.lowercase()}_${limit}_${filteredSeedSongs.size}"
         val cached = albumSearchCache[cacheKey]
         if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS && cached.albums.isNotEmpty()) {
-            return@coroutineScope cached.albums
+            return cached.albums
         }
 
-        val coreQuery = stripMovieNoiseWords(trimmed)
-        val onlineProviders = userFacingOnlineProviders()
-
-        val queryVariants = linkedSetOf(trimmed).apply {
-            if (coreQuery.isNotBlank() && !coreQuery.equals(trimmed, ignoreCase = true)) {
-                add(coreQuery)
+        val mutex = inFlightAlbumMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            val recheck = albumSearchCache[cacheKey]
+            if (recheck != null && (System.currentTimeMillis() - recheck.timestamp) < CACHE_TTL_MS && recheck.albums.isNotEmpty()) {
+                return@withLock recheck.albums
             }
-            val coreTokens = tokenize(coreQuery.ifBlank { trimmed })
-            if (coreTokens.size in 1..3 && !trimmed.contains("soundtrack", ignoreCase = true)) {
-                add("$coreQuery soundtrack")
-            }
-        }
+            coroutineScope {
+                val coreQuery = stripMovieNoiseWords(trimmed)
+                val onlineProviders = userFacingOnlineProviders()
 
-        val primaryDeferred = queryVariants.flatMap { q ->
-            onlineProviders.flatMap { provider ->
-                listOf(
-                    async {
-                        runCatching {
-                            withTimeoutOrNull(5500L) {
-                                provider.searchAlbumsPaginated(q, limit, page = 1)
-                            }?.getOrNull() ?: emptyList()
-                        }.getOrDefault(emptyList())
-                    },
-                    async {
-                        if (q == trimmed) {
+                val baseVariants = linkedSetOf(trimmed).apply {
+                    if (coreQuery.isNotBlank() && !coreQuery.equals(trimmed, ignoreCase = true)) {
+                        add(coreQuery)
+                    }
+                }
+
+                val primaryAlbums = baseVariants.flatMap { q ->
+                    onlineProviders.map { provider ->
+                        async {
                             runCatching {
                                 withTimeoutOrNull(4500L) {
-                                    provider.searchAlbumsPaginated(q, limit, page = 2)
+                                    provider.searchAlbumsPaginated(q, limit, page = 1)
                                 }?.getOrNull() ?: emptyList()
                             }.getOrDefault(emptyList())
-                        } else {
-                            emptyList()
                         }
                     }
-                )
-            }
-        }
-        val primaryAlbums = primaryDeferred.awaitAll().flatten()
-            .filter(::isAllowedUserFacingAlbum)
-            .toMutableList()
+                }.awaitAll().flatten()
+                    .filter(::isAllowedUserFacingAlbum)
+                    .toMutableList()
 
-        val queryTokens = tokenize(coreQuery.ifBlank { trimmed })
+                // Only issue fallback soundtrack / page-2 calls when initial album batch is sparse
+                val coreTokens = tokenize(coreQuery.ifBlank { trimmed })
+                if (primaryAlbums.size < 3 && coreTokens.size in 1..3) {
+                    val secondaryDeferred = buildList {
+                        onlineProviders.forEach { provider ->
+                            add(async {
+                                runCatching {
+                                    withTimeoutOrNull(3500L) {
+                                        provider.searchAlbumsPaginated(trimmed, limit, page = 2)
+                                    }?.getOrNull() ?: emptyList()
+                                }.getOrDefault(emptyList())
+                            })
+                            if (!trimmed.contains("soundtrack", ignoreCase = true)) {
+                                add(async {
+                                    runCatching {
+                                        withTimeoutOrNull(3500L) {
+                                            provider.searchAlbumsPaginated("$coreQuery soundtrack", limit, page = 1)
+                                        }?.getOrNull() ?: emptyList()
+                                    }.getOrDefault(emptyList())
+                                })
+                            }
+                        }
+                    }
+                    primaryAlbums.addAll(
+                        secondaryDeferred.awaitAll().flatten().filter(::isAllowedUserFacingAlbum)
+                    )
+                }
+
+        val coreQueryForScore = stripMovieNoiseWords(trimmed)
+        val queryTokens = tokenize(coreQueryForScore.ifBlank { trimmed })
         val compactQuery = queryTokens.joinToString("")
 
         // Merge fallback album entries from verified JioSaavn songs with verified albumId
-        val knownAlbumKeys = primaryAlbums.map { "${it.sourceProvider.lowercase()}|${it.id}" }.toMutableSet()
-        val inferredFromSongs = filteredSeedSongs
+        val ranked = mergeAlbumsWithSeedSongs(primaryAlbums, filteredSeedSongs, queryTokens, compactQuery, limit)
+
+        if (ranked.isNotEmpty()) {
+            if (albumSearchCache.size >= MAX_SEARCH_CACHE_ENTRIES) {
+                trimOldestAlbumEntries()
+            }
+            albumSearchCache[cacheKey] = CachedAlbums(ranked, System.currentTimeMillis())
+        }
+        ranked
+            }
+        }
+    }
+
+    private fun mergeAlbumsWithSeedSongs(
+        baseAlbums: List<AlbumSearchResult>,
+        seedSongs: List<Song>,
+        queryTokens: List<String>,
+        compactQuery: String,
+        limit: Int
+    ): List<AlbumSearchResult> {
+        val knownAlbumKeys = baseAlbums.map { "${it.sourceProvider.lowercase()}|${it.id}" }.toMutableSet()
+        val inferredFromSongs = seedSongs
             .filter {
                 !it.albumId.isNullOrBlank() &&
                     it.album.isNotBlank() &&
@@ -259,7 +413,7 @@ class UnifiedMusicRepository(
             }
             .filter(::isAllowedUserFacingAlbum)
 
-        val ranked = (primaryAlbums + inferredFromSongs)
+        return (baseAlbums + inferredFromSongs)
             .distinctBy { "${it.sourceProvider.lowercase()}|${it.id}" }
             .map { album -> album to calculateAlbumRelevanceScore(album, queryTokens, compactQuery) }
             .filter { (_, score) -> queryTokens.isEmpty() || score >= 45 }
@@ -271,11 +425,6 @@ class UnifiedMusicRepository(
             )
             .map { it.first }
             .take(limit)
-
-        if (ranked.isNotEmpty()) {
-            albumSearchCache[cacheKey] = CachedAlbums(ranked, System.currentTimeMillis())
-        }
-        ranked
     }
 
     /**
@@ -288,14 +437,22 @@ class UnifiedMusicRepository(
         query: String,
         limit: Int = 20,
         seedSongs: List<Song> = emptyList()
-    ): List<AlbumSearchResult> = coroutineScope {
+    ): List<AlbumSearchResult> {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) return@coroutineScope emptyList()
+        if (trimmed.isBlank()) return emptyList()
 
-        val cleanedSeedSongs = seedSongs.filter(::isAllowedUserFacingSong)
-        val coreQuery = stripMovieNoiseWords(trimmed)
-        val queryTokens = tokenize(coreQuery.ifBlank { trimmed })
-        val compactQuery = queryTokens.joinToString("")
+        peekCachedSoundtrackAlbums(trimmed, limit)?.let { return it }
+
+        val cacheKey = "soundtrack_${trimmed.lowercase()}_$limit"
+        val mutex = inFlightSoundtrackMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            peekCachedSoundtrackAlbums(trimmed, limit)?.let { return@withLock it }
+
+            coroutineScope {
+                val cleanedSeedSongs = seedSongs.filter(::isAllowedUserFacingSong)
+                val coreQuery = stripMovieNoiseWords(trimmed)
+                val queryTokens = tokenize(coreQuery.ifBlank { trimmed })
+                val compactQuery = queryTokens.joinToString("")
 
         // 1. Gather individual JioSaavn albums + hidden internal metadata verification hint in parallel
         val albumsDeferred = async { searchAlbums(trimmed, limit = limit, seedSongs = cleanedSeedSongs) }
@@ -304,25 +461,16 @@ class UnifiedMusicRepository(
             if (coreQuery.isBlank()) emptyList()
             else {
                 val onlineProviders = userFacingOnlineProviders()
-                val queries = listOf("$coreQuery songs", "From $coreQuery", "$coreQuery movie").distinct()
+                val queries = listOf("$coreQuery songs", "From $coreQuery").distinct()
                 queries.flatMap { q ->
-                    onlineProviders.flatMap { p ->
-                        listOf(
-                            async {
-                                runCatching {
-                                    withTimeoutOrNull(4500L) {
-                                        p.searchPaginated(q, 25, page = 1)
-                                    }?.getOrNull() ?: emptyList()
-                                }.getOrDefault(emptyList())
-                            },
-                            async {
-                                runCatching {
-                                    withTimeoutOrNull(4000L) {
-                                        p.searchPaginated(q, 25, page = 2)
-                                    }?.getOrNull() ?: emptyList()
-                                }.getOrDefault(emptyList())
-                            }
-                        )
+                    onlineProviders.map { p ->
+                        async {
+                            runCatching {
+                                withTimeoutOrNull(4000L) {
+                                    p.searchPaginated(q, 20, page = 1)
+                                }?.getOrNull() ?: emptyList()
+                            }.getOrDefault(emptyList())
+                        }
                     }
                 }.awaitAll().flatten().filter(::isAllowedUserFacingSong)
             }
@@ -337,8 +485,9 @@ class UnifiedMusicRepository(
             .filter(::isAllowedUserFacingSong)
 
         val albums = albumsDeferred.await()
+        // Merge newly discovered soundtrack seed songs in-memory without re-running duplicate HTTP album queries
         val enrichedAlbums = if (allSeedSongs.size > cleanedSeedSongs.size) {
-            searchAlbums(trimmed, limit = limit, seedSongs = allSeedSongs)
+            mergeAlbumsWithSeedSongs(albums, allSeedSongs, queryTokens, compactQuery, limit)
         } else {
             albums
         }.filter(::isAllowedUserFacingAlbum)
@@ -357,6 +506,9 @@ class UnifiedMusicRepository(
             (hiddenOstRef != null && matchingSongs.isNotEmpty())
 
         if (!shouldBuildSoundtrackCollection || queryTokens.isEmpty()) {
+            if (enrichedAlbums.isNotEmpty()) {
+                soundtrackAlbumCache[cacheKey] = CachedAlbums(enrichedAlbums, System.currentTimeMillis())
+            }
             return@coroutineScope enrichedAlbums
         }
 
@@ -371,6 +523,9 @@ class UnifiedMusicRepository(
         )
 
         if (collectionDetails == null || collectionDetails.tracks.isEmpty()) {
+            if (enrichedAlbums.isNotEmpty()) {
+                soundtrackAlbumCache[cacheKey] = CachedAlbums(enrichedAlbums, System.currentTimeMillis())
+            }
             return@coroutineScope enrichedAlbums
         }
 
@@ -393,10 +548,16 @@ class UnifiedMusicRepository(
             constituentAlbums = matchingAlbums
         )
 
-        (listOf(collectionSummary) + enrichedAlbums)
+        val finalAlbums = (listOf(collectionSummary) + enrichedAlbums)
             .filter(::isAllowedUserFacingAlbum)
             .distinctBy { "${it.sourceProvider.lowercase()}|${it.id}" }
             .take(limit)
+        if (finalAlbums.isNotEmpty()) {
+            soundtrackAlbumCache[cacheKey] = CachedAlbums(finalAlbums, System.currentTimeMillis())
+        }
+        finalAlbums
+            }
+        }
     }
 
     suspend fun getAlbumDetails(album: AlbumSearchResult): Result<AlbumDetails?> {
@@ -710,26 +871,56 @@ class UnifiedMusicRepository(
         return tokensA.isNotEmpty() && tokensB.isNotEmpty() && tokensA.any { it in tokensB }
     }
 
-    suspend fun searchArtists(query: String, limit: Int = 15): List<OnlineArtistResult> = coroutineScope {
+    suspend fun searchArtists(
+        query: String,
+        limit: Int = 15,
+        seedSongs: List<Song> = emptyList(),
+        fallbackToSongSearch: Boolean = true
+    ): List<OnlineArtistResult> {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) return@coroutineScope emptyList()
+        if (trimmed.isBlank()) return emptyList()
 
-        val jioSaavn = userFacingOnlineProviders().filterIsInstance<JioSaavnMusicProvider>().firstOrNull()
-        val directArtists = if (jioSaavn != null) {
-            runCatching {
-                withTimeoutOrNull(4500L) { jioSaavn.searchArtists(trimmed, limit) }?.getOrNull() ?: emptyList()
-            }.getOrDefault(emptyList())
-        } else {
-            emptyList()
+        peekCachedArtists(trimmed, limit)?.let { return it }
+
+        val cacheKey = "artists_${trimmed.lowercase()}_$limit"
+        val mutex = inFlightArtistMutexes.computeIfAbsent(cacheKey) { Mutex() }
+        return mutex.withLock {
+            peekCachedArtists(trimmed, limit)?.let { return@withLock it }
+
+            val jioSaavn = userFacingOnlineProviders().filterIsInstance<JioSaavnMusicProvider>().firstOrNull()
+            val directArtists = if (jioSaavn != null) {
+                runCatching {
+                    withTimeoutOrNull(4000L) { jioSaavn.searchArtists(trimmed, limit) }?.getOrNull() ?: emptyList()
+                }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+
+            val resolved = if (directArtists.isNotEmpty()) {
+                directArtists.take(limit)
+            } else if (seedSongs.isNotEmpty() || fallbackToSongSearch) {
+                val sourceSongs = seedSongs.ifEmpty {
+                    peekCachedSongs(trimmed, limit = 35) ?: searchAll(trimmed, limit = 25)
+                }
+                deriveArtistsFromSongs(trimmed, sourceSongs, limit)
+            } else {
+                emptyList()
+            }
+
+            artistSearchCache[cacheKey] = CachedArtists(resolved, System.currentTimeMillis())
+            resolved
         }
+    }
 
-        if (directArtists.isNotEmpty()) {
-            return@coroutineScope directArtists.take(limit)
-        }
-
-        // Derive verified matching artists from JioSaavn song search if artist endpoint unavailable
+    fun deriveArtistsFromSongs(
+        query: String,
+        songs: List<Song>,
+        limit: Int = 15
+    ): List<OnlineArtistResult> {
+        val trimmed = query.trim()
+        if (trimmed.isBlank() || songs.isEmpty()) return emptyList()
         val tokens = tokenize(trimmed)
-        searchAll(trimmed, limit = 25)
+        val derived = songs
             .filter { it.sourceProvider.equals("JioSaavn", ignoreCase = true) || providersOverride != null }
             .flatMap { song ->
                 song.artist.split(",").map { name -> name.trim() to song.albumArtUri }
@@ -749,10 +940,25 @@ class UnifiedMusicRepository(
                 )
             }
             .take(limit)
+        if (derived.isNotEmpty()) {
+            artistSearchCache["artists_${trimmed.lowercase()}_$limit"] = CachedArtists(derived, System.currentTimeMillis())
+        }
+        return derived
     }
 
     suspend fun getStreamUrl(song: Song): Result<String> {
+        ensureProvidersInitialized()
         return ProviderRegistry.getStreamUrl(song)
+    }
+
+    private fun trimOldestEntries(map: ConcurrentHashMap<String, CachedResult>) {
+        val toRemove = map.entries.sortedBy { it.value.timestamp }.take(15).map { it.key }
+        toRemove.forEach { map.remove(it) }
+    }
+
+    private fun trimOldestAlbumEntries() {
+        val toRemove = albumSearchCache.entries.sortedBy { it.value.timestamp }.take(15).map { it.key }
+        toRemove.forEach { albumSearchCache.remove(it) }
     }
 
     private fun deduplicateSongsPreferringFullStreams(songs: List<Song>): List<Song> {
@@ -1082,6 +1288,7 @@ class UnifiedMusicRepository(
     }
 
     companion object {
+        private const val MAX_SEARCH_CACHE_ENTRIES = 60
         private val ARCHIVE_NOISE_KEYWORDS = listOf(
             "radio ceylon",
             "vividh bharati",

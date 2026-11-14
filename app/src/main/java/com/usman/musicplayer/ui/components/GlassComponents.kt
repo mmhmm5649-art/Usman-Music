@@ -44,11 +44,12 @@ import dev.chrisbanes.haze.hazeChild
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -100,7 +101,7 @@ fun GlassCard(
             backgroundColor = Color.Transparent,
             tint = HazeDefaults.tint(backgroundColor.copy(alpha = 0.55f)),
             blurRadius = hazeBlurRadius,
-            noiseFactor = 0.05f
+            noiseFactor = 0f
         )
     }
 
@@ -128,47 +129,44 @@ fun GlassCard(
             )
         }
 
-        // 2. Specular reflection and chromatic rim refraction
+        // 2. Specular reflection and chromatic rim refraction (cached until bounds resize)
         if (showSpecularHighlight) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .drawBehind {
-                        // High specular white gleam along the top rim
+                    .drawWithCache {
                         val gleamWidth = size.width * 0.75f
                         val startX = (size.width - gleamWidth) / 2f
-                        drawLine(
-                            brush = Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color(0x55FFFFFF),
-                                    Color(0xA0FFFFFF),
-                                    Color(0x55FFFFFF),
-                                    Color.Transparent
-                                ),
-                                startX = startX,
-                                endX = startX + gleamWidth
-                            ),
-                            start = Offset(startX, 1f),
-                            end = Offset(startX + gleamWidth, 1f),
-                            strokeWidth = 1.5f
+                        val endX = startX + gleamWidth
+                        val leftEndY = size.height * 0.5f
+                        val topBrush = Brush.horizontalGradient(
+                            colors = GLASS_TOP_GLEAM_COLORS,
+                            startX = startX,
+                            endX = endX
                         )
-
-                        // Subtle left specular light catch
-                        drawLine(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color(0x60FFFFFF),
-                                    Color(0x2538BDF8),
-                                    Color.Transparent
-                                ),
-                                startY = 2f,
-                                endY = size.height * 0.5f
-                            ),
-                            start = Offset(1f, 2f),
-                            end = Offset(1f, size.height * 0.5f),
-                            strokeWidth = 1f
+                        val leftBrush = Brush.verticalGradient(
+                            colors = GLASS_LEFT_GLEAM_COLORS,
+                            startY = 2f,
+                            endY = leftEndY
                         )
+                        val topStart = Offset(startX, 1f)
+                        val topEnd = Offset(endX, 1f)
+                        val leftStart = Offset(1f, 2f)
+                        val leftEnd = Offset(1f, leftEndY)
+                        onDrawBehind {
+                            drawLine(
+                                brush = topBrush,
+                                start = topStart,
+                                end = topEnd,
+                                strokeWidth = 1.5f
+                            )
+                            drawLine(
+                                brush = leftBrush,
+                                start = leftStart,
+                                end = leftEnd,
+                                strokeWidth = 1f
+                            )
+                        }
                     }
             )
         }
@@ -233,6 +231,11 @@ fun GlassButton(
 
     Box(
         modifier = modifier
+            .graphicsLayer {
+                val s = scale.value
+                scaleX = s
+                scaleY = s
+            }
             .clip(shape)
             .background(if (isPressed) backgroundColor.copy(alpha = 0.35f) else backgroundColor, shape)
             .border(borderWidth, borderBrush, shape)
@@ -241,15 +244,15 @@ fun GlassButton(
                 indication = null,
                 onClick = onClick
             )
-            .drawBehind {
-                // Diagonal sheen reflection inside the glass button
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0x20FFFFFF), Color.Transparent),
-                        center = Offset(size.width * 0.35f, size.height * 0.25f),
-                        radius = size.width * 0.65f
-                    )
+            .drawWithCache {
+                val sheenBrush = Brush.radialGradient(
+                    colors = GLASS_BUTTON_SHEEN_COLORS,
+                    center = Offset(size.width * 0.35f, size.height * 0.25f),
+                    radius = (size.width * 0.65f).coerceAtLeast(1f)
                 )
+                onDrawBehind {
+                    drawCircle(brush = sheenBrush)
+                }
             }
             .testTag(testTag),
         content = content
@@ -273,14 +276,15 @@ fun GlassButtonSurface(
             .clip(shape)
             .background(backgroundColor, shape)
             .border(borderWidth, borderBrush, shape)
-            .drawBehind {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0x18FFFFFF), Color.Transparent),
-                        center = Offset(size.width * 0.35f, size.height * 0.25f),
-                        radius = size.width * 0.6f
-                    )
+            .drawWithCache {
+                val sheenBrush = Brush.radialGradient(
+                    colors = GLASS_SURFACE_SHEEN_COLORS,
+                    center = Offset(size.width * 0.35f, size.height * 0.25f),
+                    radius = (size.width * 0.6f).coerceAtLeast(1f)
                 )
+                onDrawBehind {
+                    drawCircle(brush = sheenBrush)
+                }
             },
         content = content
     )
@@ -475,31 +479,57 @@ fun GlassArtworkContainer(
             .border(1.5.dp, LiquidGlassBorderBrush, shape)
             .then(
                 if (showSpecularRim) {
-                    Modifier.drawBehind {
+                    Modifier.drawWithCache {
                         val gleamWidth = size.width * 0.6f
                         val startX = (size.width - gleamWidth) / 2f
-                        drawLine(
-                            brush = Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color(0x40FFFFFF),
-                                    Color(0x80FFFFFF),
-                                    Color(0x40FFFFFF),
-                                    Color.Transparent
-                                ),
-                                startX = startX,
-                                endX = startX + gleamWidth
-                            ),
-                            start = Offset(startX, 1.2f),
-                            end = Offset(startX + gleamWidth, 1.2f),
-                            strokeWidth = 2f
+                        val endX = startX + gleamWidth
+                        val rimBrush = Brush.horizontalGradient(
+                            colors = GLASS_ARTWORK_RIM_COLORS,
+                            startX = startX,
+                            endX = endX
                         )
+                        val startOffset = Offset(startX, 1.2f)
+                        val endOffset = Offset(endX, 1.2f)
+                        onDrawBehind {
+                            drawLine(
+                                brush = rimBrush,
+                                start = startOffset,
+                                end = endOffset,
+                                strokeWidth = 2f
+                            )
+                        }
                     }
                 } else Modifier
             ),
         content = content
     )
 }
+
+private val GLASS_TOP_GLEAM_COLORS = listOf(
+    Color.Transparent,
+    Color(0x55FFFFFF),
+    Color(0xA0FFFFFF),
+    Color(0x55FFFFFF),
+    Color.Transparent
+)
+
+private val GLASS_LEFT_GLEAM_COLORS = listOf(
+    Color(0x60FFFFFF),
+    Color(0x2538BDF8),
+    Color.Transparent
+)
+
+private val GLASS_BUTTON_SHEEN_COLORS = listOf(Color(0x20FFFFFF), Color.Transparent)
+private val GLASS_SURFACE_SHEEN_COLORS = listOf(Color(0x18FFFFFF), Color.Transparent)
+private val GLASS_ARTWORK_RIM_COLORS = listOf(
+    Color.Transparent,
+    Color(0x40FFFFFF),
+    Color(0x80FFFFFF),
+    Color(0x40FFFFFF),
+    Color.Transparent
+)
+private val TV_FOCUS_ACTIVE_BRUSH = Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF9333EA)))
+private val TV_FOCUS_INACTIVE_BRUSH = Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
 
 /**
  * Modifier extension providing a luminous neon focus highlight and D-pad focusability for Android TV.
@@ -512,7 +542,7 @@ fun Modifier.tvFocusHighlight(shape: Shape = RoundedCornerShape(16.dp)): Modifie
         .onFocusChanged { isFocused = it.isFocused }
         .border(
             width = if (isFocused) 2.5.dp else 0.dp,
-            brush = if (isFocused) Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF9333EA))) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent)),
+            brush = if (isFocused) TV_FOCUS_ACTIVE_BRUSH else TV_FOCUS_INACTIVE_BRUSH,
             shape = shape
         )
 }

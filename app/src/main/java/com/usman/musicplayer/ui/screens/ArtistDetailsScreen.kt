@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -67,6 +68,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.ArtistDetailsData
 import com.usman.musicplayer.model.CuratedPlaylist
@@ -83,6 +85,8 @@ import com.usman.musicplayer.ui.theme.TextMuted
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
+
+private val JIOSAAVN_ARTIST_REGEX = Regex("(?i)\\bjiosaavn(\\s*artist)?\\b")
 
 @Composable
 fun ArtistDetailsScreen(
@@ -558,8 +562,19 @@ private fun ArtistCircularHeroPhoto(
         contentAlignment = Alignment.Center
     ) {
         if (!artworkUri.isNullOrBlank()) {
+            val context = LocalContext.current
+            val imageLoader = remember(context) { AppImageLoader.get(context) }
+            val imageReq = remember(context, artworkUri, size) {
+                AppImageLoader.buildImageRequest(
+                    context = context,
+                    data = artworkUri,
+                    widthPx = (size * 2).coerceAtLeast(AppImageLoader.SIZE_CARD_THUMB_PX),
+                    heightPx = (size * 2).coerceAtLeast(AppImageLoader.SIZE_CARD_THUMB_PX)
+                )
+            }
             AsyncImage(
-                model = artworkUri,
+                model = imageReq,
+                imageLoader = imageLoader,
                 contentDescription = artistName,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -602,14 +617,18 @@ private fun ArtistHeroMetadata(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        val cleanSubtitle = subtitle
-            ?.replace(Regex("(?i)\\bjiosaavn(\\s*artist)?\\b"), "")
-            ?.trim(' ', '•', '-')
-            ?.takeIf { it.isNotBlank() }
-        val badgeParts = buildList {
-            if (languages.isNotEmpty()) add(languages.joinToString(" • "))
-            else if (!cleanSubtitle.isNullOrBlank()) add(cleanSubtitle)
-            else add("Featured Artist")
+        val cleanSubtitle = remember(subtitle) {
+            subtitle
+                ?.replace(JIOSAAVN_ARTIST_REGEX, "")
+                ?.trim(' ', '•', '-')
+                ?.takeIf { it.isNotBlank() }
+        }
+        val badgeParts = remember(languages, cleanSubtitle) {
+            buildList {
+                if (languages.isNotEmpty()) add(languages.joinToString(" • "))
+                else if (!cleanSubtitle.isNullOrBlank()) add(cleanSubtitle)
+                else add("Featured Artist")
+            }
         }
         Text(
             text = badgeParts.joinToString(" • "),
@@ -884,8 +903,19 @@ private fun ArtistAlbumCard(
             contentAlignment = Alignment.Center
         ) {
             if (!album.artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val albumReq = remember(context, album.artworkUri) {
+                    AppImageLoader.buildImageRequest(
+                        context = context,
+                        data = album.artworkUri,
+                        widthPx = AppImageLoader.SIZE_CARD_THUMB_PX,
+                        heightPx = AppImageLoader.SIZE_CARD_THUMB_PX
+                    )
+                }
                 AsyncImage(
-                    model = album.artworkUri,
+                    model = albumReq,
+                    imageLoader = imageLoader,
                     contentDescription = album.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -940,8 +970,19 @@ private fun ArtistPlaylistCard(
             contentAlignment = Alignment.Center
         ) {
             if (!playlist.coverArtUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val playlistReq = remember(context, playlist.coverArtUri) {
+                    AppImageLoader.buildImageRequest(
+                        context = context,
+                        data = playlist.coverArtUri,
+                        widthPx = AppImageLoader.SIZE_CARD_THUMB_PX,
+                        heightPx = AppImageLoader.SIZE_CARD_THUMB_PX
+                    )
+                }
                 AsyncImage(
-                    model = playlist.coverArtUri,
+                    model = playlistReq,
+                    imageLoader = imageLoader,
                     contentDescription = playlist.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop

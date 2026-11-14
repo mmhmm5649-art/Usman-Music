@@ -33,18 +33,24 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import com.usman.musicplayer.R
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.CuratedPlaylist
 import com.usman.musicplayer.model.HomeDiscoverySection
@@ -174,24 +180,26 @@ fun HomeLanguageFilterChipsRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         HomeLanguageFilter.entries.forEach { filter ->
-            val isSelected = filter == selectedLanguage
-            val backgroundColor = if (isSelected) SoftCyan else Color(0x1EFFFFFF)
-            val textColor = if (isSelected) AmoledBlack else TextPrimary
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(backgroundColor)
-                    .clickable { onSelectLanguage(filter) }
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .testTag("home_lang_chip_${filter.name.lowercase()}"),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = filter.chipLabel,
-                    color = textColor,
-                    fontSize = 13.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                )
+            key(filter.name) {
+                val isSelected = filter == selectedLanguage
+                val backgroundColor = if (isSelected) SoftCyan else Color(0x1EFFFFFF)
+                val textColor = if (isSelected) AmoledBlack else TextPrimary
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(backgroundColor)
+                        .clickable { onSelectLanguage(filter) }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .testTag("home_lang_chip_${filter.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = filter.chipLabel,
+                        color = textColor,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
             }
         }
     }
@@ -204,80 +212,95 @@ fun HomeQuickAccessGrid(
     modifier: Modifier = Modifier
 ) {
     if (cards.isEmpty()) return
+    val context = LocalContext.current
+    val imageLoader = remember(context) { AppImageLoader.get(context) }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        val chunks = cards.chunked(2)
+        val chunks = remember(cards) { cards.chunked(2) }
         chunks.forEach { rowCards ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 rowCards.forEach { card ->
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(64.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x16FFFFFF))
-                            .clickable { onCardClick(card) }
-                            .padding(8.dp)
-                            .testTag("home_quick_card_${card.id}"),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    key(card.id) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(64.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0x16FFFFFF))
+                                .clickable { onCardClick(card) }
+                                .padding(8.dp)
+                                .testTag("home_quick_card_${card.id}"),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0x3300E5FF)),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                if (!card.artworkUri.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = card.artworkUri,
-                                        contentDescription = card.title,
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0x3300E5FF)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    val artUri = card.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+                                    if (artUri != null) {
+                                        val request = remember(context, artUri) {
+                                            AppImageLoader.buildImageRequest(
+                                                context = context,
+                                                data = artUri,
+                                                widthPx = AppImageLoader.SIZE_MICRO_THUMB_PX,
+                                                heightPx = AppImageLoader.SIZE_MICRO_THUMB_PX
+                                            )
+                                        }
+                                        AsyncImage(
+                                            model = request,
+                                            imageLoader = imageLoader,
+                                            contentDescription = card.title,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = when (card.type) {
+                                                HomeQuickAccessType.TELUGU_HITS,
+                                                HomeQuickAccessType.TAMIL_HITS,
+                                                HomeQuickAccessType.ENGLISH_HITS,
+                                                HomeQuickAccessType.HINDI_HITS -> Icons.Default.Album
+                                                HomeQuickAccessType.RECENTLY_PLAYED -> Icons.Default.Search
+                                                HomeQuickAccessType.FAVORITE_SONGS -> Icons.Default.Movie
+                                            },
+                                            contentDescription = null,
+                                            tint = SoftCyan,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = card.title,
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                } else {
-                                    Icon(
-                                        imageVector = when (card.type) {
-                                            HomeQuickAccessType.TELUGU_HITS,
-                                            HomeQuickAccessType.TAMIL_HITS,
-                                            HomeQuickAccessType.ENGLISH_HITS,
-                                            HomeQuickAccessType.HINDI_HITS -> Icons.Default.Album
-                                            HomeQuickAccessType.RECENTLY_PLAYED -> Icons.Default.Search
-                                            HomeQuickAccessType.FAVORITE_SONGS -> Icons.Default.Movie
-                                        },
-                                        contentDescription = null,
-                                        tint = SoftCyan,
-                                        modifier = Modifier.size(24.dp)
+                                    Text(
+                                        text = card.subtitle,
+                                        color = TextMuted,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = card.title,
-                                    color = TextPrimary,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = card.subtitle,
-                                    color = TextMuted,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
                             }
                         }
                     }
@@ -298,6 +321,9 @@ fun FeaturedHeroSpotlightCard(
     onOpenAlbum: (AlbumSearchResult) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val imageLoader = remember(context) { AppImageLoader.get(context) }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -308,9 +334,19 @@ fun FeaturedHeroSpotlightCard(
             .clickable { onPlayHero() }
             .testTag("featured_hero_card")
     ) {
-        if (!hero.artworkUri.isNullOrBlank()) {
+        val heroArt = hero.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+        if (heroArt != null) {
+            val heroRequest = remember(context, heroArt) {
+                AppImageLoader.buildImageRequest(
+                    context = context,
+                    data = heroArt,
+                    widthPx = AppImageLoader.SIZE_HERO_WIDTH_PX,
+                    heightPx = AppImageLoader.SIZE_HERO_HEIGHT_PX
+                )
+            }
             AsyncImage(
-                model = hero.artworkUri,
+                model = heroRequest,
+                imageLoader = imageLoader,
                 contentDescription = hero.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -447,16 +483,21 @@ fun HomeDiscoveryCarouselSection(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
+        val context = LocalContext.current
+        val imageLoader = remember(context) { AppImageLoader.get(context) }
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             when (section.contentType) {
                 HomeSectionContentType.SONGS -> {
-                    section.songs.forEach { song ->
+                    items(
+                        items = section.songs,
+                        key = { "${section.id}_${it.id}_${it.filePath}" },
+                        contentType = { "home_song_card" }
+                    ) { song ->
                         Column(
                             modifier = Modifier
                                 .width(130.dp)
@@ -472,7 +513,8 @@ fun HomeDiscoveryCarouselSection(
                                     song = song,
                                     modifier = Modifier.fillMaxSize(),
                                     cornerRadius = 12.dp,
-                                    showGlowBorder = false
+                                    showGlowBorder = false,
+                                    targetSizePx = AppImageLoader.SIZE_CARD_THUMB_PX
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -495,7 +537,11 @@ fun HomeDiscoveryCarouselSection(
                     }
                 }
                 HomeSectionContentType.ALBUMS -> {
-                    section.albums.forEach { album ->
+                    items(
+                        items = section.albums,
+                        key = { "${section.id}_${it.id}" },
+                        contentType = { "home_album_card" }
+                    ) { album ->
                         Column(
                             modifier = Modifier
                                 .width(130.dp)
@@ -512,7 +558,8 @@ fun HomeDiscoveryCarouselSection(
                                     title = album.title,
                                     artist = album.artist,
                                     modifier = Modifier.fillMaxSize(),
-                                    cornerRadius = 12.dp
+                                    cornerRadius = 12.dp,
+                                    targetSizePx = AppImageLoader.SIZE_CARD_THUMB_PX
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -535,7 +582,11 @@ fun HomeDiscoveryCarouselSection(
                     }
                 }
                 HomeSectionContentType.ARTISTS -> {
-                    section.artists.forEach { artist ->
+                    items(
+                        items = section.artists,
+                        key = { "${section.id}_${it.id}_${it.name}" },
+                        contentType = { "home_artist_card" }
+                    ) { artist ->
                         Column(
                             modifier = Modifier
                                 .width(110.dp)
@@ -549,9 +600,19 @@ fun HomeDiscoveryCarouselSection(
                                     .background(Color(0xFF181D2C)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (!artist.artworkUri.isNullOrBlank()) {
+                                val artistArt = artist.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+                                if (artistArt != null) {
+                                    val artistReq = remember(context, artistArt) {
+                                        AppImageLoader.buildImageRequest(
+                                            context = context,
+                                            data = artistArt,
+                                            widthPx = 260,
+                                            heightPx = 260
+                                        )
+                                    }
                                     AsyncImage(
-                                        model = artist.artworkUri,
+                                        model = artistReq,
+                                        imageLoader = imageLoader,
                                         contentDescription = artist.name,
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
@@ -578,7 +639,11 @@ fun HomeDiscoveryCarouselSection(
                     }
                 }
                 HomeSectionContentType.PLAYLISTS -> {
-                    section.playlists.forEach { playlist ->
+                    items(
+                        items = section.playlists,
+                        key = { "${section.id}_${it.id}" },
+                        contentType = { "home_playlist_card" }
+                    ) { playlist ->
                         Column(
                             modifier = Modifier
                                 .width(130.dp)
@@ -595,7 +660,8 @@ fun HomeDiscoveryCarouselSection(
                                     title = playlist.title,
                                     artist = playlist.description,
                                     modifier = Modifier.fillMaxSize(),
-                                    cornerRadius = 12.dp
+                                    cornerRadius = 12.dp,
+                                    targetSizePx = AppImageLoader.SIZE_CARD_THUMB_PX
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))

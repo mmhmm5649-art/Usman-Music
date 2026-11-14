@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,9 +27,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.data.repository.MusicGenreCategory
 import com.usman.musicplayer.model.AlbumSearchResult
@@ -77,9 +82,9 @@ fun HomeScreen(
     onOpenAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenArtist: (OnlineArtistResult) -> Unit = { artist -> onSearchCategory(artist.name) },
     onSavePlaylistToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
-    val listState = rememberLazyListState()
 
     val isNewReleasesMode = uiState.activeHomeGenreTab == "New Releases"
 
@@ -112,6 +117,37 @@ fun HomeScreen(
         }
     }
 
+    val context = LocalContext.current
+    val visiblePrefetchSignature = remember(uiState.homeQuickCards, uiState.homeHeroFeature, visibleSections) {
+        buildList {
+            uiState.homeQuickCards.take(6).forEach { card ->
+                card.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_MICRO_THUMB_PX) }
+            }
+            uiState.homeHeroFeature?.artworkUri?.takeIf { it.isNotBlank() }?.let {
+                add(it to AppImageLoader.SIZE_HERO_WIDTH_PX)
+            }
+            visibleSections.take(3).forEach { section ->
+                when (section.contentType) {
+                    com.usman.musicplayer.model.HomeSectionContentType.SONGS ->
+                        section.songs.take(4).forEach { s -> s.albumArtUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                    com.usman.musicplayer.model.HomeSectionContentType.ALBUMS ->
+                        section.albums.take(4).forEach { a -> a.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                    com.usman.musicplayer.model.HomeSectionContentType.ARTISTS ->
+                        section.artists.take(4).forEach { ar -> ar.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to 260) } }
+                    com.usman.musicplayer.model.HomeSectionContentType.PLAYLISTS ->
+                        section.playlists.take(4).forEach { p -> p.coverArtUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                }
+            }
+        }.distinctBy { it.first }
+    }
+
+    LaunchedEffect(visiblePrefetchSignature) {
+        visiblePrefetchSignature.forEach { (url, sizePx) ->
+            val heightPx = if (sizePx == AppImageLoader.SIZE_HERO_WIDTH_PX) AppImageLoader.SIZE_HERO_HEIGHT_PX else sizePx
+            AppImageLoader.prefetchArtwork(context, url, widthPx = sizePx, heightPx = heightPx)
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -137,7 +173,8 @@ fun HomeScreen(
             state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .testTag("home_lazy_column"),
             contentPadding = PaddingValues(top = 8.dp, bottom = 180.dp)
         ) {
             item(key = "home_header") {

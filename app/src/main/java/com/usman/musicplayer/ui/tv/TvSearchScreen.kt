@@ -18,8 +18,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -43,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -76,7 +80,8 @@ fun TvSearchScreen(
     onOpenOnlineAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenOnlineArtist: (OnlineArtistResult) -> Unit = {},
     onOpenLocalAlbum: (Album) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    gridState: LazyGridState = rememberLazyGridState()
 ) {
     val focusManager = LocalFocusManager.current
     val defaultQuickQueries = listOf("Nazar Lagi", "Sai Abhyankkar", "Telugu Hits", "Asees Kaur", "Pushpa 2", "Arjan Vailly")
@@ -128,9 +133,6 @@ fun TvSearchScreen(
             value = uiState.searchQuery,
             onValueChange = { q ->
                 onSearchQueryChange(q)
-                if (isOnlineMode && q.trim().length >= 2) {
-                    onTriggerOnlineSearch(q.trim())
-                }
             },
             placeholder = { Text("Search songs, movies, albums, or artists...", color = Color(0xFF64748B), fontSize = 16.sp) },
             leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = SoftCyan) },
@@ -216,8 +218,19 @@ fun TvSearchScreen(
             uiState.deviceMatchingAlbums.isNotEmpty() ||
             uiState.deviceMatchingArtists.isNotEmpty()
 
+        if (isOnlineMode && uiState.isOnlineSearching && hasAnyOnlineResults) {
+            LinearProgressIndicator(
+                color = SoftCyan,
+                trackColor = Color(0x22FFFFFF),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .height(2.dp)
+            )
+        }
+
         when {
-            isOnlineMode && uiState.isOnlineSearching -> {
+            isOnlineMode && uiState.isOnlineSearching && !hasAnyOnlineResults -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = SoftCyan, modifier = Modifier.size(44.dp))
@@ -229,7 +242,11 @@ fun TvSearchScreen(
             uiState.searchQuery.isNotBlank() && ((isOnlineMode && !hasAnyOnlineResults) || (!isOnlineMode && !hasAnyDeviceResults)) -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "No matching results found for '${uiState.searchQuery}'",
+                        text = if (isOnlineMode && !uiState.onlineSearchError.isNullOrBlank()) {
+                            uiState.onlineSearchError
+                        } else {
+                            "No matching results found for '${uiState.searchQuery}'"
+                        },
                         color = Color(0xFF94A3B8),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium
@@ -238,10 +255,12 @@ fun TvSearchScreen(
             }
             else -> {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Adaptive(minSize = 168.dp),
                     contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.testTag("tv_search_lazy_grid")
                 ) {
                     if (isOnlineMode) {
                         val showAlbums = (filter == SearchFilterCategory.ALL || filter == SearchFilterCategory.ALBUMS) &&

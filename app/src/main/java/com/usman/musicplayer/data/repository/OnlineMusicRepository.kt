@@ -38,13 +38,8 @@ object OnlineMusicRepository {
 
     private const val TAG = "OnlineMusicRepo"
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        })
-        .build()
+    private val okHttpClient: OkHttpClient
+        get() = com.usman.musicplayer.data.AppImageLoader.getApiOkHttpClient()
 
     private val moshi = Moshi.Builder()
         .add(KotlinJsonAdapterFactory())

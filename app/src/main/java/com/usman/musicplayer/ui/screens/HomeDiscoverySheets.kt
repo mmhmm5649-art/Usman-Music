@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -54,12 +55,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.data.repository.HomeDiscoveryCatalog
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.ArtistMatchingPolicy
@@ -78,6 +81,8 @@ import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextMuted
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.TextSecondary
+
+private val JIOSAAVN_ARTIST_REGEX = Regex("(?i)\\bjiosaavn(\\s*artist)?\\b")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,11 +122,18 @@ fun HomeCollectionDetailSheet(
                         .background(Color(0x337C3AED)),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (!playlist.coverArtUri.isNullOrBlank()) {
+                    val coverUri = playlist.coverArtUri?.trim()?.takeIf { it.isNotEmpty() }
+                    if (coverUri != null) {
+                        val context = LocalContext.current
+                        val imageLoader = remember(context) { AppImageLoader.get(context) }
+                        val coverReq = remember(context, coverUri) {
+                            AppImageLoader.buildImageRequest(context, coverUri, 200, 200)
+                        }
                         AsyncImage(
-                            model = playlist.coverArtUri,
+                            model = coverReq,
+                            imageLoader = imageLoader,
                             contentDescription = playlist.title,
-                            modifier = Modifier.fillMaxSizeCompat(),
+                            modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
                         )
                     } else {
@@ -465,11 +477,23 @@ fun HomeSeeAllSheet(
                                         .background(Color(0xFF181D2C)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (!album.artworkUri.isNullOrBlank()) {
+                                    val albumArt = album.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+                                    if (albumArt != null) {
+                                        val context = LocalContext.current
+                                        val imageLoader = remember(context) { AppImageLoader.get(context) }
+                                        val albumReq = remember(context, albumArt) {
+                                            AppImageLoader.buildImageRequest(
+                                                context,
+                                                albumArt,
+                                                AppImageLoader.SIZE_MICRO_THUMB_PX,
+                                                AppImageLoader.SIZE_MICRO_THUMB_PX
+                                            )
+                                        }
                                         AsyncImage(
-                                            model = album.artworkUri,
+                                            model = albumReq,
+                                            imageLoader = imageLoader,
                                             contentDescription = album.title,
-                                            modifier = Modifier.fillMaxSizeCompat(),
+                                            modifier = Modifier.fillMaxSize(),
                                             contentScale = ContentScale.Crop
                                         )
                                     } else {
@@ -551,11 +575,23 @@ fun HomeSeeAllSheet(
                                         .background(Color(0x337C3AED)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (!playlist.coverArtUri.isNullOrBlank()) {
+                                    val playlistArt = playlist.coverArtUri?.trim()?.takeIf { it.isNotEmpty() }
+                                    if (playlistArt != null) {
+                                        val context = LocalContext.current
+                                        val imageLoader = remember(context) { AppImageLoader.get(context) }
+                                        val playlistReq = remember(context, playlistArt) {
+                                            AppImageLoader.buildImageRequest(
+                                                context,
+                                                playlistArt,
+                                                AppImageLoader.SIZE_MICRO_THUMB_PX,
+                                                AppImageLoader.SIZE_MICRO_THUMB_PX
+                                            )
+                                        }
                                         AsyncImage(
-                                            model = playlist.coverArtUri,
+                                            model = playlistReq,
+                                            imageLoader = imageLoader,
                                             contentDescription = playlist.title,
-                                            modifier = Modifier.fillMaxSizeCompat(),
+                                            modifier = Modifier.fillMaxSize(),
                                             contentScale = ContentScale.Crop
                                         )
                                     } else {
@@ -803,7 +839,7 @@ private fun SheetArtistRow(
     val subtitleText = remember(artist.languages, artist.subtitle) {
         artist.languages.takeIf { it.isNotEmpty() }?.joinToString(" • ")
             ?: artist.subtitle
-                ?.replace(Regex("(?i)\\bjiosaavn(\\s*artist)?\\b"), "")
+                ?.replace(JIOSAAVN_ARTIST_REGEX, "")
                 ?.trim(' ', '•', '-')
                 ?.takeIf { it.isNotBlank() }
             ?: "Featured Artist"
@@ -825,11 +861,23 @@ private fun SheetArtistRow(
                 .background(Color(0xFF181D2C)),
             contentAlignment = Alignment.Center
         ) {
-            if (!artist.artworkUri.isNullOrBlank()) {
+            val artistArt = artist.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            if (artistArt != null) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val artistReq = remember(context, artistArt) {
+                    AppImageLoader.buildImageRequest(
+                        context,
+                        artistArt,
+                        AppImageLoader.SIZE_MICRO_THUMB_PX,
+                        AppImageLoader.SIZE_MICRO_THUMB_PX
+                    )
+                }
                 AsyncImage(
-                    model = artist.artworkUri,
+                    model = artistReq,
+                    imageLoader = imageLoader,
                     contentDescription = artist.name,
-                    modifier = Modifier.fillMaxSizeCompat(),
+                    modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
             } else {
@@ -930,5 +978,4 @@ internal fun buildGroupedArtistsForSeeAll(
     return groups
 }
 
-private fun Modifier.fillMaxSizeCompat(): Modifier = this.then(Modifier.fillMaxWidth().height(76.dp))
 

@@ -70,7 +70,8 @@ fun AlbumArtThumbnail(
     artist: String,
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 14.dp,
-    showGlowBorder: Boolean = false
+    showGlowBorder: Boolean = false,
+    targetSizePx: Int? = null
 ) {
     val placeholderSong = remember(artworkUri, title, artist) {
         Song(
@@ -89,7 +90,8 @@ fun AlbumArtThumbnail(
         song = placeholderSong,
         modifier = modifier,
         cornerRadius = cornerRadius,
-        showGlowBorder = showGlowBorder
+        showGlowBorder = showGlowBorder,
+        targetSizePx = targetSizePx
     )
 }
 
@@ -180,7 +182,8 @@ fun OnlineAlbumResultCard(
                 title = album.title,
                 artist = album.artist,
                 modifier = Modifier.fillMaxSize(),
-                cornerRadius = 12.dp
+                cornerRadius = 12.dp,
+                targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_CARD_THUMB_PX
             )
         }
 
@@ -347,7 +350,8 @@ fun TvAlbumGridCard(
                 title = album.title,
                 artist = album.artist,
                 modifier = Modifier.fillMaxSize(),
-                cornerRadius = 12.dp
+                cornerRadius = 12.dp,
+                targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_CARD_THUMB_PX
             )
             if (album.sourceProvider.equals("Device Library", ignoreCase = true)) {
                 Box(
@@ -455,7 +459,8 @@ fun OnlineArtistResultRow(
                     title = artist.name,
                     artist = artist.name,
                     modifier = Modifier.fillMaxSize(),
-                    cornerRadius = 25.dp
+                    cornerRadius = 25.dp,
+                    targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_MICRO_THUMB_PX
                 )
             }
         } else {

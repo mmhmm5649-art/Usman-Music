@@ -4,6 +4,13 @@ import android.content.Context
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import com.usman.musicplayer.model.AlbumSearchResult
+import com.usman.musicplayer.model.CuratedPlaylist
+import com.usman.musicplayer.model.HomeDiscoverySection
+import com.usman.musicplayer.model.HomeLanguageFilter
+import com.usman.musicplayer.model.HomeLanguagePolicy
+import com.usman.musicplayer.model.HomeSectionContentType
+import com.usman.musicplayer.model.OnlineArtistResult
 import com.usman.musicplayer.model.PlaybackType
 import com.usman.musicplayer.model.Song
 
@@ -33,6 +40,55 @@ data class PersistedPlayStat(
     val lastPlayedAtMs: Long
 )
 
+data class PersistedAlbumRecord(
+    val id: String,
+    val title: String,
+    val movieName: String? = null,
+    val artist: String,
+    val year: String? = null,
+    val songCount: Int? = null,
+    val artworkUri: String? = null,
+    val sourceProvider: String = "JioSaavn",
+    val externalUrl: String? = null,
+    val language: String? = null,
+    val isCompleteAlbum: Boolean = true
+)
+
+data class PersistedArtistRecord(
+    val id: String,
+    val name: String,
+    val artworkUri: String? = null,
+    val subtitle: String? = null,
+    val sourceProvider: String = "JioSaavn",
+    val languages: List<String> = emptyList()
+)
+
+data class PersistedPlaylistRecord(
+    val id: String,
+    val title: String,
+    val description: String = "",
+    val coverArtUri: String? = null,
+    val songs: List<PersistedSongRecord> = emptyList()
+)
+
+data class PersistedHomeSectionRecord(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val languageName: String,
+    val contentTypeName: String,
+    val songs: List<PersistedSongRecord> = emptyList(),
+    val albums: List<PersistedAlbumRecord> = emptyList(),
+    val artists: List<PersistedArtistRecord> = emptyList(),
+    val playlists: List<PersistedPlaylistRecord> = emptyList(),
+    val isPersonalized: Boolean = false
+)
+
+data class PersistedHomeSnapshot(
+    val savedAtMs: Long = 0L,
+    val sections: List<PersistedHomeSectionRecord> = emptyList()
+)
+
 class HomeUserSignalsStore(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -43,6 +99,8 @@ class HomeUserSignalsStore(context: Context) {
 
     private val playStatsType = Types.newParameterizedType(List::class.java, PersistedPlayStat::class.java)
     private val playStatsAdapter = moshi.adapter<List<PersistedPlayStat>>(playStatsType)
+
+    private val homeSnapshotAdapter = moshi.adapter(PersistedHomeSnapshot::class.java)
 
     fun loadFavorites(): List<Song> {
         val raw = prefs.getString(KEY_FAVORITES, null) ?: return emptyList()
@@ -112,6 +170,149 @@ class HomeUserSignalsStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    fun saveHomeSectionsSnapshot(sections: List<HomeDiscoverySection>) {
+        val populated = sections
+            .filter { it.hasContent }
+            .take(MAX_CACHED_HOME_SECTIONS)
+            .map { sec ->
+                PersistedHomeSectionRecord(
+                    id = sec.id,
+                    title = sec.title,
+                    subtitle = sec.subtitle,
+                    languageName = sec.language.name,
+                    contentTypeName = sec.contentType.name,
+                    songs = sec.songs
+                        .filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
+                        .take(MAX_CACHED_ITEMS_PER_SECTION)
+                        .map { it.toRecord() },
+                    albums = sec.albums
+                        .filter { HomeLanguagePolicy.isAllowedJioSaavnAlbum(it) }
+                        .take(MAX_CACHED_ITEMS_PER_SECTION)
+                        .map {
+                            PersistedAlbumRecord(
+                                id = it.id,
+                                title = it.title,
+                                movieName = it.movieName,
+                                artist = it.artist,
+                                year = it.year,
+                                songCount = it.songCount,
+                                artworkUri = it.artworkUri,
+                                sourceProvider = it.sourceProvider,
+                                externalUrl = it.externalUrl,
+                                language = it.language,
+                                isCompleteAlbum = it.isCompleteAlbum
+                            )
+                        },
+                    artists = sec.artists
+                        .take(MAX_CACHED_ITEMS_PER_SECTION)
+                        .map {
+                            PersistedArtistRecord(
+                                id = it.id,
+                                name = it.name,
+                                artworkUri = it.artworkUri,
+                                subtitle = it.subtitle,
+                                sourceProvider = it.sourceProvider,
+                                languages = it.languages
+                            )
+                        },
+                    playlists = sec.playlists
+                        .take(MAX_CACHED_PLAYLISTS_PER_SECTION)
+                        .map { pl ->
+                            PersistedPlaylistRecord(
+                                id = pl.id,
+                                title = pl.title,
+                                description = pl.description,
+                                coverArtUri = pl.coverArtUri,
+                                songs = pl.songs
+                                    .filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
+                                    .take(10)
+                                    .map { it.toRecord() }
+                            )
+                        },
+                    isPersonalized = sec.isPersonalized
+                )
+            }
+        if (populated.isEmpty()) return
+        val snapshot = PersistedHomeSnapshot(
+            savedAtMs = System.currentTimeMillis(),
+            sections = populated
+        )
+        runCatching {
+            prefs.edit().putString(KEY_HOME_SNAPSHOT, homeSnapshotAdapter.toJson(snapshot)).apply()
+        }
+    }
+
+    fun loadHomeSectionsSnapshot(maxAgeMs: Long = HOME_SNAPSHOT_MAX_AGE_MS): List<HomeDiscoverySection> {
+        val raw = prefs.getString(KEY_HOME_SNAPSHOT, null) ?: return emptyList()
+        return runCatching {
+            val snapshot = homeSnapshotAdapter.fromJson(raw) ?: return emptyList()
+            if (snapshot.savedAtMs <= 0L || (System.currentTimeMillis() - snapshot.savedAtMs) > maxAgeMs) {
+                return emptyList()
+            }
+            snapshot.sections.mapNotNull { rec ->
+                val lang = runCatching { HomeLanguageFilter.valueOf(rec.languageName) }.getOrDefault(HomeLanguageFilter.ALL)
+                val type = runCatching { HomeSectionContentType.valueOf(rec.contentTypeName) }.getOrNull()
+                    ?: return@mapNotNull null
+                val songs = rec.songs.filter(::isAllowedPersistedRecord).map { it.toSong(isFavorite = false) }
+                val albums = rec.albums
+                    .filter { it.sourceProvider.equals("JioSaavn", ignoreCase = true) }
+                    .map {
+                        AlbumSearchResult(
+                            id = it.id,
+                            title = it.title,
+                            movieName = it.movieName,
+                            artist = it.artist,
+                            year = it.year,
+                            songCount = it.songCount,
+                            artworkUri = it.artworkUri,
+                            sourceProvider = it.sourceProvider,
+                            externalUrl = it.externalUrl,
+                            language = it.language,
+                            isCompleteAlbum = it.isCompleteAlbum
+                        )
+                    }
+                    .filter { HomeLanguagePolicy.isAllowedJioSaavnAlbum(it) }
+                val artists = rec.artists.map {
+                    OnlineArtistResult(
+                        id = it.id,
+                        name = it.name,
+                        artworkUri = it.artworkUri,
+                        subtitle = it.subtitle,
+                        sourceProvider = it.sourceProvider,
+                        languages = it.languages
+                    )
+                }
+                val playlists = rec.playlists.map { pl ->
+                    CuratedPlaylist(
+                        id = pl.id,
+                        title = pl.title,
+                        description = pl.description,
+                        coverArtUri = pl.coverArtUri,
+                        songs = pl.songs.filter(::isAllowedPersistedRecord).map { it.toSong(isFavorite = false) }
+                    )
+                }.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) }
+
+                val section = HomeDiscoverySection(
+                    id = rec.id,
+                    title = rec.title,
+                    subtitle = rec.subtitle,
+                    language = lang,
+                    contentType = type,
+                    songs = songs,
+                    albums = albums,
+                    artists = artists,
+                    playlists = playlists,
+                    isLoading = false,
+                    hasAttemptedLoad = true,
+                    canLoadMore = type == HomeSectionContentType.SONGS || type == HomeSectionContentType.ALBUMS,
+                    currentPage = 1,
+                    isPersonalized = rec.isPersonalized
+                )
+                if (section.hasContent) section else null
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun isAllowedPersistedRecord(record: PersistedSongRecord): Boolean {
         if (!record.isOnline) return true
         val provider = record.sourceProvider.orEmpty().trim()
@@ -171,9 +372,14 @@ class HomeUserSignalsStore(context: Context) {
         private const val KEY_FAVORITES = "persisted_favorite_songs_v1"
         private const val KEY_RECENTLY_PLAYED = "persisted_recently_played_v1"
         private const val KEY_PLAY_STATS = "persisted_play_stats_v1"
+        private const val KEY_HOME_SNAPSHOT = "persisted_home_sections_snapshot_v1"
         private const val MAX_FAVORITES = 200
         private const val MAX_RECENT = 25
         private const val MAX_PLAY_STATS = 80
+        private const val MAX_CACHED_HOME_SECTIONS = 14
+        private const val MAX_CACHED_ITEMS_PER_SECTION = 15
+        private const val MAX_CACHED_PLAYLISTS_PER_SECTION = 8
+        private const val HOME_SNAPSHOT_MAX_AGE_MS = 48L * 60L * 60L * 1000L
 
         fun songIdentityKey(song: Song): String {
             return if (song.isOnline) {

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -80,18 +81,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 enum class SearchSource {
     ONLINE,
     DEVICE
 }
 
+@Stable
 data class MusicPlayerUiState(
     val songs: List<Song> = emptyList(),
     val albums: List<Album> = emptyList(),
@@ -190,30 +194,47 @@ data class MusicPlayerUiState(
 )
 
 @UnstableApi
-class MusicPlayerViewModel(application: Application) : AndroidViewModel(application) {
+class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal constructor(
+    application: Application,
+    private val musicRepository: UnifiedMusicRepository,
+    private val homeDiscoveryRepository: HomeDiscoveryRepository,
+    autoStart: Boolean = true
+) : AndroidViewModel(application) {
+
+    constructor(application: Application) : this(
+        application = application,
+        musicRepository = UnifiedMusicRepository(application),
+        homeDiscoveryRepository = HomeDiscoveryRepository(),
+        autoStart = true
+    )
 
     private val scanner = LocalMusicScanner(application)
     private val playlistRepository = PlaylistRepository(application)
     private val albumLibraryRepository = AlbumLibraryRepository(application)
-    private val musicRepository = UnifiedMusicRepository(application)
     private val downloadManager = SongDownloadManager(application)
     private val searchPrefs = application.getSharedPreferences(SEARCH_PREFS_NAME, Context.MODE_PRIVATE)
     private val signalsStore = HomeUserSignalsStore(application)
-    private val homeDiscoveryRepository = HomeDiscoveryRepository()
     private val homeSectionsById = java.util.concurrent.ConcurrentHashMap<String, HomeDiscoverySection>()
     private val inFlightSectionJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private var persistedPlayStats: List<PersistedPlayStat> = emptyList()
     val localSearchIndexer = LocalSearchIndexer()
     private val searchQueryStateFlow = MutableStateFlow("")
+    private val activeSearchRequestId = AtomicLong(0L)
+    private var lastStartedSearchQuery: String = ""
+    @Volatile
+    private var homeHasStartedInitialLoad: Boolean = false
     private var progressTrackingJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchExecutionJob: Job? = null
+    private var homeLoadJob: Job? = null
     private var albumFetchJob: Job? = null
     private var artistFetchJob: Job? = null
     private var latestSearchQuery: String = ""
     private var categoryFetchJob: Job? = null
     private var playlistSongsJob: Job? = null
     private var homeCollectionJob: Job? = null
+    private var homeSnapshotJob: Job? = null
+    private var playJob: Job? = null
 
     // Media3 MediaController connected to UsmanPlaybackService
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -236,17 +257,75 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private var activeObservedProfileUid: String? = null
 
     init {
-        AudioEffectsManager.init(application)
-        loadSearchHistory()
-        loadUserPlaybackSignals()
-        initializeUserProfileAndAuthObserver(application)
-        initializeMedia3Controller()
-        loadInitialOnlineMusic()
-        observePlaylists()
-        observeSavedAlbums()
-        observeDownloads()
-        updateProviderStates()
         setupSearchPipeline()
+        if (autoStart) {
+            initializeUserProfileAndAuthObserver(application)
+            initializeMedia3Controller()
+            observePlaylists()
+            observeSavedAlbums()
+            observeDownloads()
+            viewModelScope.launch {
+                // Hydrate Home snapshot cache + lightweight signals off the Main Thread immediately
+                val (cachedHomeSections, _) = withContext(Dispatchers.IO) {
+                    AudioEffectsManager.init(application)
+                    musicRepository.warmUp()
+                    loadSearchHistory()
+                    val snapshot = signalsStore.loadHomeSectionsSnapshot()
+                    snapshot to true
+                }
+                updateProviderStates()
+
+                if (cachedHomeSections.isNotEmpty()) {
+                    hydrateHomeFromCachedSnapshot(cachedHomeSections)
+                }
+
+                // Load favorites/recent/play stats in parallel & start progressive network refresh
+                launch(Dispatchers.IO) { loadUserPlaybackSignals() }
+                loadInitialOnlineMusic(isBackgroundRefresh = cachedHomeSections.isNotEmpty())
+            }
+        }
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun startStartupSequenceForTest() {
+        viewModelScope.launch {
+            val cachedHomeSections = withContext(Dispatchers.IO) {
+                loadSearchHistory()
+                signalsStore.loadHomeSectionsSnapshot()
+            }
+            if (cachedHomeSections.isNotEmpty()) {
+                hydrateHomeFromCachedSnapshot(cachedHomeSections)
+            }
+            loadUserPlaybackSignals()
+            loadInitialOnlineMusic(isBackgroundRefresh = cachedHomeSections.isNotEmpty())
+        }
+    }
+
+    private fun hydrateHomeFromCachedSnapshot(cachedSections: List<HomeDiscoverySection>) {
+        homeDiscoveryRepository.seedFromPersistedSnapshot(cachedSections)
+        cachedSections.forEach { sec ->
+            val cleaned = sec.copy(
+                songs = sec.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag),
+                albums = sec.albums.filter(::isAllowedUserFacingAlbum),
+                artists = sec.artists.filter(::isAllowedUserFacingArtist),
+                playlists = sec.playlists.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) },
+                isLoading = false,
+                hasAttemptedLoad = true
+            )
+            if (cleaned.hasContent) {
+                homeSectionsById[sec.id] = cleaned
+                syncLegacyHomeSectionState(sec.id, cleaned.songs)
+            }
+        }
+        _uiState.update {
+            it.copy(
+                isHomeInitialLoading = false,
+                isOnlineLoading = false,
+                isTeluguLoading = false
+            )
+        }
+        rebuildHomeSectionsSnapshot()
+        buildCuratedPlaylists()
     }
 
     private fun isFirebaseAvailable(context: Context): Boolean {
@@ -846,15 +925,19 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     // --- Online Music Loading & Spotify-Style Home Discovery ---
 
-    private fun loadUserPlaybackSignals() {
-        val favs = signalsStore.loadFavorites().filter(::isAllowedUserFacingSong)
-        val recent = signalsStore.loadRecentlyPlayed()
-            .filter(::isAllowedUserFacingSong)
-            .map { s ->
-                val isFav = favs.any { HomeUserSignalsStore.songIdentityKey(it) == HomeUserSignalsStore.songIdentityKey(s) }
-                if (isFav) s.copy(isFavorite = true) else s
-            }
-        persistedPlayStats = signalsStore.loadPlayStats()
+    private suspend fun loadUserPlaybackSignals() {
+        val (favs, recent, stats) = withContext(Dispatchers.IO) {
+            val loadedFavs = signalsStore.loadFavorites().filter(::isAllowedUserFacingSong)
+            val loadedRecent = signalsStore.loadRecentlyPlayed()
+                .filter(::isAllowedUserFacingSong)
+                .map { s ->
+                    val isFav = loadedFavs.any { HomeUserSignalsStore.songIdentityKey(it) == HomeUserSignalsStore.songIdentityKey(s) }
+                    if (isFav) s.copy(isFavorite = true) else s
+                }
+            val loadedStats = signalsStore.loadPlayStats()
+            Triple(loadedFavs, loadedRecent, loadedStats)
+        }
+        persistedPlayStats = stats
         _uiState.update {
             it.copy(
                 favoriteSongs = favs,
@@ -864,47 +947,45 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         rebuildHomeSectionsSnapshot()
     }
 
-    fun loadInitialOnlineMusic() {
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isOnlineLoading = true,
-                    isTeluguLoading = true,
-                    isHomeInitialLoading = true,
-                    onlineTeluguError = null
-                )
+    fun loadInitialOnlineMusic(
+        isBackgroundRefresh: Boolean = false,
+        forceReload: Boolean = false
+    ) {
+        if (!forceReload && homeHasStartedInitialLoad && homeSectionsById.values.any { it.hasContent }) {
+            return
+        }
+        homeHasStartedInitialLoad = true
+        homeLoadJob?.cancel()
+        homeLoadJob = viewModelScope.launch {
+            val hasPopulatedSections = homeSectionsById.values.any { it.hasContent }
+            if (!hasPopulatedSections && !isBackgroundRefresh) {
+                _uiState.update {
+                    it.copy(
+                        isOnlineLoading = true,
+                        isTeluguLoading = true,
+                        isHomeInitialLoading = true,
+                        onlineTeluguError = null
+                    )
+                }
+                rebuildHomeSectionsSnapshot()
             }
 
-            rebuildHomeSectionsSnapshot()
-
-            // Stage 1: Priority Quick-Access + Hero Spotlight sections loaded concurrently (capped by repository semaphore)
-            val prioritySectionIds = listOf(
+            // Stage 0: Above-the-fold spotlight + first visible sections load immediately
+            val stage0Ids = listOf(
                 "discovery_trending_now",
-                "discovery_made_for_you",
-                "discovery_popular_artists",
                 "telugu_top_hits",
-                "tamil_top_hits",
-                "english_global_top_hits",
-                "hindi_top_hits",
-                "discovery_new_releases",
-                "discovery_featured_albums"
+                "discovery_made_for_you"
             )
+            stage0Ids.map { secId ->
+                async {
+                    loadSectionInternal(
+                        sectionId = secId,
+                        forceRefresh = isBackgroundRefresh || forceReload
+                    )
+                }
+            }.awaitAll()
 
-            val priorityJobs = prioritySectionIds.map { secId ->
-                async { loadSectionInternal(secId, forceRefresh = false) }
-            }
-            priorityJobs.awaitAll()
-
-            // Stage 2: Load remaining primary Discovery carousels silently in background
-            launch {
-                val secondaryIds = listOf(
-                    "discovery_recommended_for_you",
-                    "discovery_heavy_rotation",
-                    "discovery_movie_soundtracks"
-                )
-                secondaryIds.map { id -> async { loadSectionInternal(id, forceRefresh = false) } }.awaitAll()
-            }
-
+            // Clear top-level initial loader as soon as first visible sections land
             _uiState.update {
                 it.copy(
                     isOnlineLoading = false,
@@ -913,6 +994,49 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 )
             }
             buildCuratedPlaylists()
+
+            // Stage 1: Primary 4-language & album carousels concurrently (repository Semaphore caps concurrency cleanly)
+            val stage1Ids = listOf(
+                "discovery_popular_artists",
+                "tamil_top_hits",
+                "english_global_top_hits",
+                "hindi_top_hits",
+                "discovery_new_releases",
+                "discovery_featured_albums"
+            )
+            stage1Ids.map { secId ->
+                async {
+                    loadSectionInternal(
+                        sectionId = secId,
+                        forceRefresh = isBackgroundRefresh || forceReload
+                    )
+                }
+            }.awaitAll()
+            buildCuratedPlaylists()
+
+            // Stage 2: Lower below-the-fold discovery carousels asynchronously
+            launch {
+                val secondaryIds = listOf(
+                    "discovery_recommended_for_you",
+                    "discovery_heavy_rotation",
+                    "discovery_movie_soundtracks"
+                )
+                secondaryIds.map { id ->
+                    async {
+                        loadSectionInternal(
+                            sectionId = id,
+                            forceRefresh = isBackgroundRefresh || forceReload
+                        )
+                    }
+                }.awaitAll()
+                withContext(Dispatchers.IO) {
+                    signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+            }
         }
     }
 
@@ -991,18 +1115,23 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun refreshHomeDiscovery() {
         viewModelScope.launch {
-            homeSectionsById.clear()
             inFlightSectionJobs.values.forEach { it.cancel() }
             inFlightSectionJobs.clear()
-            loadInitialOnlineMusic()
+            homeHasStartedInitialLoad = false
+            // Keep existing populated content visible while rotating fresh dynamic recommendations
+            loadInitialOnlineMusic(isBackgroundRefresh = true, forceReload = true)
             val activeDefs = HomeDiscoveryCatalog.definitionsForFilter(_uiState.value.selectedHomeLanguage)
             activeDefs.take(6).map { async { loadSectionInternal(it.id, forceRefresh = true) } }.awaitAll()
+            withContext(Dispatchers.IO) {
+                signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+            }
         }
     }
 
     private suspend fun loadSectionInternal(sectionId: String, forceRefresh: Boolean) {
         val def = definitionForDynamicOrCatalog(sectionId) ?: return
         val prev = homeSectionsById[sectionId]
+        val hadContent = prev?.hasContent == true
         if (prev == null) {
             homeSectionsById[sectionId] = HomeDiscoverySection(
                 id = def.id,
@@ -1014,10 +1143,11 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 hasAttemptedLoad = false,
                 isPersonalized = def.isPersonalized
             )
-            rebuildHomeSectionsSnapshot()
-        } else if (!prev.isLoading) {
+            scheduleHomeSnapshotRebuild()
+        } else if (!hadContent && !prev.isLoading) {
+            // Only mark loading shimmer when section does not already have cached/existing content
             homeSectionsById[sectionId] = prev.copy(isLoading = true)
-            rebuildHomeSectionsSnapshot()
+            scheduleHomeSnapshotRebuild()
         }
 
         val loaded = homeDiscoveryRepository.loadSection(
@@ -1029,33 +1159,54 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             forceRefresh = forceRefresh
         )
 
-        val cleaned = loaded.copy(
-            songs = loaded.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag),
-            albums = loaded.albums.filter(::isAllowedUserFacingAlbum),
-            artists = loaded.artists.filter(::isAllowedUserFacingArtist),
-            playlists = loaded.playlists.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) },
-            isLoading = false,
-            hasAttemptedLoad = true
-        )
-        homeSectionsById[sectionId] = cleaned
+        val cleanedSongs = loaded.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
+        val cleanedAlbums = loaded.albums.filter(::isAllowedUserFacingAlbum)
+        val cleanedArtists = loaded.artists.filter(::isAllowedUserFacingArtist)
+        val cleanedPlaylists = loaded.playlists.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) }
+        val loadedHasContent = cleanedSongs.isNotEmpty() || cleanedAlbums.isNotEmpty() || cleanedArtists.isNotEmpty() || cleanedPlaylists.isNotEmpty()
 
-        // Sync legacy fields so existing screens/tests remain consistent
+        // Preserve existing cached content on offline/empty transient refresh instead of blanking the section
+        val cleaned = if (!loadedHasContent && prev != null && prev.hasContent) {
+            prev.copy(isLoading = false, hasAttemptedLoad = true)
+        } else {
+            loaded.copy(
+                songs = cleanedSongs,
+                albums = cleanedAlbums,
+                artists = cleanedArtists,
+                playlists = cleanedPlaylists,
+                isLoading = false,
+                hasAttemptedLoad = true
+            )
+        }
+        homeSectionsById[sectionId] = cleaned
+        syncLegacyHomeSectionState(sectionId, cleaned.songs)
+        scheduleHomeSnapshotRebuild()
+    }
+
+    private fun syncLegacyHomeSectionState(sectionId: String, songs: List<Song>) {
         when (sectionId) {
-            "discovery_trending_now" -> _uiState.update { it.copy(onlineTrendingSongs = cleaned.songs) }
+            "discovery_trending_now" -> _uiState.update { it.copy(onlineTrendingSongs = songs) }
             "telugu_top_hits" -> _uiState.update {
                 it.copy(
-                    onlineTeluguSongs = cleaned.songs,
+                    onlineTeluguSongs = songs,
                     isTeluguLoading = false,
-                    onlineTeluguError = if (cleaned.songs.isEmpty()) "No Telugu tracks found" else null
+                    onlineTeluguError = if (songs.isEmpty()) "No Telugu tracks found" else null
                 )
             }
             "hindi_top_hits" -> _uiState.update {
-                it.copy(onlineBollywoodSongs = cleaned.songs, onlineIndianSongs = cleaned.songs)
+                it.copy(onlineBollywoodSongs = songs, onlineIndianSongs = songs)
             }
-            "english_global_top_hits" -> _uiState.update { it.copy(onlineEnglishSongs = cleaned.songs) }
-            "discovery_new_releases" -> _uiState.update { it.copy(onlineGlobalSongs = cleaned.songs) }
+            "english_global_top_hits" -> _uiState.update { it.copy(onlineEnglishSongs = songs) }
+            "discovery_new_releases" -> _uiState.update { it.copy(onlineGlobalSongs = songs) }
         }
-        rebuildHomeSectionsSnapshot()
+    }
+
+    private fun scheduleHomeSnapshotRebuild() {
+        homeSnapshotJob?.cancel()
+        homeSnapshotJob = viewModelScope.launch {
+            delay(40L)
+            rebuildHomeSectionsSnapshot()
+        }
     }
 
     private fun definitionForDynamicOrCatalog(sectionId: String) =
@@ -1418,10 +1569,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.update { it.copy(searchFilterCategory = category) }
     }
 
-    fun searchOnline(query: String, debounceMs: Long = 300L) {
+    fun searchOnline(query: String, debounceMs: Long = SEARCH_DEBOUNCE_MS) {
         val trimmed = query.trim()
         latestSearchQuery = trimmed
         if (trimmed.isBlank()) {
+            activeSearchRequestId.incrementAndGet()
+            lastStartedSearchQuery = ""
             searchDebounceJob?.cancel()
             searchExecutionJob?.cancel()
             _uiState.update {
@@ -1436,65 +1589,131 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             return
         }
 
+        // Skip redundant re-trigger when exact same query already actively executing
+        if (searchExecutionJob?.isActive == true && lastStartedSearchQuery.equals(trimmed, ignoreCase = false)) {
+            return
+        }
+
+        // Fast cache path: render cached results immediately with zero spinner
+        val cachedSongs = musicRepository.peekCachedSongs(trimmed, limit = 35)
+        val cachedSoundtrackAlbums = musicRepository.peekCachedSoundtrackAlbums(trimmed, limit = 20)
+        val cachedAlbums = cachedSoundtrackAlbums ?: musicRepository.peekCachedAlbums(trimmed, limit = 20)
+        val cachedArtists = musicRepository.peekCachedArtists(trimmed, limit = 15)
+        if (cachedSongs != null && cachedAlbums != null && cachedArtists != null) {
+            activeSearchRequestId.incrementAndGet()
+            lastStartedSearchQuery = trimmed
+            searchDebounceJob?.cancel()
+            searchExecutionJob?.cancel()
+            _uiState.update {
+                it.copy(
+                    onlineSearchResults = cachedSongs.filter(::isAllowedUserFacingSong),
+                    onlineSearchAlbums = cachedAlbums.filter(::isAllowedUserFacingAlbum),
+                    onlineSearchArtists = cachedArtists.filter(::isAllowedUserFacingArtist),
+                    isOnlineSearching = false,
+                    onlineSearchError = null
+                )
+            }
+            return
+        }
+
         searchDebounceJob?.cancel()
         searchExecutionJob?.cancel()
+        val requestId = activeSearchRequestId.incrementAndGet()
         searchDebounceJob = viewModelScope.launch {
             if (debounceMs > 0L) {
                 delay(debounceMs)
             }
-            if (trimmed != latestSearchQuery) return@launch
+            if (requestId != activeSearchRequestId.get() || trimmed != latestSearchQuery) return@launch
 
-            _uiState.update { it.copy(isOnlineSearching = true, onlineSearchError = null) }
+            lastStartedSearchQuery = trimmed
+            val partialCachedSongs = musicRepository.peekCachedSongs(trimmed, limit = 35)?.filter(::isAllowedUserFacingSong)
+            _uiState.update {
+                it.copy(
+                    onlineSearchResults = partialCachedSongs ?: emptyList(),
+                    onlineSearchAlbums = cachedAlbums?.filter(::isAllowedUserFacingAlbum) ?: emptyList(),
+                    onlineSearchArtists = cachedArtists?.filter(::isAllowedUserFacingArtist) ?: emptyList(),
+                    isOnlineSearching = partialCachedSongs.isNullOrEmpty(),
+                    onlineSearchError = null
+                )
+            }
             val startTime = System.currentTimeMillis()
 
             searchExecutionJob = launch {
                 try {
-                    val songsDeferred = async { musicRepository.searchAll(trimmed, limit = 35) }
-                    val albumsDeferred = async { musicRepository.searchAlbumsAndSoundtracks(trimmed, limit = 20) }
-                    val artistsDeferred = async { musicRepository.searchArtists(trimmed, limit = 15) }
+                    val songsDeferred = async { musicRepository.searchAllWithStatus(trimmed, limit = 35) }
+                    val albumsDeferred = async { musicRepository.searchAlbums(trimmed, limit = 20) }
+                    val artistsDeferred = async {
+                        musicRepository.searchArtists(trimmed, limit = 15, fallbackToSongSearch = false)
+                    }
 
-                    val songs = songsDeferred.await().filter(::isAllowedUserFacingSong)
-                    var albums = albumsDeferred.await().filter(::isAllowedUserFacingAlbum)
-                    val artists = artistsDeferred.await().filter(::isAllowedUserFacingArtist)
-
-                    // Enrich soundtrack & album collections with matching individual JioSaavn songs
-                    val topIsCollection = albums.firstOrNull()?.isSoundtrackCollection == true
-                    if (songs.isNotEmpty() && (!topIsCollection || albums.size < 2)) {
-                        val enriched = musicRepository.searchAlbumsAndSoundtracks(trimmed, limit = 20, seedSongs = songs)
-                            .filter(::isAllowedUserFacingAlbum)
-                        if (enriched.isNotEmpty()) {
-                            albums = enriched
+                    // Stage 1: Emit primary Songs progressively as soon as song endpoint returns
+                    val songsOutcome = songsDeferred.await()
+                    val songs = songsOutcome.songs.filter(::isAllowedUserFacingSong)
+                    if (requestId != activeSearchRequestId.get() || trimmed != latestSearchQuery) return@launch
+                    if (songs.isNotEmpty()) {
+                        _uiState.update {
+                            it.copy(
+                                onlineSearchResults = songs,
+                                isOnlineSearching = false,
+                                onlineSearchError = null
+                            )
                         }
                     }
 
-                    val totalElapsed = System.currentTimeMillis() - startTime
-                    Log.d("SearchTiming", "Total search '$trimmed' completed in ${totalElapsed}ms (songs=${songs.size}, albums=${albums.size}, artists=${artists.size})")
+                    // Stage 2: Await Albums + Artists without blocking initial songs
+                    var albums = albumsDeferred.await().filter(::isAllowedUserFacingAlbum)
+                    val directArtists = artistsDeferred.await().filter(::isAllowedUserFacingArtist)
+                    val artists = if (directArtists.isNotEmpty()) {
+                        directArtists
+                    } else {
+                        musicRepository.deriveArtistsFromSongs(trimmed, songs, limit = 15)
+                            .filter(::isAllowedUserFacingArtist)
+                    }
 
-                    if (trimmed != latestSearchQuery) return@launch
+                    if (requestId != activeSearchRequestId.get() || trimmed != latestSearchQuery) return@launch
+
+                    val totalElapsed = System.currentTimeMillis() - startTime
+                    Log.d("SearchTiming", "Primary search '$trimmed' completed in ${totalElapsed}ms (songs=${songs.size}, albums=${albums.size}, artists=${artists.size})")
 
                     if (debounceMs == 0L || songs.isNotEmpty() || albums.isNotEmpty()) {
                         recordSearchQuery(trimmed)
                     }
 
                     val noResults = songs.isEmpty() && albums.isEmpty() && artists.isEmpty()
+                    val errorMsg = when {
+                        !noResults -> null
+                        songsOutcome.hadNetworkError -> "Unable to reach music catalog. Check your internet connection."
+                        else -> "No songs or albums found for \"$trimmed\""
+                    }
                     _uiState.update {
                         it.copy(
                             onlineSearchResults = songs,
                             onlineSearchAlbums = albums,
                             onlineSearchArtists = artists,
                             isOnlineSearching = false,
-                            onlineSearchError = if (noResults) "No songs or albums found for \"$trimmed\"" else null
+                            onlineSearchError = errorMsg
                         )
+                    }
+
+                    // Stage 3: Asynchronous movie/soundtrack album enrichment only when useful, never delaying UI
+                    val wordCount = trimmed.split(Regex("\\s+")).count { it.isNotBlank() }
+                    val topIsCollection = albums.firstOrNull()?.isSoundtrackCollection == true
+                    if (songs.isNotEmpty() && wordCount in 1..4 && (!topIsCollection || albums.size < 2)) {
+                        val enriched = musicRepository.searchAlbumsAndSoundtracks(trimmed, limit = 20, seedSongs = songs)
+                            .filter(::isAllowedUserFacingAlbum)
+                        if (requestId == activeSearchRequestId.get() && trimmed == latestSearchQuery && enriched.isNotEmpty()) {
+                            _uiState.update { it.copy(onlineSearchAlbums = enriched) }
+                        }
                     }
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
                     Log.w("MusicPlayerVM", "Search failed for '$trimmed': ${e.message}")
-                    if (trimmed == latestSearchQuery) {
+                    if (requestId == activeSearchRequestId.get() && trimmed == latestSearchQuery) {
                         _uiState.update {
                             it.copy(
                                 isOnlineSearching = false,
-                                onlineSearchError = "Search failed: ${e.localizedMessage ?: "Unknown error"}"
+                                onlineSearchError = "Unable to complete search. Check your connection and try again."
                             )
                         }
                     }
@@ -1956,7 +2175,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             )
         }
 
-        viewModelScope.launch {
+        playJob?.cancel()
+        playJob = viewModelScope.launch {
             val controller = mediaController
 
             // If song requires external playback only
@@ -1990,79 +2210,146 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
             val currentList = filterPlayableQueueTracks(rawQueue)
 
-            // Resolve stream URLs concurrently for online songs in queue
-            val resolvedList = currentList.map { s ->
-                async {
-                    var updated = s
-                    if (updated.isOnline && updated.contentUriString.isNullOrBlank() && updated.playbackType == PlaybackType.FULL) {
-                        val streamResult = musicRepository.getStreamUrl(updated)
-                        if (streamResult.isSuccess) {
-                            val resolvedUrl = streamResult.getOrNull().orEmpty()
-                            if (resolvedUrl.isNotBlank()) {
-                                val sanitizedHost = runCatching { Uri.parse(resolvedUrl).host }.getOrNull() ?: "unknown"
-                                Log.d("USMAN_PLAYBACK", "[Stage 4: After stream URL resolution] ID: ${updated.id}, Title: '${updated.title}', StreamUrl: $resolvedUrl (host: $sanitizedHost)")
-                                updated = updated.copy(contentUriString = resolvedUrl)
-                            } else {
-                                Log.w("USMAN_PLAYBACK", "Stream resolution returned blank URL for '${updated.title}'")
-                            }
-                        } else {
-                            Log.e("USMAN_PLAYBACK", "Stream resolution failed for '${updated.title}': ${streamResult.exceptionOrNull()?.message}")
+            suspend fun resolveSingleTrack(candidate: Song): Song {
+                if (candidate.isOnline && candidate.contentUriString.isNullOrBlank() && candidate.playbackType == PlaybackType.FULL) {
+                    val streamResult = musicRepository.getStreamUrl(candidate)
+                    if (streamResult.isSuccess) {
+                        val resolvedUrl = streamResult.getOrNull().orEmpty()
+                        if (resolvedUrl.isNotBlank()) {
+                            val sanitizedHost = runCatching { Uri.parse(resolvedUrl).host }.getOrNull() ?: "unknown"
+                            Log.d("USMAN_PLAYBACK", "[Stage 4: After stream URL resolution] ID: ${candidate.id}, Title: '${candidate.title}', StreamUrl: $resolvedUrl (host: $sanitizedHost)")
+                            return candidate.copy(contentUriString = resolvedUrl)
+                        }
+                    } else {
+                        Log.e("USMAN_PLAYBACK", "Stream resolution failed for '${candidate.title}': ${streamResult.exceptionOrNull()?.message}")
+                    }
+                }
+                return candidate
+            }
+
+            // Fast-path: resolve the clicked song first so playback starts immediately without waiting on 20+ queue siblings
+            val unresolvedCount = currentList.count {
+                it.isOnline && it.contentUriString.isNullOrBlank() && it.playbackType == PlaybackType.FULL
+            }
+            val resolvedTarget = withContext(Dispatchers.IO) { resolveSingleTrack(song) }
+            val canStartTargetImmediately = isAllowedUserFacingSong(resolvedTarget) &&
+                (!resolvedTarget.isOnline || !resolvedTarget.contentUriString.isNullOrBlank())
+
+            if (unresolvedCount <= 1 || !canStartTargetImmediately) {
+                val resolvedList = withContext(Dispatchers.IO) {
+                    currentList.map { s ->
+                        async { if (s.id == song.id) resolvedTarget else resolveSingleTrack(s) }
+                    }.awaitAll()
+                }.filter { s ->
+                    if (!isAllowedUserFacingSong(s) || (s.isOnline && s.contentUriString.isNullOrBlank())) {
+                        Log.w("USMAN_PLAYBACK", "Dropping unavailable or preview online song from queue: '${s.title}'")
+                        false
+                    } else {
+                        true
+                    }
+                }
+
+                val playableSong = resolvedList.find { it.id == song.id } ?: resolvedList.firstOrNull()
+                if (playableSong == null || !isAllowedUserFacingSong(playableSong) || (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank())) {
+                    Log.e("USMAN_PLAYBACK", "Playback failure: Could not resolve playable stream for '${song.title}'")
+                    _uiState.update { it.copy(onlineSearchError = "Unable to play \"${song.title}\": Stream unavailable") }
+                    return@launch
+                }
+
+                val songWithFav = applyFavoriteFlag(playableSong)
+                val updatedRecent = (_uiState.value.recentlyPlayed
+                    .filter(::isAllowedUserFacingSong)
+                    .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
+                    .toMutableList()).apply { add(0, songWithFav) }.take(20)
+
+                _uiState.update {
+                    it.copy(
+                        currentSong = songWithFav,
+                        activePlaybackQueue = resolvedList,
+                        isPlaying = true,
+                        durationMs = songWithFav.durationMs,
+                        currentPositionMs = 0L,
+                        isFavorite = songWithFav.isFavorite,
+                        recentlyPlayed = updatedRecent,
+                        onlineSearchError = null
+                    )
+                }
+                refreshDerivedHomeUi()
+                viewModelScope.launch(Dispatchers.IO) {
+                    signalsStore.saveRecentlyPlayed(updatedRecent)
+                    persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+                }
+
+                if (controller != null) {
+                    val queue = resolvedList.map { s -> createMediaItem(s) }
+                    val startIndex = queue.indexOfFirst { it.mediaId == playableSong.id.toString() }
+                    controller.setMediaItems(queue, startIndex.coerceAtLeast(0), 0L)
+                    controller.prepare()
+                    controller.play()
+                    controller.volume = _uiState.value.volume
+                }
+
+                startProgressTracker()
+            } else {
+                // Start target song immediately in 1 roundtrip
+                val songWithFav = applyFavoriteFlag(resolvedTarget)
+                val updatedRecent = (_uiState.value.recentlyPlayed
+                    .filter(::isAllowedUserFacingSong)
+                    .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
+                    .toMutableList()).apply { add(0, songWithFav) }.take(20)
+
+                _uiState.update {
+                    it.copy(
+                        currentSong = songWithFav,
+                        activePlaybackQueue = currentList,
+                        isPlaying = true,
+                        durationMs = songWithFav.durationMs,
+                        currentPositionMs = 0L,
+                        isFavorite = songWithFav.isFavorite,
+                        recentlyPlayed = updatedRecent,
+                        onlineSearchError = null
+                    )
+                }
+                refreshDerivedHomeUi()
+                viewModelScope.launch(Dispatchers.IO) {
+                    signalsStore.saveRecentlyPlayed(updatedRecent)
+                    persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+                }
+
+                if (controller != null) {
+                    controller.setMediaItems(listOf(createMediaItem(songWithFav)), 0, 0L)
+                    controller.prepare()
+                    controller.play()
+                    controller.volume = _uiState.value.volume
+                }
+                startProgressTracker()
+
+                // Resolve sibling queue tracks concurrently in background and splice them seamlessly around the playing track
+                val resolvedList = withContext(Dispatchers.IO) {
+                    currentList.map { s ->
+                        async { if (s.id == songWithFav.id) songWithFav else resolveSingleTrack(s) }
+                    }.awaitAll()
+                }.filter { s ->
+                    isAllowedUserFacingSong(s) && (!s.isOnline || !s.contentUriString.isNullOrBlank())
+                }
+
+                if (!isActive || _uiState.value.currentSong?.id != songWithFav.id) return@launch
+                _uiState.update { it.copy(activePlaybackQueue = resolvedList) }
+
+                if (controller != null && controller.currentMediaItem?.mediaId == songWithFav.id.toString()) {
+                    val idx = resolvedList.indexOfFirst { it.id == songWithFav.id }
+                    if (idx >= 0) {
+                        val beforeItems = resolvedList.subList(0, idx).map { createMediaItem(it) }
+                        val afterItems = resolvedList.subList(idx + 1, resolvedList.size).map { createMediaItem(it) }
+                        if (beforeItems.isNotEmpty()) {
+                            controller.addMediaItems(0, beforeItems)
+                        }
+                        if (afterItems.isNotEmpty()) {
+                            controller.addMediaItems(afterItems)
                         }
                     }
-                    updated
-                }
-            }.awaitAll().filter { s ->
-                if (!isAllowedUserFacingSong(s) || (s.isOnline && s.contentUriString.isNullOrBlank())) {
-                    Log.w("USMAN_PLAYBACK", "Dropping unavailable or preview online song from queue: '${s.title}'")
-                    false
-                } else {
-                    true
                 }
             }
-
-            val playableSong = resolvedList.find { it.id == song.id } ?: resolvedList.firstOrNull()
-            if (playableSong == null || !isAllowedUserFacingSong(playableSong) || (playableSong.isOnline && playableSong.contentUriString.isNullOrBlank())) {
-                Log.e("USMAN_PLAYBACK", "Playback failure: Could not resolve playable stream for '${song.title}'")
-                _uiState.update { it.copy(onlineSearchError = "Unable to play \"${song.title}\": Stream unavailable") }
-                return@launch
-            }
-
-            val songWithFav = applyFavoriteFlag(playableSong)
-            val updatedRecent = (_uiState.value.recentlyPlayed
-                .filter(::isAllowedUserFacingSong)
-                .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
-                .toMutableList()).apply { add(0, songWithFav) }.take(20)
-            signalsStore.saveRecentlyPlayed(updatedRecent)
-            persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
-
-            _uiState.update {
-                it.copy(
-                    currentSong = songWithFav,
-                    activePlaybackQueue = resolvedList,
-                    isPlaying = true,
-                    durationMs = songWithFav.durationMs,
-                    currentPositionMs = 0L,
-                    isFavorite = songWithFav.isFavorite,
-                    recentlyPlayed = updatedRecent,
-                    onlineSearchError = null
-                )
-            }
-            refreshDerivedHomeUi()
-
-            if (controller != null) {
-                val queue = resolvedList.map { s ->
-                    Log.d("USMAN_PLAYBACK", "[Stage 5: Active queue item] ID: ${s.id}, Title: '${s.title}', Artist: '${s.artist}', Album: '${s.album}', ContentUri: ${s.contentUriString}")
-                    createMediaItem(s)
-                }
-
-                val startIndex = queue.indexOfFirst { it.mediaId == playableSong.id.toString() }
-                controller.setMediaItems(queue, startIndex.coerceAtLeast(0), 0L)
-                controller.prepare()
-                controller.play()
-                controller.volume = _uiState.value.volume
-            }
-
-            startProgressTracker()
         }
     }
 
@@ -2073,8 +2360,6 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             .filter(::isAllowedUserFacingSong)
             .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
             .toMutableList()).apply { add(0, songWithFav) }.take(20)
-        signalsStore.saveRecentlyPlayed(updatedRecent)
-        persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
 
         _uiState.update {
             it.copy(
@@ -2086,6 +2371,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             )
         }
         refreshDerivedHomeUi()
+        viewModelScope.launch(Dispatchers.IO) {
+            signalsStore.saveRecentlyPlayed(updatedRecent)
+            persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+        }
     }
 
     fun togglePlayPause() {
@@ -2277,7 +2566,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private fun setupSearchPipeline() {
         viewModelScope.launch {
             searchQueryStateFlow
-                .debounce(150L)
+                .drop(1)
+                .debounce(SEARCH_DEBOUNCE_MS)
                 .distinctUntilChanged()
                 .collect { query ->
                     executeSearch(query)
@@ -2321,6 +2611,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun updateSearchQuery(query: String) {
+        latestSearchQuery = query.trim()
+        if (latestSearchQuery.isBlank() && _uiState.value.searchSource == SearchSource.ONLINE) {
+            searchOnline("", debounceMs = 0L)
+        }
         _uiState.update { it.copy(searchQuery = query) }
         searchQueryStateFlow.value = query
     }
@@ -2561,8 +2855,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         profileSyncJob?.cancel()
         progressTrackingJob?.cancel()
         searchDebounceJob?.cancel()
+        searchExecutionJob?.cancel()
+        homeLoadJob?.cancel()
         categoryFetchJob?.cancel()
         playlistSongsJob?.cancel()
+        homeSnapshotJob?.cancel()
+        playJob?.cancel()
         AudioSpectrumManager.release()
         if (UsmanPlaybackService.currentAudioSessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) {
             AudioEffectsManager.releaseEffects()
@@ -2575,6 +2873,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         private const val SEARCH_PREFS_NAME = "usman_search_prefs"
         private const val KEY_SEARCH_HISTORY = "search_history_queries"
         private const val MAX_SEARCH_HISTORY = 12
+        internal const val SEARCH_DEBOUNCE_MS = 280L
 
         internal fun isAllowedUserFacingSong(song: Song): Boolean {
             if (!song.isOnline) return true

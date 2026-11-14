@@ -18,8 +18,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -90,6 +93,13 @@ import com.usman.musicplayer.ui.theme.TextSecondary
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
 import com.usman.musicplayer.viewmodel.SearchSource
 
+private val SEARCH_EXPLORE_CHIPS = listOf(
+    "Telugu Hits", "Hindi Bollywood", "Brazilian Phonk",
+    "The Weeknd", "Taylor Swift", "Drift Phonk", "Tamil Hits",
+    "Punjabi Hits", "Billie Eilish", "Drake", "Kordhell",
+    "K-Pop Hits", "Anime Openings", "EDM Dance", "Romantic Songs"
+)
+
 @Composable
 fun SearchScreen(
     uiState: MusicPlayerUiState,
@@ -105,7 +115,8 @@ fun SearchScreen(
     onFolderClick: (MusicFolder) -> Unit = {},
     onTriggerOnlineSearch: (String) -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -117,6 +128,14 @@ fun SearchScreen(
     val matchingAlbums = uiState.deviceMatchingAlbums
     val matchingArtists = uiState.deviceMatchingArtists
     val matchingFolders = uiState.deviceMatchingFolders
+    val safeTrendingSongs = remember(uiState.onlineTrendingSongs) {
+        uiState.onlineTrendingSongs.filter { song ->
+            !song.isOnline || (
+                song.sourceProvider.equals("JioSaavn", ignoreCase = true) &&
+                    song.playbackType == com.usman.musicplayer.model.PlaybackType.FULL
+                )
+        }
+    }
 
     Box(
         modifier = modifier
@@ -124,11 +143,14 @@ fun SearchScreen(
             .background(AmoledBlack)
     ) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("search_lazy_column"),
             contentPadding = PaddingValues(bottom = 220.dp)
         ) {
             // Header Search Bar
-            item {
+            item(key = "search_header", contentType = "search_header") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -291,15 +313,8 @@ fun SearchScreen(
 
             // Quick Category Shortcuts & Recent Text Search History (when query is empty)
             if (query.isBlank()) {
-                val safeTrendingSongs = uiState.onlineTrendingSongs.filter { song ->
-                    !song.isOnline || (
-                        song.sourceProvider.equals("JioSaavn", ignoreCase = true) &&
-                            song.playbackType == com.usman.musicplayer.model.PlaybackType.FULL
-                        )
-                }
-
                 if (uiState.searchHistory.isNotEmpty()) {
-                    item {
+                    item(key = "recent_searches", contentType = "recent_searches") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -343,7 +358,7 @@ fun SearchScreen(
                     }
                 }
 
-                item {
+                item(key = "explore_global_music", contentType = "explore_chips") {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -357,21 +372,13 @@ fun SearchScreen(
                             modifier = Modifier.padding(bottom = 10.dp)
                         )
 
-                        // Curated Exploration Chips
-                        val exploreChips = listOf(
-                            "Telugu Hits", "Hindi Bollywood", "Brazilian Phonk",
-                            "The Weeknd", "Taylor Swift", "Drift Phonk", "Tamil Hits",
-                            "Punjabi Hits", "Billie Eilish", "Drake", "Kordhell",
-                            "K-Pop Hits", "Anime Openings", "EDM Dance", "Romantic Songs"
-                        )
-
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            exploreChips.forEach { chip ->
+                            SEARCH_EXPLORE_CHIPS.forEach { chip ->
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(12.dp))
@@ -397,7 +404,7 @@ fun SearchScreen(
 
                 // Trending JioSaavn recommendations
                 if (safeTrendingSongs.isNotEmpty()) {
-                    item {
+                    item(key = "trending_header", contentType = "section_header") {
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
                             text = "🔥 Trending Worldwide",
@@ -408,7 +415,11 @@ fun SearchScreen(
                         )
                     }
 
-                    items(safeTrendingSongs.take(8), key = { "trend_search_${it.id}" }) { song ->
+                    items(
+                        items = safeTrendingSongs.take(8),
+                        key = { "trend_search_${it.id}" },
+                        contentType = { "online_song_row" }
+                    ) { song ->
                         OnlineSongResultRow(
                             song = song,
                             isCurrent = uiState.currentSong?.id == song.id,
@@ -423,8 +434,25 @@ fun SearchScreen(
             // Results Section: ONLINE MODE
             if (isOnlineMode && query.isNotBlank()) {
                 val filter = uiState.searchFilterCategory
-                if (uiState.isOnlineSearching) {
-                    item {
+                val hasAnyOnlineResults = uiState.onlineSearchResults.isNotEmpty() ||
+                    uiState.onlineSearchAlbums.isNotEmpty() ||
+                    uiState.onlineSearchArtists.isNotEmpty()
+
+                if (uiState.isOnlineSearching && hasAnyOnlineResults) {
+                    item(key = "online_progressive_indicator") {
+                        LinearProgressIndicator(
+                            color = NeonCyan,
+                            trackColor = Color(0x22FFFFFF),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 4.dp)
+                                .height(2.dp)
+                        )
+                    }
+                }
+
+                if (uiState.isOnlineSearching && !hasAnyOnlineResults) {
+                    item(key = "online_loading_spinner") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -446,8 +474,8 @@ fun SearchScreen(
                             }
                         }
                     }
-                } else if (uiState.onlineSearchError != null && uiState.onlineSearchResults.isEmpty() && uiState.onlineSearchAlbums.isEmpty() && uiState.onlineSearchArtists.isEmpty()) {
-                    item {
+                } else if (uiState.onlineSearchError != null && !hasAnyOnlineResults) {
+                    item(key = "online_search_error") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -505,7 +533,11 @@ fun SearchScreen(
                                 }
                             }
 
-                            items(albumsToShow, key = { "online_album_${it.sourceProvider}_${it.id}" }) { album ->
+                            items(
+                                items = albumsToShow,
+                                key = { "online_album_${it.sourceProvider}_${it.id}" },
+                                contentType = { "online_album_card" }
+                            ) { album ->
                                 OnlineAlbumResultCard(
                                     album = album,
                                     onClick = { onOpenOnlineAlbum(album) },
@@ -560,7 +592,11 @@ fun SearchScreen(
                                 }
                             }
 
-                            items(artistsToShow, key = { "online_artist_${it.id}_${it.name}" }) { artist ->
+                            items(
+                                items = artistsToShow,
+                                key = { "online_artist_${it.id}_${it.name}" },
+                                contentType = { "online_artist_row" }
+                            ) { artist ->
                                 OnlineArtistResultRow(
                                     artist = artist,
                                     onClick = { onOpenOnlineArtist(artist) },
@@ -610,7 +646,11 @@ fun SearchScreen(
                                 }
                             }
 
-                            items(uiState.onlineSearchResults, key = { "online_res_${it.id}_${it.filePath}" }) { song ->
+                            items(
+                                items = uiState.onlineSearchResults,
+                                key = { "online_res_${it.id}_${it.filePath}" },
+                                contentType = { "online_song_row" }
+                            ) { song ->
                                 OnlineSongResultRow(
                                     song = song,
                                     isCurrent = uiState.currentSong?.id == song.id,
@@ -739,7 +779,8 @@ fun OnlineSongResultRow(
             SongAlbumArtwork(
                 song = song,
                 cornerRadius = 12.dp,
-                showGlowBorder = isCurrent
+                showGlowBorder = isCurrent,
+                targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_MICRO_THUMB_PX
             )
             if (isCurrent && isPlaying) {
                 Box(
@@ -870,7 +911,8 @@ fun DeviceSongResultRow(
             SongAlbumArtwork(
                 song = song,
                 cornerRadius = 10.dp,
-                showGlowBorder = isCurrent
+                showGlowBorder = isCurrent,
+                targetSizePx = com.usman.musicplayer.data.AppImageLoader.SIZE_MICRO_THUMB_PX
             )
         }
 

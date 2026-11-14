@@ -44,11 +44,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import androidx.compose.runtime.setValue
@@ -103,9 +106,34 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        configureHighRefreshRateDisplayMode()
         setContent {
             UsmanMusicPlayerTheme {
                 UsmanMusicApp(viewModel = musicViewModel)
+            }
+        }
+    }
+
+    private fun configureHighRefreshRateDisplayMode() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        runCatching {
+            val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display ?: windowManager.defaultDisplay
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay
+            } ?: return
+
+            val currentMode = currentDisplay.mode ?: return
+            val bestMode = currentDisplay.supportedModes
+                .filter { it.physicalWidth == currentMode.physicalWidth && it.physicalHeight == currentMode.physicalHeight }
+                .maxByOrNull { it.refreshRate }
+                ?: return
+
+            if (bestMode.modeId != currentMode.modeId && bestMode.refreshRate > currentMode.refreshRate) {
+                window.attributes = window.attributes.apply {
+                    preferredDisplayModeId = bestMode.modeId
+                }
             }
         }
     }
@@ -144,24 +172,26 @@ class MainActivity : ComponentActivity() {
 fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val playbackProgress by viewModel.playbackProgress.collectAsStateWithLifecycle()
 
     var currentDestination by remember { mutableStateOf(AppDestination.HOME) }
+    val phoneHomeListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val phoneSearchListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val tvHomeListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val tvSearchGridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
     var isDiagnosticExpanded by remember { mutableStateOf(false) }
     var isEqualizerExpanded by remember { mutableStateOf(false) }
     var isSettingsExpanded by remember { mutableStateOf(false) }
     var isPluginManagerExpanded by remember { mutableStateOf(false) }
 
-    // Cinematic App-Launch Motion Sequence
+    // Instant App-Launch Motion Sequence (no artificial 600ms cold-start stall)
     var isAppLoaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        delay(600)
         isAppLoaded = true
     }
 
     val appScale by animateFloatAsState(
-        targetValue = if (isAppLoaded) 1f else 0.94f,
+        targetValue = if (isAppLoaded) 1f else 0.96f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -171,7 +201,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
 
     val appAlpha by animateFloatAsState(
         targetValue = if (isAppLoaded) 1f else 0f,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
         label = "appAlpha"
     )
 
@@ -241,8 +271,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         }
     }
 
-    // Preload current song's album artwork into AlbumArtworkCache so Now Playing has instant blurred background on first tap
-    LaunchedEffect(uiState.currentSong?.id, uiState.currentSong?.albumArtUri, uiState.currentSong?.filePath) {
+    // Preload current song & next queued song artwork so Now Playing and track skips display instantly
+    LaunchedEffect(uiState.currentSong?.id, uiState.currentSong?.albumArtUri, uiState.currentSong?.filePath, uiState.activePlaybackQueue.size) {
         val song = uiState.currentSong
         if (song != null) {
             com.usman.musicplayer.data.AlbumArtworkCache.loadArtwork(
@@ -253,6 +283,15 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 targetWidth = 512,
                 targetHeight = 512
             )
+            val currentIdx = uiState.activePlaybackQueue.indexOfFirst { it.id == song.id }
+            val nextSong = if (currentIdx >= 0) uiState.activePlaybackQueue.getOrNull(currentIdx + 1) else null
+            if (nextSong != null) {
+                com.usman.musicplayer.data.AppImageLoader.prefetchArtwork(
+                    context = context,
+                    url = nextSong.albumArtUri,
+                    widthPx = com.usman.musicplayer.data.AppImageLoader.SIZE_FULL_ARTWORK_PX
+                )
+            }
         }
     }
 
@@ -370,7 +409,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     },
                                     onSavePlaylistToLibrary = { title, songs, cb ->
                                         viewModel.savePlaylistToLibrary(title, songs, cb)
-                                    }
+                                    },
+                                    listState = tvHomeListState
                                 )
 
                                 AppDestination.SEARCH -> com.usman.musicplayer.ui.tv.TvSearchScreen(
@@ -385,7 +425,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     onSearchFilterCategoryChange = { cat -> viewModel.setSearchFilterCategory(cat) },
                                     onOpenOnlineAlbum = { album -> viewModel.openAlbum(album) },
                                     onOpenOnlineArtist = { artist -> viewModel.openOnlineArtist(artist) },
-                                    onOpenLocalAlbum = { album -> viewModel.openLocalAlbum(album) }
+                                    onOpenLocalAlbum = { album -> viewModel.openLocalAlbum(album) },
+                                    gridState = tvSearchGridState
                                 )
 
                                 AppDestination.LIBRARY -> com.usman.musicplayer.ui.tv.TvLibraryScreen(
@@ -479,11 +520,12 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             },
                             onSavePlaylistToLibrary = { title, songs, cb ->
                                 viewModel.savePlaylistToLibrary(title, songs, cb)
-                            }
+                            },
+                            listState = phoneHomeListState
                         )
 
                         AppDestination.NEW -> HomeScreen(
-                            uiState = uiState.copy(activeHomeGenreTab = "New Releases"),
+                            uiState = remember(uiState) { uiState.copy(activeHomeGenreTab = "New Releases") },
                             onNavigateToSearch = { currentDestination = AppDestination.SEARCH },
                             onSearchCategory = { query ->
                                 viewModel.setSearchSource(com.usman.musicplayer.viewmodel.SearchSource.ONLINE)
@@ -566,7 +608,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                 viewModel.setLibraryTab(LibraryTab.ALL_SONGS)
                                 currentDestination = AppDestination.LIBRARY
                             },
-                            onOpenDiagnostics = { isDiagnosticExpanded = true }
+                            onOpenDiagnostics = { isDiagnosticExpanded = true },
+                            listState = phoneSearchListState
                         )
 
                         AppDestination.LIBRARY -> LibraryScreen(
@@ -635,8 +678,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             CompactNowPlayingBar(
                                 currentSong = uiState.currentSong,
                                 isPlaying = uiState.isPlaying,
-                                currentPositionMs = playbackProgress.currentPositionMs,
-                                durationMs = if (playbackProgress.durationMs > 0) playbackProgress.durationMs else (uiState.currentSong?.durationMs ?: 0L),
+                                playbackProgressFlow = viewModel.playbackProgress,
+                                durationMs = uiState.currentSong?.durationMs ?: 0L,
                                 hazeState = hazeState,
                                 onBarClick = { isNowPlayingExpanded = true },
                                 onPlayPauseToggle = { viewModel.togglePlayPause() },
@@ -823,7 +866,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         ) {
             NowPlayingScreen(
                 uiState = uiState,
-                playbackProgress = playbackProgress,
+                playbackProgressFlow = viewModel.playbackProgress,
                 isExpanded = isNowPlayingExpanded,
                 onBackClick = { isNowPlayingExpanded = false },
                 onPlayPauseToggle = { viewModel.togglePlayPause() },

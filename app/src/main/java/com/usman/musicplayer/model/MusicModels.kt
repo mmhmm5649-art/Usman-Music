@@ -1,5 +1,6 @@
 package com.usman.musicplayer.model
 
+import androidx.compose.runtime.Immutable
 import com.usman.musicplayer.sdk.Song
 import com.usman.musicplayer.sdk.PlaybackType
 
@@ -9,6 +10,7 @@ typealias AlbumSearchResult = com.usman.musicplayer.sdk.AlbumSearchResult
 typealias AlbumDetails = com.usman.musicplayer.sdk.AlbumDetails
 
 
+@Immutable
 data class Album(
     val id: Long,
     val title: String,
@@ -17,6 +19,7 @@ data class Album(
     val artworkUri: String? = null
 )
 
+@Immutable
 data class OnlineArtistResult(
     val id: String,
     val name: String,
@@ -33,12 +36,14 @@ enum class SearchFilterCategory(val label: String) {
     ARTISTS("Artists")
 }
 
+@Immutable
 data class Artist(
     val name: String,
     val songCount: Int,
     val albumCount: Int
 )
 
+@Immutable
 data class MusicFolder(
     val name: String,
     val path: String,
@@ -47,6 +52,7 @@ data class MusicFolder(
     val treeUriString: String? = null
 )
 
+@Immutable
 data class Playlist(
     val id: Long,
     val name: String,
@@ -55,6 +61,7 @@ data class Playlist(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 data class CuratedPlaylist(
     val id: String,
     val title: String,

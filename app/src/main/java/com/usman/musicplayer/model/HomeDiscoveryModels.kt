@@ -1,5 +1,6 @@
 package com.usman.musicplayer.model
 
+import androidx.compose.runtime.Immutable
 import java.util.Calendar
 
 enum class HomeLanguageFilter(
@@ -30,6 +31,7 @@ enum class HomeQuickAccessType {
     FAVORITE_SONGS
 }
 
+@Immutable
 data class HomeQuickAccessCard(
     val id: String,
     val type: HomeQuickAccessType,
@@ -40,6 +42,7 @@ data class HomeQuickAccessCard(
     val languageFilter: HomeLanguageFilter = HomeLanguageFilter.ALL
 )
 
+@Immutable
 data class HomeHeroFeature(
     val id: String,
     val badge: String,
@@ -53,6 +56,7 @@ data class HomeHeroFeature(
     val playlist: CuratedPlaylist? = null
 )
 
+@Immutable
 data class HomeSectionDefinition(
     val id: String,
     val title: String,
@@ -66,6 +70,7 @@ data class HomeSectionDefinition(
     val isPrimarySpotlight: Boolean = false
 )
 
+@Immutable
 data class HomeDiscoverySection(
     val id: String,
     val title: String,
@@ -94,6 +99,7 @@ data class HomeDiscoverySection(
         }
 }
 
+@Immutable
 data class HomeNotificationItem(
     val id: String,
     val title: String,

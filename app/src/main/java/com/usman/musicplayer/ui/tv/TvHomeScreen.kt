@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
@@ -47,12 +49,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.usman.musicplayer.data.AppImageLoader
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.CuratedPlaylist
 import com.usman.musicplayer.model.HomeDiscoverySection
@@ -99,7 +103,8 @@ fun TvHomeScreen(
     onOpenAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenArtist: (OnlineArtistResult) -> Unit = { artist -> onSearchCategory(artist.name) },
     onSavePlaylistToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     val activeCollection = uiState.activeHomeCollectionSheet
     if (activeCollection != null) {
@@ -158,10 +163,40 @@ fun TvHomeScreen(
         }
     }
 
+    val context = LocalContext.current
+    val tvPrefetchUrls = remember(uiState.homeQuickCards, uiState.homeHeroFeature, visibleSections) {
+        buildList {
+            uiState.homeHeroFeature?.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to 300) }
+            uiState.homeQuickCards.take(6).forEach { card ->
+                card.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to 180) }
+            }
+            visibleSections.take(3).forEach { section ->
+                when (section.contentType) {
+                    HomeSectionContentType.SONGS ->
+                        section.songs.take(4).forEach { s -> s.albumArtUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                    HomeSectionContentType.ALBUMS ->
+                        section.albums.take(4).forEach { a -> a.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                    HomeSectionContentType.ARTISTS ->
+                        section.artists.take(4).forEach { ar -> ar.artworkUri?.takeIf { it.isNotBlank() }?.let { add(it to 260) } }
+                    HomeSectionContentType.PLAYLISTS ->
+                        section.playlists.take(4).forEach { p -> p.coverArtUri?.takeIf { it.isNotBlank() }?.let { add(it to AppImageLoader.SIZE_CARD_THUMB_PX) } }
+                }
+            }
+        }.distinctBy { it.first }
+    }
+
+    LaunchedEffect(tvPrefetchUrls) {
+        tvPrefetchUrls.forEach { (url, sizePx) ->
+            AppImageLoader.prefetchArtwork(context, url, widthPx = sizePx, heightPx = sizePx)
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF070A12)),
+            .background(Color(0xFF070A12))
+            .testTag("tv_home_lazy_column"),
         contentPadding = PaddingValues(bottom = 48.dp, top = 22.dp, start = 28.dp, end = 28.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
@@ -368,15 +403,28 @@ private fun TvFeaturedHeroBanner(
                     .background(Color(0xFF1A2236)),
                 contentAlignment = Alignment.Center
             ) {
-                if (!hero.artworkUri.isNullOrBlank()) {
+                val heroArt = hero.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+                if (heroArt != null) {
+                    val context = LocalContext.current
+                    val imageLoader = remember(context) { AppImageLoader.get(context) }
+                    val heroReq = remember(context, heroArt) {
+                        AppImageLoader.buildImageRequest(context, heroArt, 300, 300)
+                    }
                     AsyncImage(
-                        model = hero.artworkUri,
+                        model = heroReq,
+                        imageLoader = imageLoader,
                         contentDescription = hero.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
                 } else if (hero.primarySong != null) {
-                    SongAlbumArtwork(song = hero.primarySong, modifier = Modifier.fillMaxSize(), cornerRadius = 16.dp, showGlowBorder = false)
+                    SongAlbumArtwork(
+                        song = hero.primarySong,
+                        modifier = Modifier.fillMaxSize(),
+                        cornerRadius = 16.dp,
+                        showGlowBorder = false,
+                        targetSizePx = 300
+                    )
                 } else {
                     Icon(Icons.Default.MusicNote, null, tint = SoftCyan, modifier = Modifier.size(44.dp))
                 }
@@ -441,9 +489,16 @@ private fun TvQuickAccessCard(
                 .background(Brush.linearGradient(listOf(Color(0xFF3B82F6), Color(0xFF7C3AED)))),
             contentAlignment = Alignment.Center
         ) {
-            if (!card.artworkUri.isNullOrBlank()) {
+            val cardArt = card.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            if (cardArt != null) {
+                val context = LocalContext.current
+                val imageLoader = remember(context) { AppImageLoader.get(context) }
+                val cardReq = remember(context, cardArt) {
+                    AppImageLoader.buildImageRequest(context, cardArt, 180, 180)
+                }
                 AsyncImage(
-                    model = card.artworkUri,
+                    model = cardReq,
+                    imageLoader = imageLoader,
                     contentDescription = card.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -537,7 +592,11 @@ private fun TvHomeDiscoverySectionRow(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    items(section.songs.take(15), key = { "${section.id}_${it.id}_${it.filePath}" }) { song ->
+                    items(
+                        items = section.songs.take(15),
+                        key = { "${section.id}_${it.id}_${it.filePath}" },
+                        contentType = { "tv_song_card" }
+                    ) { song ->
                         TvSongCard(
                             song = song,
                             onClick = { onPlaySong(song, section.songs) }
@@ -551,7 +610,11 @@ private fun TvHomeDiscoverySectionRow(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    items(section.albums.take(14), key = { "${section.id}_${it.id}" }) { album ->
+                    items(
+                        items = section.albums.take(14),
+                        key = { "${section.id}_${it.id}" },
+                        contentType = { "tv_album_card" }
+                    ) { album ->
                         TvHomeAlbumCard(album = album, onClick = { onOpenAlbum(album) })
                     }
                 }
@@ -562,7 +625,11 @@ private fun TvHomeDiscoverySectionRow(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    items(section.artists.take(20), key = { "${section.id}_${it.id}_${it.name}" }) { artist ->
+                    items(
+                        items = section.artists.take(20),
+                        key = { "${section.id}_${it.id}_${it.name}" },
+                        contentType = { "tv_artist_card" }
+                    ) { artist ->
                         TvHomeArtistCard(artist = artist, onClick = { onOpenArtist(artist) })
                     }
                 }
@@ -573,7 +640,11 @@ private fun TvHomeDiscoverySectionRow(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    items(section.playlists.take(12), key = { "${section.id}_${it.id}" }) { playlist ->
+                    items(
+                        items = section.playlists.take(12),
+                        key = { "${section.id}_${it.id}" },
+                        contentType = { "tv_playlist_card" }
+                    ) { playlist ->
                         TvHomePlaylistCard(playlist = playlist, onClick = { onOpenPlaylist(playlist) })
                     }
                 }

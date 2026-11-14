@@ -17,11 +17,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.drawable.toBitmap
 import androidx.palette.graphics.Palette
-import coil.ImageLoader
-import coil.request.ImageRequest
 import coil.request.SuccessResult
+import com.usman.musicplayer.data.AppImageLoader
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 /**
@@ -38,6 +42,8 @@ data class AlbumPalette(
 
 object AlbumColorCache {
     private val cache = LruCache<String, AlbumPalette>(60)
+    internal val inFlight = ConcurrentHashMap<String, Deferred<AlbumPalette?>>()
+    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun get(key: String): AlbumPalette? = cache.get(key)
     fun put(key: String, palette: AlbumPalette) {
@@ -126,24 +132,41 @@ fun rememberAlbumPalette(
     )
 }
 
-private suspend fun extractColorsFromUri(context: Context, uri: String): AlbumPalette? = withContext(Dispatchers.IO) {
-    try {
-        val loader = ImageLoader(context)
-        val request = ImageRequest.Builder(context)
-            .data(uri)
-            .allowHardware(false) // Required for pixel access
-            .size(96, 96) // Fast downsample for Android Palette extraction
-            .build()
+private suspend fun extractColorsFromUri(context: Context, uri: String): AlbumPalette? {
+    AlbumColorCache.get(uri)?.let { return it }
+    val appContext = context.applicationContext
+    val deferred = AlbumColorCache.inFlight[uri] ?: synchronized(AlbumColorCache.inFlight) {
+        AlbumColorCache.inFlight[uri] ?: AlbumColorCache.scope.async {
+            try {
+                val loader = AppImageLoader.get(appContext)
+                val request = AppImageLoader.buildImageRequest(
+                    context = appContext,
+                    data = uri,
+                    widthPx = 96,
+                    heightPx = 96,
+                    crossfadeMs = 0,
+                    allowRgb565 = false,
+                    allowHardware = false
+                )
 
-        val result = loader.execute(request)
-        if (result is SuccessResult) {
-            val bitmap = result.drawable.toBitmap(96, 96, Bitmap.Config.ARGB_8888)
-            return@withContext analyzeBitmapWithPalette(bitmap)
+                val result = loader.execute(request)
+                if (result is SuccessResult) {
+                    val bitmap = result.drawable.toBitmap(96, 96, Bitmap.Config.ARGB_8888)
+                    analyzeBitmapWithPalette(bitmap)
+                } else {
+                    null
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }.also { created ->
+            AlbumColorCache.inFlight[uri] = created
+            created.invokeOnCompletion {
+                AlbumColorCache.inFlight.remove(uri, created)
+            }
         }
-    } catch (_: Exception) {
-        // Safe graceful fallback on network timeout or invalid image format
     }
-    null
+    return deferred.await()
 }
 
 /**
