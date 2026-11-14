@@ -52,7 +52,7 @@ jobs:
           PY
           fi
 
-          # Restore app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 (do not print secrets)
+          # Restore app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 securely without printing secrets
           if [ -z "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
             if [ -f "app/google-services.json" ]; then
               echo "Using existing app/google-services.json present in workspace."
@@ -76,13 +76,16 @@ jobs:
           PY
           fi
 
-          # Validate JSON syntax, expected package name, and Google OAuth Web Client ID (client_type: 3)
-          # Never print API keys, OAuth client IDs, or credentials to logs
+          # Verify that app/google-services.json exists and is valid JSON matching com.usman.musicplayer
           python3 - <<'PY'
-          import json, sys
+          import json, os, sys
 
           path = "app/google-services.json"
           expected_pkg = "com.usman.musicplayer"
+
+          if not os.path.exists(path):
+              print(f"::error file={path}::File {path} does not exist.")
+              sys.exit(1)
 
           try:
               with open(path, "r", encoding="utf-8") as f:
@@ -105,7 +108,7 @@ jobs:
 
           if matching_client is None:
               print(
-                  f"::error file={path}::No Android client in {path} matches package '{expected_pkg}'."
+                  f"::error file={path}::No Android client in {path} matches application package '{expected_pkg}'."
               )
               sys.exit(1)
 
