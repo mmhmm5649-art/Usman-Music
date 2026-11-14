@@ -263,20 +263,21 @@ class HomeDiscoveryRepository(
             rawSongs.addAll(combinedPersonal)
         }
 
+        val queryToUse = rotateQuery(definition)
         val personalizedQuery = when {
             definition.id.startsWith("discovery_recommended_") -> buildPersonalizedRecommendationQuery(
                 targetLanguage = definition.language,
                 recentlyPlayed = recentlyPlayed,
                 favoriteSongs = favoriteSongs,
                 playStats = playStats,
-                fallbackQuery = definition.query
+                fallbackQuery = queryToUse
             )
             definition.id == "discovery_discover_weekly" -> buildDiscoverWeeklyQuery(
                 recentlyPlayed = recentlyPlayed,
                 favoriteSongs = favoriteSongs,
-                fallbackQuery = definition.query
+                fallbackQuery = queryToUse
             )
-            else -> definition.query
+            else -> queryToUse
         }
 
         if (rawSongs.size < 12) {
@@ -985,6 +986,14 @@ class HomeDiscoveryRepository(
         } else {
             fallbackQuery
         }
+    }
+
+    private fun rotateQuery(definition: HomeSectionDefinition): String {
+        val allQueries = listOf(definition.query) + definition.fallbackQueries
+        if (allQueries.isEmpty()) return definition.query
+        val sessionSeed = (System.currentTimeMillis() / (5 * 60 * 1000L)).toInt()
+        val index = Math.abs((definition.id.hashCode() + sessionSeed)) % allQueries.size
+        return allQueries[index]
     }
 
     private fun songDedupKey(song: Song): String {

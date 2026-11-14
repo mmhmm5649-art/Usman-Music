@@ -305,7 +305,14 @@ fun NowPlayingScreen(
     }
 
     Box(
-        modifier = modifier.fillMaxSize()
+        modifier = modifier
+            .fillMaxSize()
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) {
+                // Consume background and empty-area taps so they never leak through to underlying screens
+            }
     ) {
         // --- 1. FULL-SCREEN ATMOSPHERIC ALBUM-ARTWORK BLUR BACKGROUND ---
         ThemeAlbumBackground(song = song, palette = albumPalette)
@@ -848,8 +855,8 @@ private fun ThemeAlbumBackground(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // 1. Unified Background: Palette-based gradient
+    Box(modifier = Modifier.fillMaxSize().background(palette.darkBackground)) {
+        // 1. Unified Background: Palette-based smooth gradient
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -859,18 +866,18 @@ private fun ThemeAlbumBackground(
                             palette.primary,
                             palette.secondary,
                             palette.darkBackground,
-                            palette.darkBackground // Extra stop for smoother transition
+                            palette.darkBackground
                         )
                     )
                 )
         )
 
-        // 2. Full-screen heavily blurred album artwork
+        // 2. Full-screen heavily blurred album artwork with edge bleeding prevention (scale 1.08f)
         val bmp = backgroundBitmap
         if (bmp != null) {
             Crossfade(
                 targetState = bmp,
-                animationSpec = tween(500),
+                animationSpec = tween(600, easing = FastOutSlowInEasing),
                 label = "AlbumBackgroundBlurCrossfade"
             ) { bitmap ->
                 Image(
@@ -879,21 +886,25 @@ private fun ThemeAlbumBackground(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = 1.08f
+                            scaleY = 1.08f
+                        }
                         .cloudy(radius = 45)
                 )
             }
         }
 
-        // 3. Smooth dark vignette overlay
+        // 3. Smooth rich dark vignette overlay for optimal contrast and zero harsh lines
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0x33000000),
-                            Color(0x00000000),
-                            Color(0xAA000000)
+                            Color(0x40000000),
+                            Color(0x10000000),
+                            Color(0xB3000000)
                         )
                     )
                 )

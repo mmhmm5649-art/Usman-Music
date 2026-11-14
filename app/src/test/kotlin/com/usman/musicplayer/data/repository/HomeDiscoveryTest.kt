@@ -23,8 +23,8 @@ class HomeDiscoveryTest {
         override suspend fun searchSongs(query: String, limit: Int, page: Int): List<Song> {
             songQueries.add(query to page)
             val lang = when {
-                query.contains("telugu", ignoreCase = true) -> "telugu"
-                query.contains("tamil", ignoreCase = true) -> "tamil"
+                query.contains("telugu", ignoreCase = true) || query.contains("tollywood", ignoreCase = true) -> "telugu"
+                query.contains("tamil", ignoreCase = true) || query.contains("kollywood", ignoreCase = true) -> "tamil"
                 query.contains("hindi", ignoreCase = true) || query.contains("bollywood", ignoreCase = true) -> "hindi"
                 query.contains("english", ignoreCase = true) || query.contains("pop", ignoreCase = true) -> "english"
                 else -> "hindi"

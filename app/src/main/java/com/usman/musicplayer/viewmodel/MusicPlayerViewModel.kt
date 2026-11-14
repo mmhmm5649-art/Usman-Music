@@ -30,11 +30,11 @@ import com.usman.musicplayer.data.repository.HomeDiscoveryCatalog
 import com.usman.musicplayer.data.repository.HomeDiscoveryRepository
 import com.usman.musicplayer.data.repository.HomeUserSignalsStore
 import com.usman.musicplayer.data.repository.PersistedPlayStat
-import com.usman.musicplayer.data.auth.GoogleAuthHelper
 import com.usman.musicplayer.data.repository.PersistedAuthMode
 import com.usman.musicplayer.data.repository.UserProfilePreferencesStore
 import com.usman.musicplayer.data.repository.UserProfileRepository
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.usman.musicplayer.model.Album
@@ -249,11 +249,19 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         setupSearchPipeline()
     }
 
+    private fun isFirebaseAvailable(context: Context): Boolean {
+        return try {
+            FirebaseApp.getApps(context).isNotEmpty()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun getOrCreateUserProfileRepository(): UserProfileRepository? {
         userProfileRepository?.let { return it }
         return try {
             val app = getApplication<Application>()
-            if (!GoogleAuthHelper.isFirebaseAvailable(app)) return null
+            if (!isFirebaseAvailable(app)) return null
             UserProfileRepository(app).also { userProfileRepository = it }
         } catch (e: Exception) {
             Log.w("UserProfileVM", "Firestore profile repository unavailable: ${e.message}")
@@ -262,19 +270,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun initializeUserProfileAndAuthObserver(application: Application) {
-        val persistedMode = profilePrefsStore.getPersistedAuthMode()
-
-        if (!GoogleAuthHelper.isFirebaseAvailable(application)) {
-            val fallbackGate = if (persistedMode == PersistedAuthMode.GUEST) {
-                AuthGateDestination.HOME_GUEST
-            } else {
-                AuthGateDestination.LOGIN_SCREEN
-            }
+        if (!isFirebaseAvailable(application)) {
             _uiState.update {
                 it.copy(
                     userProfile = UserProfileState(
-                        gateDestination = fallbackGate,
-                        isGuestMode = fallbackGate == AuthGateDestination.HOME_GUEST
+                        gateDestination = AuthGateDestination.HOME_GUEST,
+                        isGuestMode = true
                     )
                 )
             }
@@ -285,16 +286,11 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             Firebase.auth
         } catch (e: Exception) {
             Log.w("UserProfileVM", "FirebaseAuth unavailable: ${e.message}")
-            val fallbackGate = if (persistedMode == PersistedAuthMode.GUEST) {
-                AuthGateDestination.HOME_GUEST
-            } else {
-                AuthGateDestination.LOGIN_SCREEN
-            }
             _uiState.update {
                 it.copy(
                     userProfile = UserProfileState(
-                        gateDestination = fallbackGate,
-                        isGuestMode = fallbackGate == AuthGateDestination.HOME_GUEST
+                        gateDestination = AuthGateDestination.HOME_GUEST,
+                        isGuestMode = true
                     )
                 )
             }
@@ -310,55 +306,15 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
         val initialUser = auth.currentUser
         if (initialUser != null) {
-            // Automatically restore authenticated session on subsequent launches
-            profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
             handleFirebaseAuthChange(initialUser)
-        } else if (persistedMode == PersistedAuthMode.GUEST) {
-            // Remember guest session across app restarts
+        } else {
+            profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GUEST)
             _uiState.update {
                 it.copy(
                     userProfile = UserProfileState(
                         gateDestination = AuthGateDestination.HOME_GUEST,
                         isSignedIn = false,
                         isGuestMode = true
-                    )
-                )
-            }
-        } else if (persistedMode == PersistedAuthMode.GOOGLE) {
-            // Previous Google session is no longer active (e.g., revoked/expired token); try silent restore safely
-            _uiState.update {
-                it.copy(
-                    userProfile = UserProfileState(
-                        gateDestination = AuthGateDestination.LOGIN_SCREEN,
-                        isAuthInProgress = true
-                    )
-                )
-            }
-            GoogleAuthHelper.attemptSilentSignIn(
-                context = application,
-                scope = viewModelScope,
-                onAuthSuccess = {
-                    profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
-                },
-                onUnauthenticated = {
-                    profilePrefsStore.clearAuthMode()
-                    _uiState.update {
-                        it.copy(
-                            userProfile = UserProfileState(
-                                gateDestination = AuthGateDestination.LOGIN_SCREEN,
-                                isAuthInProgress = false,
-                                sessionNotice = "Your session expired. Please continue with Google or as Guest."
-                            )
-                        )
-                    }
-                }
-            )
-        } else {
-            // First launch or explicitly signed out -> Show Login screen
-            _uiState.update {
-                it.copy(
-                    userProfile = UserProfileState(
-                        gateDestination = AuthGateDestination.LOGIN_SCREEN
                     )
                 )
             }
@@ -373,18 +329,12 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             profileSyncJob = null
             activeObservedProfileUid = null
 
-            val persistedMode = profilePrefsStore.getPersistedAuthMode()
-            val destination = if (persistedMode == PersistedAuthMode.GUEST) {
-                AuthGateDestination.HOME_GUEST
-            } else {
-                AuthGateDestination.LOGIN_SCREEN
-            }
             _uiState.update { state ->
                 state.copy(
                     userProfile = UserProfileState(
-                        gateDestination = destination,
+                        gateDestination = AuthGateDestination.HOME_GUEST,
                         isSignedIn = false,
-                        isGuestMode = destination == AuthGateDestination.HOME_GUEST,
+                        isGuestMode = true,
                         uid = null,
                         googleDisplayName = null,
                         email = null,
@@ -463,103 +413,6 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 photoUrl = photoUrl
             )
         }
-    }
-
-    fun continueAsGuest() {
-        profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GUEST)
-        _uiState.update {
-            it.copy(
-                userProfile = UserProfileState(
-                    gateDestination = AuthGateDestination.HOME_GUEST,
-                    isSignedIn = false,
-                    isGuestMode = true,
-                    authError = null,
-                    sessionNotice = null
-                )
-            )
-        }
-    }
-
-    fun signInWithGoogle(activityContext: Context) {
-        _uiState.update {
-            it.copy(
-                userProfile = it.userProfile.copy(
-                    isAuthInProgress = true,
-                    authError = null,
-                    sessionNotice = null
-                )
-            )
-        }
-        GoogleAuthHelper.signInWithGoogle(
-            context = activityContext,
-            scope = viewModelScope,
-            onAuthSuccess = {
-                profilePrefsStore.setPersistedAuthMode(PersistedAuthMode.GOOGLE)
-                _uiState.update {
-                    it.copy(
-                        userProfile = it.userProfile.copy(
-                            isAuthInProgress = false,
-                            authError = null,
-                            sessionNotice = null
-                        )
-                    )
-                }
-            },
-            onAuthCancelled = {
-                _uiState.update {
-                    it.copy(
-                        userProfile = it.userProfile.copy(
-                            isAuthInProgress = false
-                        )
-                    )
-                }
-            },
-            onAuthError = { errorMsg ->
-                _uiState.update {
-                    it.copy(
-                        userProfile = it.userProfile.copy(
-                            isAuthInProgress = false,
-                            authError = errorMsg
-                        )
-                    )
-                }
-            }
-        )
-    }
-
-    fun signOut(context: Context) {
-        profilePrefsStore.clearAuthMode()
-        profileObserverJob?.cancel()
-        profileObserverJob = null
-        profileSyncJob?.cancel()
-        profileSyncJob = null
-        activeObservedProfileUid = null
-
-        _uiState.update {
-            it.copy(
-                userProfile = it.userProfile.copy(
-                    isAuthInProgress = true,
-                    authError = null,
-                    sessionNotice = null
-                )
-            )
-        }
-        GoogleAuthHelper.signOut(
-            context = context,
-            scope = viewModelScope,
-            onSignOutComplete = {
-                _uiState.update {
-                    it.copy(
-                        userProfile = UserProfileState(
-                            gateDestination = AuthGateDestination.LOGIN_SCREEN,
-                            isSignedIn = false,
-                            isGuestMode = false,
-                            isAuthInProgress = false
-                        )
-                    )
-                }
-            }
-        )
     }
 
     private fun loadSearchHistory() {

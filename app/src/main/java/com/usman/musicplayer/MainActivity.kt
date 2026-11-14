@@ -296,42 +296,22 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
     val hazeState = if (isTv) null else remember { HazeState() }
 
-    LaunchedEffect(uiState.userProfile.gateDestination) {
-        if (uiState.userProfile.gateDestination == com.usman.musicplayer.model.AuthGateDestination.LOGIN_SCREEN) {
-            isPluginManagerExpanded = false
-            isSettingsExpanded = false
-            isEqualizerExpanded = false
-            isNowPlayingExpanded = false
-            isDiagnosticExpanded = false
-            currentDestination = AppDestination.HOME
-        }
-    }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(AmoledBlack)
     ) {
-        if (uiState.userProfile.gateDestination == com.usman.musicplayer.model.AuthGateDestination.LOGIN_SCREEN) {
-            com.usman.musicplayer.ui.screens.LoginScreen(
-                isAuthInProgress = uiState.userProfile.isAuthInProgress,
-                authError = uiState.userProfile.authError,
-                sessionNotice = uiState.userProfile.sessionNotice,
-                onContinueWithGoogle = { viewModel.signInWithGoogle(context) },
-                onContinueAsGuest = { viewModel.continueAsGuest() }
-            )
-        } else {
-            // Main App Content Container
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = appScale
-                        scaleY = appScale
-                        alpha = appAlpha
-                    }
-            ) {
-                if (isTv) {
+        // Main App Content Container
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = appScale
+                    scaleY = appScale
+                    alpha = appAlpha
+                }
+        ) {
+            if (isTv) {
                 // --- ANDROID TV DEDICATED PRESENTATION LAYER ---
                 Row(modifier = Modifier.fillMaxSize()) {
                     com.usman.musicplayer.ui.tv.TvNavigationRail(
@@ -423,9 +403,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                     onOpenEqualizer = { isEqualizerExpanded = true },
                                     onOpenPlugins = { isPluginManagerExpanded = true },
                                     onRescanLibrary = { viewModel.scanMusicLibrary() },
-                                    userProfile = uiState.userProfile,
-                                    onSignInClick = { viewModel.signInWithGoogle(context) },
-                                    onSignOutClick = { viewModel.signOut(context) }
+                                    userProfile = uiState.userProfile
                                 )
                             }
                         }
@@ -899,14 +877,12 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
-                SettingsScreen(
-                    uiState = uiState,
-                    onRescanClick = { viewModel.scanMusicLibrary() },
-                    onOpenExtensions = { isPluginManagerExpanded = true },
-                    onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) },
-                    onSignInClick = { viewModel.signInWithGoogle(context) },
-                    onSignOutClick = { viewModel.signOut(context) }
-                )
+            SettingsScreen(
+                uiState = uiState,
+                onRescanClick = { viewModel.scanMusicLibrary() },
+                onOpenExtensions = { isPluginManagerExpanded = true },
+                onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) }
+            )
         }
 
         // Plugin Manager Screen Slide-In Transition
@@ -916,7 +892,6 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
             PluginManagerScreen(onBackClick = { isPluginManagerExpanded = false })
-        }
         }
 
         // Cinematic App-Opening Logo Flare Overlay (Fades out seamlessly)

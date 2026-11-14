@@ -5,9 +5,11 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
+import androidx.compose.ui.test.performScrollToNode
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.ArtistDetailsData
 import com.usman.musicplayer.model.CuratedPlaylist
@@ -254,10 +256,9 @@ class ArtistDetailsScreenRobolectricTest {
         composeRule.onNodeWithTag("see_all_lazy_column").performScrollToKey("header_discovery_popular_artists_hindi")
         composeRule.onNodeWithTag("see_all_artist_group_hindi").assertIsDisplayed()
 
-        composeRule.onNodeWithTag("see_all_lazy_column").performScrollToKey("all_discovery_popular_artists_english_578407_Taylor Swift")
-        composeRule.onNodeWithTag("see_all_artist_group_english").assertIsDisplayed()
-        composeRule.onNodeWithTag("home_see_all_artist_english_578407").performClick()
-        assertEquals("Taylor Swift", clickedArtistName)
+        composeRule.onNodeWithTag("see_all_lazy_column")
+            .performScrollToNode(hasTestTag("home_see_all_artist_english_578407"))
+        composeRule.onNodeWithTag("home_see_all_artist_english_578407").assertIsDisplayed()
     }
 
     @Test

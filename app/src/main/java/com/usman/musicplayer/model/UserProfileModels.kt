@@ -6,7 +6,6 @@ import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.ServerTimestamp
 
 enum class AuthGateDestination {
-    LOGIN_SCREEN,
     HOME_AUTHENTICATED,
     HOME_GUEST
 }
@@ -23,9 +22,9 @@ data class UserProfileDocument(
 )
 
 data class UserProfileState(
-    val gateDestination: AuthGateDestination = AuthGateDestination.LOGIN_SCREEN,
+    val gateDestination: AuthGateDestination = AuthGateDestination.HOME_GUEST,
     val isSignedIn: Boolean = false,
-    val isGuestMode: Boolean = false,
+    val isGuestMode: Boolean = true,
     val uid: String? = null,
     val googleDisplayName: String? = null,
     val email: String? = null,

@@ -3,6 +3,7 @@ package com.usman.musicplayer.ui
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -10,12 +11,12 @@ import androidx.compose.ui.test.performClick
 import com.usman.musicplayer.model.AuthGateDestination
 import com.usman.musicplayer.model.HomeLanguagePolicy
 import com.usman.musicplayer.model.UserProfileState
-import com.usman.musicplayer.ui.screens.LoginScreen
 import com.usman.musicplayer.ui.screens.SettingsScreen
 import com.usman.musicplayer.ui.theme.UsmanMusicPlayerTheme
 import com.usman.musicplayer.ui.tv.TvHomeScreen
 import com.usman.musicplayer.ui.tv.TvSettingsScreen
 import com.usman.musicplayer.viewmodel.MusicPlayerUiState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -31,74 +32,14 @@ class AuthAndProfileScreensRobolectricTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun loginScreen_rendersActionsErrorAndTriggersCallbacks() {
-        var googleClicked = false
-        var guestClicked = false
-
-        composeRule.setContent {
-            UsmanMusicPlayerTheme {
-                LoginScreen(
-                    isAuthInProgress = false,
-                    authError = "Google Sign-In failed.",
-                    sessionNotice = null,
-                    onContinueWithGoogle = { googleClicked = true },
-                    onContinueAsGuest = { guestClicked = true }
-                )
-            }
-        }
-
-        composeRule.onNodeWithText("USMAN MUSIC").assertIsDisplayed()
-        composeRule.onNodeWithTag("login_error_message").assertTextEquals("Google Sign-In failed.")
-        composeRule.onNodeWithTag("login_continue_with_google_button").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("login_continue_as_guest_button").assertIsDisplayed().performClick()
-
-        assertTrue(googleClicked)
-        assertTrue(guestClicked)
+    fun userProfileState_defaultsDirectlyToHomeWithoutLoginGate() {
+        val defaultProfile = UserProfileState()
+        assertEquals(AuthGateDestination.HOME_GUEST, defaultProfile.gateDestination)
+        assertTrue(defaultProfile.isGuestMode)
     }
 
     @Test
-    fun settingsScreen_signedInProfileDisplaysGoogleDetailsAndSignOutWithoutEditableName() {
-        var signOutClicked = false
-        val state = MusicPlayerUiState(
-            userProfile = UserProfileState(
-                gateDestination = AuthGateDestination.HOME_AUTHENTICATED,
-                isSignedIn = true,
-                uid = "uid_123",
-                googleDisplayName = "Usman Ali",
-                email = "usman@example.com",
-                photoUrl = "https://example.com/avatar.png"
-            )
-        )
-
-        composeRule.setContent {
-            UsmanMusicPlayerTheme {
-                SettingsScreen(
-                    uiState = state,
-                    onRescanClick = {},
-                    onSignInClick = {},
-                    onSignOutClick = { signOutClicked = true }
-                )
-            }
-        }
-
-        composeRule.onNodeWithTag("profile_settings_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("profile_account_name").assertTextEquals("Usman Ali")
-        composeRule.onNodeWithTag("profile_account_subtitle").assertTextEquals("usman@example.com")
-        composeRule.onNodeWithText("Sign Out").assertIsDisplayed()
-
-        // Ensure no editable display name controls exist
-        assertTrue(
-            composeRule.onAllNodesWithText("Display Name", substring = true, ignoreCase = true)
-                .fetchSemanticsNodes().isEmpty()
-        )
-
-        composeRule.onNodeWithTag("profile_auth_button").performClick()
-        assertTrue(signOutClicked)
-    }
-
-    @Test
-    fun settingsScreen_guestProfileDisplaysGuestStatusAndContinueWithGoogle() {
-        var signInClicked = false
+    fun settingsScreen_displaysListenerProfileWithoutGoogleSignInOrStartListening() {
         val state = MusicPlayerUiState(
             userProfile = UserProfileState(
                 gateDestination = AuthGateDestination.HOME_GUEST,
@@ -111,29 +52,37 @@ class AuthAndProfileScreensRobolectricTest {
             UsmanMusicPlayerTheme {
                 SettingsScreen(
                     uiState = state,
-                    onRescanClick = {},
-                    onSignInClick = { signInClicked = true },
-                    onSignOutClick = {}
+                    onRescanClick = {}
                 )
             }
         }
 
-        composeRule.onNodeWithTag("profile_account_name").assertTextEquals("Guest Mode")
-        composeRule.onNodeWithTag("profile_auth_button").assertIsDisplayed().performClick()
-        assertTrue(signInClicked)
+        composeRule.onNodeWithTag("profile_settings_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("profile_account_name").assertTextEquals("USMAN MUSIC LISTENER")
+        composeRule.onNodeWithTag("profile_account_subtitle").assertTextEquals("Local & Streaming Audio Ready")
+
+        // Ensure no Google Sign-In, Start Listening, or Sign Out controls exist
+        assertTrue(
+            composeRule.onAllNodesWithTag("profile_auth_button").fetchSemanticsNodes().isEmpty()
+        )
+        listOf(
+            "Continue with Google",
+            "Sign in with Google",
+            "Sign Out",
+            "Start Listening",
+            "Display Name"
+        ).forEach { removedText ->
+            assertTrue(
+                "Removed text '$removedText' should not appear in SettingsScreen",
+                composeRule.onAllNodesWithText(removedText, substring = true, ignoreCase = true)
+                    .fetchSemanticsNodes().isEmpty()
+            )
+        }
     }
 
     @Test
     fun settingsScreen_containsOnlyProfileAndEqualizerSections() {
-        val state = MusicPlayerUiState(
-            userProfile = UserProfileState(
-                gateDestination = AuthGateDestination.HOME_AUTHENTICATED,
-                isSignedIn = true,
-                uid = "uid_123",
-                googleDisplayName = "Usman Ali",
-                email = "usman@example.com"
-            )
-        )
+        val state = MusicPlayerUiState()
 
         composeRule.setContent {
             UsmanMusicPlayerTheme {
@@ -171,32 +120,34 @@ class AuthAndProfileScreensRobolectricTest {
 
     @Test
     @Config(sdk = [35], qualifiers = "w1280dp-h720dp-land")
-    fun tvSettingsAndTvHomeScreen_showProfileActionsAndPlainGreetingWithoutName() {
-        var signOutClicked = false
-        val signedInProfile = UserProfileState(
-            gateDestination = AuthGateDestination.HOME_AUTHENTICATED,
-            isSignedIn = true,
-            uid = "uid_tv",
-            googleDisplayName = "Usman Ali",
-            email = "usman@example.com"
-        )
-
+    fun tvSettingsScreen_showsListenerProfileWithoutGoogleSignInOrSignOut() {
         composeRule.setContent {
             UsmanMusicPlayerTheme {
                 TvSettingsScreen(
                     onOpenEqualizer = {},
                     onOpenPlugins = {},
                     onRescanLibrary = {},
-                    userProfile = signedInProfile,
-                    onSignInClick = {},
-                    onSignOutClick = { signOutClicked = true }
+                    userProfile = UserProfileState()
                 )
             }
         }
 
         composeRule.onNodeWithTag("tv_settings_profile_card").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("tv_profile_auth_button").assertIsDisplayed().performClick()
-        assertTrue(signOutClicked)
+        assertTrue(
+            composeRule.onAllNodesWithTag("tv_profile_auth_button").fetchSemanticsNodes().isEmpty()
+        )
+        listOf(
+            "Continue with Google",
+            "Sign in with Google",
+            "Sign Out",
+            "Start Listening"
+        ).forEach { removedText ->
+            assertTrue(
+                "Removed text '$removedText' should not appear in TvSettingsScreen",
+                composeRule.onAllNodesWithText(removedText, substring = true, ignoreCase = true)
+                    .fetchSemanticsNodes().isEmpty()
+            )
+        }
     }
 
     @Test
@@ -239,9 +190,7 @@ class AuthAndProfileScreensRobolectricTest {
         composeRule.setContent {
             UsmanMusicPlayerTheme {
                 com.usman.musicplayer.ui.screens.SpotifyStyleHomeHeader(
-                    hasNotifications = false,
                     onSearchClick = {},
-                    onNotificationsClick = {},
                     onProfileSettingsClick = {}
                 )
             }
@@ -262,7 +211,7 @@ class AuthAndProfileScreensRobolectricTest {
 
         composeRule.onNodeWithTag("studio_master_card").assertIsDisplayed()
         composeRule.onNodeWithTag("quick_preset_studio_feel").performClick()
-        org.junit.Assert.assertEquals(
+        assertEquals(
             "Studio Feel",
             com.usman.musicplayer.playback.AudioEffectsManager.effectsState.value.activeQuickPresetName
         )

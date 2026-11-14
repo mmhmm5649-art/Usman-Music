@@ -79,7 +79,6 @@ fun HomeScreen(
     onSavePlaylistToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
-    var showNotificationsSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val isNewReleasesMode = uiState.activeHomeGenreTab == "New Releases"
@@ -143,9 +142,7 @@ fun HomeScreen(
         ) {
             item(key = "home_header") {
                 SpotifyStyleHomeHeader(
-                    hasNotifications = uiState.homeNotifications.isNotEmpty(),
                     onSearchClick = onNavigateToSearch,
-                    onNotificationsClick = { showNotificationsSheet = true },
                     onProfileSettingsClick = onOpenSettings
                 )
             }
@@ -267,14 +264,5 @@ fun HomeScreen(
             )
         }
 
-        // Functional Notification / "What's New" Sheet
-        if (showNotificationsSheet) {
-            HomeNotificationsSheet(
-                notifications = uiState.homeNotifications,
-                onDismiss = { showNotificationsSheet = false },
-                onPlaySong = onPlaySong,
-                onOpenAlbum = onOpenAlbum
-            )
-        }
     }
 }

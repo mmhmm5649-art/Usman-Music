@@ -1,6 +1,15 @@
 package com.usman.musicplayer.ui.components
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,42 +92,50 @@ fun SongAlbumArtwork(
             .background(Color(0xFF0F1123)),
         contentAlignment = Alignment.Center
     ) {
-        val bitmap = loadedBitmap
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Album Art for ${song?.title ?: "Track"}",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            // When song is offline and doesn't have embedded ID3 cover, generate a deterministic
-            // premium cosmic/neon gradient artwork tailored specifically to the song's title & artist
-            val seed = (song?.title?.hashCode() ?: 0) xor (song?.artist?.hashCode() ?: 0)
-            val colors = remember(seed) {
-                generateProceduralCoverColors(seed)
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = colors,
-                            radius = 450f
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                // Official Usman music icon or Music symbol
+        AnimatedContent(
+            targetState = loadedBitmap,
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                    scaleIn(initialScale = 0.96f, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
+                    .togetherWith(fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)))
+            },
+            label = "ArtworkCrossfade"
+        ) { bitmap ->
+            if (bitmap != null) {
                 Image(
-                    painter = painterResource(id = R.drawable.ic_app_logo),
-                    contentDescription = "USMAN Music Artwork",
-                    modifier = Modifier
-                        .size(if (cornerRadius > 20.dp) 110.dp else 36.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                    alpha = 0.9f
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Album Art for ${song?.title ?: "Track"}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
                 )
+            } else {
+                // When song is offline and doesn't have embedded ID3 cover, generate a deterministic
+                // premium cosmic/neon gradient artwork tailored specifically to the song's title & artist
+                val seed = (song?.title?.hashCode() ?: 0) xor (song?.artist?.hashCode() ?: 0)
+                val colors = remember(seed) {
+                    generateProceduralCoverColors(seed)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.radialGradient(
+                                colors = colors,
+                                radius = 450f
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_app_logo),
+                        contentDescription = "USMAN Music Artwork",
+                        modifier = Modifier
+                            .size(if (cornerRadius > 20.dp) 110.dp else 36.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                        alpha = 0.9f
+                    )
+                }
             }
         }
     }

@@ -511,8 +511,8 @@ fun HomeSeeAllSheet(
                                         artist = artist,
                                         testTag = "home_see_all_artist_${groupKey}_${artist.id}",
                                         onClick = {
-                                            onDismiss()
                                             onOpenArtist(artist)
+                                            onDismiss()
                                         }
                                     )
                                 }
@@ -812,10 +812,10 @@ private fun SheetArtistRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .testTag(testTag)
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .padding(8.dp)
-            .testTag(testTag),
+            .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
