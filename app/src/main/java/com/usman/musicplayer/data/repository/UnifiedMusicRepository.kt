@@ -5,6 +5,9 @@ import android.util.Log
 import com.usman.musicplayer.data.repository.providers.JioSaavnMusicProvider
 import com.usman.musicplayer.extension.ExtensionManager
 import com.usman.musicplayer.model.OnlineArtistResult
+import com.usman.musicplayer.model.ResolvedStream
+import com.usman.musicplayer.model.StreamingQuality
+import com.usman.musicplayer.model.StreamingQualitySelector
 import com.usman.musicplayer.sdk.AlbumDetails
 import com.usman.musicplayer.sdk.AlbumSearchResult
 import com.usman.musicplayer.sdk.MusicProvider
@@ -26,6 +29,8 @@ data class SearchSongsOutcome(
     val fromCache: Boolean = false,
     val hadNetworkError: Boolean = false
 )
+
+class TrackCompatibilityException(message: String) : Exception(message)
 
 class UnifiedMusicRepository(
     context: Context?,
@@ -949,6 +954,101 @@ class UnifiedMusicRepository(
     suspend fun getStreamUrl(song: Song): Result<String> {
         ensureProvidersInitialized()
         return ProviderRegistry.getStreamUrl(song)
+    }
+
+    /**
+     * Resolves a full-length online track stream for the caller's chosen [StreamingQuality].
+     * Never returns 30-second previews or iTunes URLs.
+     */
+    suspend fun resolveStreamForQuality(
+        song: Song,
+        quality: StreamingQuality
+    ): Result<ResolvedStream> {
+        ensureProvidersInitialized()
+        if (song.isOnline && !isAllowedUserFacingSong(song)) {
+            return Result.failure(
+                TrackCompatibilityException("Track '${song.title}' is not a supported full-length streaming track.")
+            )
+        }
+        val jioProvider = userFacingOnlineProviders()
+            .filterIsInstance<JioSaavnMusicProvider>()
+            .firstOrNull()
+        if (jioProvider != null && (song.sourceProvider.isNullOrBlank() || song.sourceProvider.equals("JioSaavn", ignoreCase = true))) {
+            return jioProvider.resolveStreamForQuality(song, quality)
+        }
+        val fallback = ProviderRegistry.getStreamUrl(song)
+        return fallback.map { url ->
+            StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(url, quality)
+        }
+    }
+
+    /**
+     * Resolves a canonical Listen Together track strictly by its canonical track ID through
+     * the existing JioSaavn provider. Never substitutes a different song or a 30-second preview.
+     */
+    suspend fun resolveCanonicalListenTogetherTrack(
+        trackId: String,
+        provider: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkUrl: String?,
+        durationMs: Long,
+        quality: StreamingQuality
+    ): Result<Pair<Song, ResolvedStream>> {
+        ensureProvidersInitialized()
+        val normalizedId = trackId.trim()
+        val normalizedProvider = provider.trim()
+        if (normalizedId.isBlank()) {
+            return Result.failure(TrackCompatibilityException("Shared track is missing a canonical track ID."))
+        }
+        if (normalizedProvider.equals("iTunes", ignoreCase = true) ||
+            normalizedProvider.equals("LOCAL", ignoreCase = true) ||
+            normalizedProvider.equals("YouTube", ignoreCase = true)
+        ) {
+            return Result.failure(
+                TrackCompatibilityException("'$title' is a local or unsupported source and cannot be streamed in Listen Together.")
+            )
+        }
+
+        val canonicalSong = Song(
+            id = normalizedId.hashCode().toLong() and 0x7FFFFFFFL,
+            title = title.ifBlank { "Unknown Track" },
+            artist = artist.ifBlank { "Unknown Artist" },
+            album = album.ifBlank { "Listen Together" },
+            durationMs = durationMs.coerceAtLeast(0L),
+            filePath = normalizedId,
+            folderName = "JioSaavn",
+            albumArtUri = artworkUrl?.takeIf { it.isNotBlank() },
+            contentUriString = null,
+            isOnline = true,
+            playbackType = PlaybackType.FULL,
+            sourceProvider = "JioSaavn",
+            isStreamable = true,
+            isFullTrackVerified = true
+        )
+
+        val streamResult = resolveStreamForQuality(canonicalSong, quality)
+        return streamResult.fold(
+            onSuccess = { resolved ->
+                if (resolved.url.contains("itunes.apple.com", ignoreCase = true) ||
+                    resolved.url.contains("mzstatic.com", ignoreCase = true)
+                ) {
+                    Result.failure(
+                        TrackCompatibilityException("'$title' only returned a preview URL and cannot be played in Listen Together.")
+                    )
+                } else {
+                    Result.success(canonicalSong.copy(contentUriString = resolved.url) to resolved)
+                }
+            },
+            onFailure = { err ->
+                Result.failure(
+                    TrackCompatibilityException(
+                        "Unable to resolve full-length stream for '$title': ${err.message ?: "track unavailable"}"
+                    )
+                )
+            }
+        )
     }
 
     private fun trimOldestEntries(map: ConcurrentHashMap<String, CachedResult>) {

@@ -67,6 +67,7 @@ fun LibraryScreen(
     onResumeDownload: (Long) -> Unit = {},
     onCancelDownload: (Long) -> Unit = {},
     onRetryDownload: (Long) -> Unit = {},
+    onOpenSongOptions: (Song) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -240,7 +241,8 @@ fun LibraryScreen(
                             hasPermission = uiState.hasStoragePermission,
                             onSongClick = onPlaySong,
                             onRescan = onRescanLibrary,
-                            onOpenFolderPicker = onOpenFolderPicker
+                            onOpenFolderPicker = onOpenFolderPicker,
+                            onOpenOptions = onOpenSongOptions
                         )
                     }
                     LibraryTab.PLAYLISTS -> {
@@ -265,7 +267,8 @@ fun LibraryScreen(
                                 onSongClick = onPlaySong,
                                 onRemoveSong = { songId ->
                                     onRemoveSongFromPlaylist(uiState.selectedPlaylist.id, songId)
-                                }
+                                },
+                                onOpenOptions = onOpenSongOptions
                             )
                         }
                     }
@@ -296,7 +299,8 @@ fun LibraryScreen(
                             currentSong = uiState.currentSong,
                             isPlaying = uiState.isPlaying,
                             onSongClick = onPlaySong,
-                            onRemoveDownload = onRemoveDownload
+                            onRemoveDownload = onRemoveDownload,
+                            onOpenOptions = onOpenSongOptions
                         )
                     }
                     LibraryTab.DOWNLOAD_CENTRE -> {
@@ -605,7 +609,8 @@ private fun PlaylistDetailView(
     isPlaying: Boolean,
     onBackClick: () -> Unit,
     onSongClick: (Song) -> Unit,
-    onRemoveSong: (Long) -> Unit
+    onRemoveSong: (Long) -> Unit,
+    onOpenOptions: (Song) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -681,6 +686,11 @@ private fun PlaylistDetailView(
                         IconButton(onClick = { onRemoveSong(song.id) }) {
                             Icon(Icons.Default.Delete, "Remove", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
                         }
+                        com.usman.musicplayer.ui.components.SongRowMoreButton(
+                            songTitle = song.title,
+                            onClick = { onOpenOptions(song) },
+                            testTag = "song_options_button_${song.id}"
+                        )
                     }
                 }
             }
@@ -696,7 +706,8 @@ private fun AllSongsList(
     hasPermission: Boolean,
     onSongClick: (Song) -> Unit,
     onRescan: () -> Unit,
-    onOpenFolderPicker: () -> Unit
+    onOpenFolderPicker: () -> Unit,
+    onOpenOptions: (Song) -> Unit = {}
 ) {
     if (songs.isEmpty()) {
         EmptyLibraryState(
@@ -763,6 +774,12 @@ private fun AllSongsList(
                             fontSize = 12.sp
                         )
                     }
+
+                    com.usman.musicplayer.ui.components.SongRowMoreButton(
+                        songTitle = song.title,
+                        onClick = { onOpenOptions(song) },
+                        testTag = "song_options_button_${song.id}"
+                    )
                 }
             }
         }
@@ -1034,7 +1051,8 @@ private fun DownloadsSection(
     currentSong: Song?,
     isPlaying: Boolean,
     onSongClick: (Song) -> Unit,
-    onRemoveDownload: (Long) -> Unit
+    onRemoveDownload: (Long) -> Unit,
+    onOpenOptions: (Song) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -1155,6 +1173,11 @@ private fun DownloadsSection(
                             IconButton(onClick = { onRemoveDownload(song.id) }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Remove download", tint = Color(0xFFF43F5E), modifier = Modifier.size(20.dp))
                             }
+                            com.usman.musicplayer.ui.components.SongRowMoreButton(
+                                songTitle = song.title,
+                                onClick = { onOpenOptions(song) },
+                                testTag = "song_options_button_${song.id}"
+                            )
                         }
                     }
                 }

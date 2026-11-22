@@ -100,6 +100,7 @@ fun AlbumDetailsScreen(
     onCreatePlaylistFromAlbum: (String, List<Song>, (Boolean, String) -> Unit) -> Unit,
     onDownloadAlbum: (List<Song>, (String) -> Unit) -> Unit,
     onDownloadSong: (Song) -> Unit,
+    onOpenSongOptions: (Song) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
@@ -468,10 +469,7 @@ fun AlbumDetailsScreen(
                             isCurrent = isCurrent,
                             isPlaying = isCurrent && isPlaying,
                             onPlay = { onPlayTrack(tracks, index) },
-                            onDownload = {
-                                onDownloadSong(track)
-                                feedbackMessage = "Downloading \"${track.title}\""
-                            }
+                            onOpenOptions = { onOpenSongOptions(track) }
                         )
                     }
                 }
@@ -748,7 +746,7 @@ private fun AlbumTrackRow(
     isCurrent: Boolean,
     isPlaying: Boolean,
     onPlay: () -> Unit,
-    onDownload: () -> Unit
+    onOpenOptions: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
@@ -861,24 +859,10 @@ private fun AlbumTrackRow(
             )
         }
 
-        if (song.isOnline && song.playbackType == PlaybackType.FULL && song.isStreamable) {
-            var isDlFocused by remember { mutableStateOf(false) }
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .onFocusChanged { isDlFocused = it.isFocused }
-                    .clip(CircleShape)
-                    .background(if (isDlFocused) SoftCyan.copy(alpha = 0.25f) else Color.Transparent)
-                    .clickable(onClick = onDownload),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = "Download ${song.title}",
-                    tint = if (isDlFocused) SoftCyan else TextSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
+        com.usman.musicplayer.ui.components.SongRowMoreButton(
+            songTitle = song.title,
+            onClick = onOpenOptions,
+            testTag = "song_options_button_${song.id}"
+        )
     }
 }

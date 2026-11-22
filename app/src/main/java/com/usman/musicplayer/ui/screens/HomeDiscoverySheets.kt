@@ -96,7 +96,8 @@ fun HomeCollectionDetailSheet(
     onShuffleAll: (List<Song>) -> Unit,
     onToggleFavorite: (Song) -> Unit,
     onDownloadSong: (Song) -> Unit,
-    onSaveToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit
+    onSaveToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit,
+    onOpenSongOptions: (Song) -> Unit = {}
 ) {
     var feedbackMessage by remember(playlist.id) { mutableStateOf<String?>(null) }
 
@@ -283,7 +284,7 @@ fun HomeCollectionDetailSheet(
                                 isPlaying = isPlaying,
                                 onPlay = { onPlaySong(song, playlist.songs) },
                                 onToggleFavorite = { onToggleFavorite(song) },
-                                onDownload = { onDownloadSong(song) }
+                                onOpenOptions = { onOpenSongOptions(song) }
                             )
                         }
                     }
@@ -309,7 +310,8 @@ fun HomeSeeAllSheet(
     onOpenAlbum: (AlbumSearchResult) -> Unit,
     onOpenArtist: (OnlineArtistResult) -> Unit,
     onOpenPlaylist: (CuratedPlaylist) -> Unit,
-    onSaveSectionAsPlaylist: (String, List<Song>, (Boolean, String) -> Unit) -> Unit
+    onSaveSectionAsPlaylist: (String, List<Song>, (Boolean, String) -> Unit) -> Unit,
+    onOpenSongOptions: (Song) -> Unit = {}
 ) {
     var savedMsg by remember(section.id) { mutableStateOf<String?>(null) }
     var selectedArtistLanguage by remember(section.id) { mutableStateOf(HomeLanguageFilter.ALL) }
@@ -452,7 +454,7 @@ fun HomeSeeAllSheet(
                                 isPlaying = isPlaying,
                                 onPlay = { onPlaySong(song, section.songs) },
                                 onToggleFavorite = { onToggleFavorite(song) },
-                                onDownload = { onDownloadSong(song) }
+                                onOpenOptions = { onOpenSongOptions(song) }
                             )
                         }
                     }
@@ -767,7 +769,7 @@ private fun SheetTrackRow(
     isPlaying: Boolean,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onDownload: () -> Unit
+    onOpenOptions: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -816,17 +818,11 @@ private fun SheetTrackRow(
                 modifier = Modifier.size(19.dp)
             )
         }
-        IconButton(
-            onClick = onDownload,
-            modifier = Modifier.size(48.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Download,
-                contentDescription = "Download track",
-                tint = SoftCyan,
-                modifier = Modifier.size(19.dp)
-            )
-        }
+        com.usman.musicplayer.ui.components.SongRowMoreButton(
+            songTitle = song.title,
+            onClick = onOpenOptions,
+            testTag = "song_options_button_${song.id}"
+        )
     }
 }
 

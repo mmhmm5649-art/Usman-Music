@@ -43,6 +43,7 @@ import com.usman.musicplayer.model.HomeQuickAccessCard
 import com.usman.musicplayer.model.LibraryTab
 import com.usman.musicplayer.model.OnlineArtistResult
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.ui.components.ListenTogetherHomeCard
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.ElectricBlue
 import com.usman.musicplayer.ui.theme.NeonPurple
@@ -82,6 +83,10 @@ fun HomeScreen(
     onOpenAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenArtist: (OnlineArtistResult) -> Unit = { artist -> onSearchCategory(artist.name) },
     onSavePlaylistToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
+    onOpenListenTogether: () -> Unit = {},
+    listenTogetherRoomCode: String? = null,
+    listenTogetherParticipantCount: Int = 0,
+    onOpenSongOptions: (Song) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState()
 ) {
@@ -191,6 +196,14 @@ fun HomeScreen(
                 )
             }
 
+            item(key = "home_listen_together_card") {
+                ListenTogetherHomeCard(
+                    onClick = onOpenListenTogether,
+                    activeRoomCode = listenTogetherRoomCode,
+                    activeParticipantCount = listenTogetherParticipantCount
+                )
+            }
+
             if (isNewReleasesMode) {
                 item(key = "new_releases_title") {
                     Column(
@@ -276,7 +289,8 @@ fun HomeScreen(
                 onShuffleAll = onShuffleQueue,
                 onToggleFavorite = onToggleFavorite,
                 onDownloadSong = onDownloadSong,
-                onSaveToLibrary = onSavePlaylistToLibrary
+                onSaveToLibrary = onSavePlaylistToLibrary,
+                onOpenSongOptions = onOpenSongOptions
             )
         }
 
@@ -297,7 +311,8 @@ fun HomeScreen(
                 onOpenAlbum = onOpenAlbum,
                 onOpenArtist = onOpenArtist,
                 onOpenPlaylist = onOpenCuratedPlaylist,
-                onSaveSectionAsPlaylist = onSavePlaylistToLibrary
+                onSaveSectionAsPlaylist = onSavePlaylistToLibrary,
+                onOpenSongOptions = onOpenSongOptions
             )
         }
 

@@ -1,0 +1,53 @@
+name: Listen Together Server CI & Deploy
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'render.yaml'
+      - 'listen-together-server/**'
+      - '.github/workflows/listen-together-server.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'render.yaml'
+      - 'listen-together-server/**'
+      - '.github/workflows/listen-together-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-server:
+    name: Test Listen Together WebSocket Server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax check server modules
+        working-directory: listen-together-server
+        run: |
+          node --check ws-protocol.mjs
+          node --check room-manager.mjs
+          node --check server.mjs
+          node --check verify-deployment.mjs
+
+      - name: Run WebSocket protocol & room sync tests
+        working-directory: listen-together-server
+        run: node --test server.test.mjs
+
+      - name: Trigger Render deployment hook (when RENDER_DEPLOY_HOOK_URL is configured)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.RENDER_DEPLOY_HOOK_URL != ''
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Triggered Render deployment hook successfully."

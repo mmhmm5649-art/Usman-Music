@@ -1,3 +1,18 @@
 <resources>
     <string name="app_name">USMAN Music Player</string>
+    <string name="listen_together_title">Listen Together</string>
+    <string name="listen_together_subtitle">Listen in sync with your friends</string>
+    <string name="listen_together_new_badge">NEW</string>
+    <string name="listen_together_create_room">Create Room</string>
+    <string name="listen_together_join_room">Join Room</string>
+    <string name="listen_together_scan_qr">Scan QR Code</string>
+    <string name="listen_together_leave_room">Leave Room</string>
+    <string name="listen_together_share_room">Share Room</string>
+    <string name="listen_together_copy_code">Copy Code</string>
+    <string name="listen_together_add_to_queue">Add to Listen Together Queue</string>
+    <string name="listen_together_host_only">Host Controls Only</string>
+    <string name="listen_together_everyone_controls">Everyone Can Control</string>
+    <string name="listen_together_quality_data_saver">Data Saver</string>
+    <string name="listen_together_quality_low">Low Quality</string>
+    <string name="listen_together_quality_hd">HD Quality</string>
 </resources>

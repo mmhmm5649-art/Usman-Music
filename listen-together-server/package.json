@@ -1,0 +1,15 @@
+{
+  "name": "usman-music-listen-together-server",
+  "version": "1.0.0",
+  "description": "Lightweight, zero-dependency WebSocket backend for USMAN MUSIC real-time Listen Together rooms.",
+  "type": "module",
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test server.test.mjs",
+    "verify": "node verify-deployment.mjs"
+  }
+}

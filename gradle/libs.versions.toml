@@ -45,9 +45,11 @@ cloudy = "0.2.7"
 haze = "1.0.0"
 androidYoutubePlayer = "12.1.1"
 kotlinxSerialization = "1.7.3"
+zxingCore = "3.5.3"
 
 [libraries]
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

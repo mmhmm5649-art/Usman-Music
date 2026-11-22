@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: usman-music-listen-together
+    runtime: node
+    plan: free
+    rootDir: listen-together-server
+    autoDeploy: true
+    buildCommand: node --check server.mjs && node --check room-manager.mjs && node --check ws-protocol.mjs
+    startCommand: node server.mjs
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: HOST
+        value: 0.0.0.0
+      - key: WS_HEARTBEAT_MS
+        value: "25000"
+      - key: ROOM_TTL_MS
+        value: "21600000"
+      - key: HOST_TRANSFER_GRACE_MS
+        value: "20000"
+      - key: PARTICIPANT_DISCONNECT_GRACE_MS
+        value: "60000"
+      - key: EMPTY_ROOM_GRACE_MS
+        value: "300000"
+      - key: MAX_CONNECTIONS_PER_IP
+        value: "20"
+      - key: MAX_UPGRADES_PER_MIN_PER_IP
+        value: "60"

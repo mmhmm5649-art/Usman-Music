@@ -12,6 +12,9 @@ import com.usman.musicplayer.model.ArtistMatchingPolicy
 import com.usman.musicplayer.model.CuratedPlaylist
 import com.usman.musicplayer.model.OnlineArtistResult
 import com.usman.musicplayer.playback.PlaybackErrorRepository
+import com.usman.musicplayer.model.ResolvedStream
+import com.usman.musicplayer.model.StreamingQuality
+import com.usman.musicplayer.model.StreamingQualitySelector
 import com.usman.musicplayer.sdk.AlbumDetails
 import com.usman.musicplayer.sdk.AlbumSearchResult
 import com.usman.musicplayer.sdk.MusicProvider
@@ -254,6 +257,88 @@ class JioSaavnMusicProvider(
             }
             Result.failure(e)
         }
+    }
+
+    /**
+     * Resolves a full-length JioSaavn stream at the participant's independently selected
+     * [StreamingQuality]. Always reports the truthful provider-served bitrate (never fakes HD).
+     */
+    suspend fun resolveStreamForQuality(
+        song: Song,
+        quality: StreamingQuality
+    ): Result<ResolvedStream> = withContext(Dispatchers.IO) {
+        try {
+            val songId = song.filePath.takeIf { it.isNotBlank() && !it.startsWith("http") }
+                ?: song.id.toString().takeIf { it.isNotBlank() && it != "0" }
+
+            // Fast path: if song already holds a verified CDN URL that matches or exceeds requested quality,
+            // we can adapt downward cleanly without an extra network round-trip.
+            val cachedUrl = song.contentUriString
+            if (!cachedUrl.isNullOrBlank()) {
+                val detected = StreamingQualitySelector.detectBitrateFromUrl(cachedUrl)
+                if (detected != null && detected >= quality.targetBitrateKbps) {
+                    val adapted = StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(cachedUrl, quality)
+                    return@withContext Result.success(adapted)
+                }
+            }
+
+            if (!songId.isNullOrBlank()) {
+                // Strategy 1: Public API details endpoint exposes discrete downloadUrl bitrate tiers
+                for (baseUrl in publicApiBases) {
+                    try {
+                        val url = "$baseUrl/api/songs/$songId"
+                        val resp = apiService.getSongDetailsCustom(url)
+                        if (resp.isSuccessful && resp.body()?.success == true) {
+                            val firstSong = resp.body()?.data.orEmpty().firstOrNull()
+                            val variants = extractDownloadUrlVariants(firstSong?.downloadUrl)
+                            val selected = StreamingQualitySelector.selectFromVariants(variants, quality)
+                            if (selected != null) {
+                                return@withContext Result.success(selected)
+                            }
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[QualityResolve] Strategy 1 failed via $baseUrl: ${e.message}")
+                    }
+                }
+            }
+
+            // Strategy 2: Fall back to official JioSaavn stream URL and adapt downward only if needed
+            val baseResult = getStreamUrl(song)
+            baseResult.fold(
+                onSuccess = { url ->
+                    Result.success(StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(url, quality))
+                },
+                onFailure = { err ->
+                    Result.failure(err)
+                }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun extractDownloadUrlVariants(downloadUrl: Any?): List<Pair<String, String>> {
+        if (downloadUrl == null) return emptyList()
+        if (downloadUrl is String && downloadUrl.isNotBlank()) {
+            val bitrate = StreamingQualitySelector.detectBitrateFromUrl(downloadUrl)
+            val tag = bitrate?.let { "${it}kbps" } ?: "unknown"
+            return listOf(tag to downloadUrl)
+        }
+        if (downloadUrl is List<*>) {
+            return downloadUrl.mapNotNull { item ->
+                val map = item as? Map<*, *> ?: return@mapNotNull null
+                val url = map["url"]?.toString()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val quality = map["quality"]?.toString()?.takeIf { it.isNotBlank() }
+                    ?: StreamingQualitySelector.detectBitrateFromUrl(url)?.let { "${it}kbps" }
+                    ?: "unknown"
+                quality to url
+            }
+        }
+        return emptyList()
     }
 
 

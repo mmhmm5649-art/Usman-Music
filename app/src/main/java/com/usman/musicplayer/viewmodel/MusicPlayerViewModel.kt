@@ -61,7 +61,11 @@ import com.usman.musicplayer.model.PlaybackType
 import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.RepeatMode
 import com.usman.musicplayer.model.SearchFilterCategory
+import com.usman.musicplayer.data.listentogether.ListenTogetherControlMode
+import com.usman.musicplayer.data.listentogether.ListenTogetherCoordinator
+import com.usman.musicplayer.data.listentogether.ListenTogetherUiState
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.model.StreamingQuality
 import com.usman.musicplayer.model.UserProfileState
 import com.usman.musicplayer.playback.AudioEffectsManager
 import com.usman.musicplayer.playback.AudioSpectrumManager
@@ -190,7 +194,13 @@ data class MusicPlayerUiState(
     val completedDownloads: List<DownloadEntity> = emptyList(),
 
     // User Account & Personalized Greeting Profile
-    val userProfile: UserProfileState = UserProfileState()
+    val userProfile: UserProfileState = UserProfileState(),
+
+    // App-Wide Selectable Streaming Quality (independent per device, local MP3 unaffected)
+    val selectedStreamingQuality: StreamingQuality = StreamingQuality.HD,
+    val activeStreamQualityLabel: String? = null,
+    val activeStreamFallbackNotice: String? = null,
+    val isStreamingQualitySwitching: Boolean = false
 )
 
 @UnstableApi
@@ -242,10 +252,137 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
 
     private val _uiState = MutableStateFlow(MusicPlayerUiState())
     val uiState: StateFlow<MusicPlayerUiState> = _uiState.asStateFlow()
+    private var qualitySwitchJob: Job? = null
 
     // High-frequency playback progress flow to avoid root recomposition of entire app
     private val _playbackProgress = MutableStateFlow(PlaybackProgress())
     val playbackProgress: StateFlow<PlaybackProgress> = _playbackProgress.asStateFlow()
+
+    // Real-time Listen Together coordinator (WebSocket + NTP clock sync + drift correction)
+    private val listenTogetherCoordinator: ListenTogetherCoordinator = ListenTogetherCoordinator(
+        context = application,
+        scope = viewModelScope,
+        repository = musicRepository,
+        playbackBridge = object : ListenTogetherCoordinator.PlaybackBridge {
+            override fun currentPositionMs(): Long {
+                return mediaController?.currentPosition?.coerceAtLeast(0L)
+                    ?: _playbackProgress.value.currentPositionMs
+            }
+
+            override fun isPlaying(): Boolean {
+                return mediaController?.isPlaying ?: _uiState.value.isPlaying
+            }
+
+            override fun currentSong(): Song? = _uiState.value.currentSong
+
+            override fun loadAndCueTrack(
+                song: Song,
+                resolvedStreamUrl: String,
+                positionMs: Long,
+                playImmediately: Boolean
+            ) {
+                playJob?.cancel()
+                val songWithStream = applyFavoriteFlag(song.copy(contentUriString = resolvedStreamUrl))
+                val updatedRecent = (_uiState.value.recentlyPlayed
+                    .filter(::isAllowedUserFacingSong)
+                    .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithStream) }
+                    .toMutableList()).apply { add(0, songWithStream) }.take(20)
+
+                _uiState.update {
+                    it.copy(
+                        currentSong = songWithStream,
+                        isPlaying = playImmediately,
+                        durationMs = songWithStream.durationMs,
+                        currentPositionMs = positionMs,
+                        isFavorite = songWithStream.isFavorite,
+                        recentlyPlayed = updatedRecent,
+                        onlineSearchError = null
+                    )
+                }
+                _playbackProgress.update {
+                    it.copy(
+                        currentPositionMs = positionMs,
+                        durationMs = songWithStream.durationMs,
+                        isPlaying = playImmediately,
+                        playbackSpeed = 1.0f,
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                        updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                    )
+                }
+
+                val controller = mediaController
+                if (controller != null) {
+                    controller.setPlaybackSpeed(1.0f)
+                    controller.setMediaItems(listOf(createMediaItem(songWithStream)), 0, positionMs.coerceAtLeast(0L))
+                    controller.prepare()
+                    controller.volume = _uiState.value.volume
+                    if (playImmediately) {
+                        controller.play()
+                        startProgressTracker()
+                    } else {
+                        controller.pause()
+                    }
+                }
+            }
+
+            override fun play() {
+                val controller = mediaController
+                controller?.play()
+                _uiState.update { it.copy(isPlaying = true) }
+                _playbackProgress.update {
+                    it.copy(
+                        isPlaying = true,
+                        currentPositionMs = controller?.currentPosition?.coerceAtLeast(0L) ?: it.currentPositionMs,
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                        updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                    )
+                }
+                startProgressTracker()
+            }
+
+            override fun pause() {
+                val controller = mediaController
+                controller?.pause()
+                _uiState.update { it.copy(isPlaying = false) }
+                _playbackProgress.update {
+                    it.copy(
+                        isPlaying = false,
+                        currentPositionMs = controller?.currentPosition?.coerceAtLeast(0L) ?: it.currentPositionMs,
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                        updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                    )
+                }
+                AudioSpectrumManager.clearSpectrum()
+            }
+
+            override fun seekTo(positionMs: Long) {
+                val validPos = positionMs.coerceAtLeast(0L)
+                mediaController?.seekTo(validPos)
+                _uiState.update { it.copy(currentPositionMs = validPos) }
+                _playbackProgress.update {
+                    it.copy(
+                        currentPositionMs = validPos,
+                        updateTimeRealtimeMs = android.os.SystemClock.elapsedRealtime(),
+                        updateTimeRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                    )
+                }
+            }
+
+            override fun setPlaybackSpeed(speed: Float) {
+                val safeSpeed = speed.coerceIn(0.90f, 1.10f)
+                mediaController?.setPlaybackSpeed(safeSpeed)
+                _playbackProgress.update { it.copy(playbackSpeed = safeSpeed) }
+            }
+
+            override fun syncSharedQueueDisplay(songs: List<Song>, currentIndex: Int) {
+                if (songs.isNotEmpty()) {
+                    _uiState.update { it.copy(activePlaybackQueue = songs) }
+                }
+            }
+        }
+    )
+
+    val listenTogetherState: StateFlow<ListenTogetherUiState> = listenTogetherCoordinator.uiState
 
     // User Profile & Auth Sync
     private val profilePrefsStore = UserProfilePreferencesStore(application)
@@ -257,6 +394,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     private var activeObservedProfileUid: String? = null
 
     init {
+        _uiState.update { it.copy(selectedStreamingQuality = listenTogetherCoordinator.uiState.value.selectedQuality) }
         setupSearchPipeline()
         if (autoStart) {
             initializeUserProfileAndAuthObserver(application)
@@ -802,6 +940,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                                         isPlaying = isPlaying
                                     )
                                 }
+                                listenTogetherCoordinator.onLocalPlaybackReady()
                             } else if (playbackState == Player.STATE_ENDED) {
                                 onTrackEnded()
                             }
@@ -1962,6 +2101,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         }
         val orderedTracks = if (shuffle) playableTracks.shuffled() else playableTracks
         val safeStart = startIndex.coerceIn(0, orderedTracks.lastIndex)
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestSetQueue(orderedTracks, startIndex = safeStart, autoPlay = true)
+            return
+        }
         val controller = mediaController
         controller?.shuffleModeEnabled = false
         _uiState.update { it.copy(isShuffleEnabled = shuffle) }
@@ -2166,6 +2309,12 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             return
         }
 
+        // Route playback requests through Listen Together room authority when active
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestPlaySong(song, autoPlay = true)
+            return
+        }
+
         // Immediately update UI state to avoid placeholders
         _uiState.update {
             it.copy(
@@ -2210,18 +2359,27 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             }
             val currentList = filterPlayableQueueTracks(rawQueue)
 
+            val requestedQuality = _uiState.value.selectedStreamingQuality
+            var targetResolvedStream: com.usman.musicplayer.model.ResolvedStream? = null
+
             suspend fun resolveSingleTrack(candidate: Song): Song {
-                if (candidate.isOnline && candidate.contentUriString.isNullOrBlank() && candidate.playbackType == PlaybackType.FULL) {
-                    val streamResult = musicRepository.getStreamUrl(candidate)
-                    if (streamResult.isSuccess) {
-                        val resolvedUrl = streamResult.getOrNull().orEmpty()
-                        if (resolvedUrl.isNotBlank()) {
-                            val sanitizedHost = runCatching { Uri.parse(resolvedUrl).host }.getOrNull() ?: "unknown"
-                            Log.d("USMAN_PLAYBACK", "[Stage 4: After stream URL resolution] ID: ${candidate.id}, Title: '${candidate.title}', StreamUrl: $resolvedUrl (host: $sanitizedHost)")
-                            return candidate.copy(contentUriString = resolvedUrl)
+                if (candidate.isOnline && candidate.playbackType == PlaybackType.FULL) {
+                    val qualityResult = musicRepository.resolveStreamForQuality(candidate, requestedQuality)
+                    if (qualityResult.isSuccess) {
+                        val resolved = qualityResult.getOrNull()
+                        if (resolved != null && resolved.url.isNotBlank()) {
+                            if (candidate.id == song.id) {
+                                targetResolvedStream = resolved
+                            }
+                            val sanitizedHost = runCatching { Uri.parse(resolved.url).host }.getOrNull() ?: "unknown"
+                            Log.d(
+                                "USMAN_PLAYBACK",
+                                "[Stage 4: After quality stream resolution] ID: ${candidate.id}, Title: '${candidate.title}', Quality: ${resolved.actualQualityLabel} (host: $sanitizedHost)"
+                            )
+                            return candidate.copy(contentUriString = resolved.url)
                         }
-                    } else {
-                        Log.e("USMAN_PLAYBACK", "Stream resolution failed for '${candidate.title}': ${streamResult.exceptionOrNull()?.message}")
+                    } else if (candidate.contentUriString.isNullOrBlank()) {
+                        Log.e("USMAN_PLAYBACK", "Stream resolution failed for '${candidate.title}': ${qualityResult.exceptionOrNull()?.message}")
                     }
                 }
                 return candidate
@@ -2271,7 +2429,9 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                         currentPositionMs = 0L,
                         isFavorite = songWithFav.isFavorite,
                         recentlyPlayed = updatedRecent,
-                        onlineSearchError = null
+                        onlineSearchError = null,
+                        activeStreamQualityLabel = if (songWithFav.isOnline) targetResolvedStream?.actualQualityLabel else "Local Audio",
+                        activeStreamFallbackNotice = if (songWithFav.isOnline) targetResolvedStream?.fallbackNotice else null
                     )
                 }
                 refreshDerivedHomeUi()
@@ -2307,7 +2467,9 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                         currentPositionMs = 0L,
                         isFavorite = songWithFav.isFavorite,
                         recentlyPlayed = updatedRecent,
-                        onlineSearchError = null
+                        onlineSearchError = null,
+                        activeStreamQualityLabel = if (songWithFav.isOnline) targetResolvedStream?.actualQualityLabel else "Local Audio",
+                        activeStreamFallbackNotice = if (songWithFav.isOnline) targetResolvedStream?.fallbackNotice else null
                     )
                 }
                 refreshDerivedHomeUi()
@@ -2378,6 +2540,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     }
 
     fun togglePlayPause() {
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestTogglePlayPause()
+            return
+        }
         val controller = mediaController ?: return
         if (controller.isPlaying) {
             controller.pause()
@@ -2410,6 +2576,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     }
 
     fun skipToNext() {
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestNext()
+            return
+        }
         val controller = mediaController
         if (controller != null && controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
@@ -2431,6 +2601,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     }
 
     fun skipToPrevious() {
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestPrevious()
+            return
+        }
         val controller = mediaController
         if (controller != null && controller.hasPreviousMediaItem()) {
             controller.seekToPreviousMediaItem()
@@ -2448,6 +2622,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
 
     fun seekTo(positionMs: Long) {
         val validPos = positionMs.coerceAtLeast(0L)
+        if (listenTogetherCoordinator.isInRoom && !listenTogetherCoordinator.isApplyingRemoteState) {
+            listenTogetherCoordinator.requestSeek(validPos)
+            return
+        }
         mediaController?.seekTo(validPos)
         _uiState.update { it.copy(currentPositionMs = validPos) }
         _playbackProgress.update {
@@ -2746,6 +2924,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
 
 
     private fun onTrackEnded() {
+        if (listenTogetherCoordinator.isInRoom) {
+            listenTogetherCoordinator.notifyLocalTrackEnded()
+            return
+        }
         when (_uiState.value.repeatMode) {
             RepeatMode.ONE -> {
                 mediaController?.seekTo(0)
@@ -2845,9 +3027,178 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         return builder.build()
     }
 
+    // --- LISTEN TOGETHER PUBLIC API ---
+
+    fun createListenTogetherRoom(
+        displayName: String? = null,
+        controlMode: ListenTogetherControlMode = ListenTogetherControlMode.HOST_ONLY
+    ) {
+        val state = _uiState.value
+        listenTogetherCoordinator.createRoom(
+            displayNameOverride = displayName,
+            controlMode = controlMode,
+            initialSong = state.currentSong,
+            initialQueueSongs = state.activePlaybackQueue,
+            initialPositionMs = _playbackProgress.value.currentPositionMs,
+            initialIsPlaying = state.isPlaying
+        )
+    }
+
+    fun joinListenTogetherRoom(roomCodeOrInvite: String, displayName: String? = null) {
+        listenTogetherCoordinator.joinRoom(roomCodeOrInvite, displayNameOverride = displayName)
+    }
+
+    fun leaveListenTogetherRoom() {
+        listenTogetherCoordinator.leaveRoom()
+    }
+
+    fun endListenTogetherRoom() {
+        listenTogetherCoordinator.endRoom()
+    }
+
+    fun setListenTogetherControlMode(mode: ListenTogetherControlMode) {
+        listenTogetherCoordinator.setControlMode(mode)
+    }
+
+    fun setListenTogetherQuality(quality: StreamingQuality) {
+        setStreamingQuality(quality)
+    }
+
+    /**
+     * Persists and applies the user's preferred streaming quality across normal online playback
+     * and Listen Together (independently per device). Preserves current playback position,
+     * queue, lyrics, crossfade, and background playback without recreating ExoPlayer.
+     * Local MP3 playback is never modified.
+     */
+    fun setStreamingQuality(quality: StreamingQuality) {
+        _uiState.update { it.copy(selectedStreamingQuality = quality) }
+        listenTogetherCoordinator.setStreamingQuality(quality)
+
+        // When inside a Listen Together room, ListenTogetherCoordinator handles mid-song reload in sync.
+        if (listenTogetherCoordinator.isInRoom) return
+
+        val current = _uiState.value.currentSong ?: return
+        if (!current.isOnline) {
+            _uiState.update {
+                it.copy(
+                    activeStreamQualityLabel = "Local Audio",
+                    activeStreamFallbackNotice = null
+                )
+            }
+            return
+        }
+
+        qualitySwitchJob?.cancel()
+        qualitySwitchJob = viewModelScope.launch {
+            _uiState.update { it.copy(isStreamingQualitySwitching = true) }
+            val resolvedResult = withContext(Dispatchers.IO) {
+                musicRepository.resolveStreamForQuality(current, quality)
+            }
+            val resolved = resolvedResult.getOrNull()
+            if (!isActive || _uiState.value.currentSong?.id != current.id) {
+                _uiState.update { it.copy(isStreamingQualitySwitching = false) }
+                return@launch
+            }
+            if (resolved == null || resolved.url.isBlank()) {
+                _uiState.update { it.copy(isStreamingQualitySwitching = false) }
+                return@launch
+            }
+
+            val updatedSong = current.copy(contentUriString = resolved.url)
+            val updatedQueue = _uiState.value.activePlaybackQueue.map {
+                if (it.id == current.id) updatedSong else it
+            }
+            _uiState.update {
+                it.copy(
+                    currentSong = updatedSong,
+                    activePlaybackQueue = updatedQueue,
+                    activeStreamQualityLabel = resolved.actualQualityLabel,
+                    activeStreamFallbackNotice = resolved.fallbackNotice,
+                    isStreamingQualitySwitching = false
+                )
+            }
+
+            val controller = mediaController ?: return@launch
+            val currentIndex = controller.currentMediaItemIndex
+            val preservedPositionMs = controller.currentPosition.coerceAtLeast(0L)
+            val wasPlaying = controller.isPlaying
+
+            if (currentIndex >= 0 && currentIndex < controller.mediaItemCount) {
+                // Replace only the active item in-place to preserve the full queue, crossfade & service
+                controller.replaceMediaItem(currentIndex, createMediaItem(updatedSong))
+                controller.seekTo(currentIndex, preservedPositionMs)
+                controller.prepare()
+                if (wasPlaying) {
+                    controller.play()
+                }
+            }
+        }
+    }
+
+    fun updateListenTogetherDisplayName(name: String) {
+        listenTogetherCoordinator.updateDisplayName(name)
+    }
+
+    fun updateListenTogetherServerUrl(url: String): Result<String> {
+        return listenTogetherCoordinator.updateServerUrl(url)
+    }
+
+    suspend fun verifyListenTogetherServerHealth(url: String): Result<String> {
+        return listenTogetherCoordinator.verifyServerHealth(url)
+    }
+
+    fun consumeListenTogetherDeepLink(rawInvite: String?) {
+        listenTogetherCoordinator.consumeDeepLinkInvite(rawInvite)
+    }
+
+    fun clearListenTogetherPendingDeepLink() {
+        listenTogetherCoordinator.clearPendingDeepLinkCode()
+    }
+
+    fun clearListenTogetherError() {
+        listenTogetherCoordinator.clearError()
+    }
+
+    fun clearListenTogetherBanner() {
+        listenTogetherCoordinator.clearInfoBanner()
+    }
+
+    fun requestListenTogetherResync() {
+        listenTogetherCoordinator.requestManualResync()
+    }
+
+    fun addSongToListenTogetherQueue(song: Song, autoPlayIfEmpty: Boolean = false): Boolean {
+        return listenTogetherCoordinator.requestAddToQueue(song, autoPlayIfEmpty = autoPlayIfEmpty)
+    }
+
+    fun playSongInListenTogether(song: Song): Boolean {
+        return listenTogetherCoordinator.requestPlaySong(song, autoPlay = true)
+    }
+
+    fun playListenTogetherQueueIndex(index: Int): Boolean {
+        return listenTogetherCoordinator.requestPlayQueueIndex(index)
+    }
+
+    fun removeListenTogetherQueueIndex(index: Int): Boolean {
+        return listenTogetherCoordinator.requestRemoveFromQueue(index)
+    }
+
+    suspend fun searchListenTogetherTracks(query: String): List<Song> {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            musicRepository.searchAll(trimmed, limit = 25).filter(::isAllowedUserFacingSong)
+        }
+    }
+
+    fun onAppForegrounded() {
+        listenTogetherCoordinator.onAppForegrounded()
+    }
+
     override fun onCleared() {
 
         super.onCleared()
+        listenTogetherCoordinator.release()
         authStateListener?.let { listener ->
             firebaseAuth?.removeAuthStateListener(listener)
         }

@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
@@ -80,6 +79,7 @@ import com.usman.musicplayer.ui.components.OnlineAlbumResultCard
 import com.usman.musicplayer.ui.components.OnlineArtistResultRow
 import com.usman.musicplayer.ui.components.SearchFilterCategoryBar
 import com.usman.musicplayer.ui.components.SongAlbumArtwork
+import com.usman.musicplayer.ui.components.SongRowMoreButton
 import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.ElectricBlue
 import com.usman.musicplayer.ui.theme.GlassBorderSubtle
@@ -115,6 +115,7 @@ fun SearchScreen(
     onFolderClick: (MusicFolder) -> Unit = {},
     onTriggerOnlineSearch: (String) -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
+    onOpenSongOptions: (Song) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState()
 ) {
@@ -425,7 +426,7 @@ fun SearchScreen(
                             isCurrent = uiState.currentSong?.id == song.id,
                             isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
                             onPlay = { onPlaySong(song) },
-                            onOpenService = { service -> onOpenService(context, song, service) }
+                            onOpenOptions = { onOpenSongOptions(song) }
                         )
                     }
                 }
@@ -656,7 +657,7 @@ fun SearchScreen(
                                     isCurrent = uiState.currentSong?.id == song.id,
                                     isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
                                     onPlay = { onPlaySong(song) },
-                                    onOpenService = { service -> onOpenService(context, song, service) }
+                                    onOpenOptions = { onOpenSongOptions(song) }
                                 )
                             }
                         } else if (filter == SearchFilterCategory.SONGS) {
@@ -748,7 +749,8 @@ fun SearchScreen(
                             song = song,
                             isCurrent = uiState.currentSong?.id == song.id,
                             isPlaying = uiState.isPlaying && uiState.currentSong?.id == song.id,
-                            onPlay = { onPlaySong(song) }
+                            onPlay = { onPlaySong(song) },
+                            onOpenOptions = { onOpenSongOptions(song) }
                         )
                     }
                 }
@@ -763,15 +765,13 @@ fun OnlineSongResultRow(
     isCurrent: Boolean,
     isPlaying: Boolean,
     onPlay: () -> Unit,
-    onOpenService: (ExternalServiceType) -> Unit
+    onOpenOptions: () -> Unit = {}
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onPlay)
-            .padding(horizontal = 20.dp, vertical = 8.dp),
+            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // High-res album artwork
@@ -851,45 +851,12 @@ fun OnlineSongResultRow(
             }
         }
 
-        // Action Menu: Listen on YouTube / Spotify
-        Box {
-            IconButton(onClick = { showMenu = true }) {
-                Icon(
-                    imageVector = Icons.Default.OpenInNew,
-                    contentDescription = "Official streaming options",
-                    tint = SoftCyan,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                modifier = Modifier.background(Color(0xFF1E2338))
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Play in USMAN (Stream)", color = Color.White) },
-                    onClick = {
-                        showMenu = false
-                        onPlay()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Open on Spotify", color = Color.White) },
-                    onClick = {
-                        showMenu = false
-                        onOpenService(ExternalServiceType.SPOTIFY)
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Open on Apple Music", color = Color.White) },
-                    onClick = {
-                        showMenu = false
-                        onOpenService(ExternalServiceType.APPLE_MUSIC)
-                    }
-                )
-            }
-        }
+        // Three-dot vertical song options button (48dp touch target, TV focusable)
+        SongRowMoreButton(
+            songTitle = song.title,
+            onClick = onOpenOptions,
+            testTag = "song_options_button_${song.id}"
+        )
     }
 }
 
@@ -898,13 +865,14 @@ fun DeviceSongResultRow(
     song: Song,
     isCurrent: Boolean,
     isPlaying: Boolean,
-    onPlay: () -> Unit
+    onPlay: () -> Unit,
+    onOpenOptions: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onPlay)
-            .padding(horizontal = 20.dp, vertical = 8.dp),
+            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(modifier = Modifier.size(48.dp)) {
@@ -935,6 +903,12 @@ fun DeviceSongResultRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+
+        SongRowMoreButton(
+            songTitle = song.title,
+            onClick = onOpenOptions,
+            testTag = "song_options_button_${song.id}"
+        )
     }
 }
 

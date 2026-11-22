@@ -51,10 +51,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -94,7 +96,9 @@ import com.usman.musicplayer.ui.theme.AmoledBlack
 import com.usman.musicplayer.ui.theme.SoftCyan
 import com.usman.musicplayer.ui.theme.TextPrimary
 import com.usman.musicplayer.ui.theme.UsmanMusicPlayerTheme
+import android.content.Intent
 import android.view.KeyEvent
+import com.usman.musicplayer.ui.screens.ListenTogetherScreen
 import com.usman.musicplayer.util.DeviceUtils
 import com.usman.musicplayer.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.delay
@@ -107,10 +111,29 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         configureHighRefreshRateDisplayMode()
+        handleListenTogetherIntent(intent)
         setContent {
             UsmanMusicPlayerTheme {
                 UsmanMusicApp(viewModel = musicViewModel)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleListenTogetherIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        musicViewModel.onAppForegrounded()
+    }
+
+    private fun handleListenTogetherIntent(intent: Intent?) {
+        val dataString = intent?.data?.toString()
+        if (!dataString.isNullOrBlank() && dataString.contains("listen-together", ignoreCase = true)) {
+            musicViewModel.consumeListenTogetherDeepLink(dataString)
         }
     }
 
@@ -172,6 +195,7 @@ class MainActivity : ComponentActivity() {
 fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val listenTogetherState by viewModel.listenTogetherState.collectAsStateWithLifecycle()
 
     var currentDestination by remember { mutableStateOf(AppDestination.HOME) }
     val phoneHomeListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
@@ -179,10 +203,19 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val tvHomeListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val tvSearchGridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
+    var isListenTogetherExpanded by remember { mutableStateOf(false) }
     var isDiagnosticExpanded by remember { mutableStateOf(false) }
     var isEqualizerExpanded by remember { mutableStateOf(false) }
     var isSettingsExpanded by remember { mutableStateOf(false) }
     var isPluginManagerExpanded by remember { mutableStateOf(false) }
+    var songOptionsTarget by remember { mutableStateOf<com.usman.musicplayer.model.Song?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(listenTogetherState.pendingDeepLinkRoomCode) {
+        if (!listenTogetherState.pendingDeepLinkRoomCode.isNullOrBlank()) {
+            isListenTogetherExpanded = true
+        }
+    }
 
     // Instant App-Launch Motion Sequence (no artificial 600ms cold-start stall)
     var isAppLoaded by remember { mutableStateOf(false) }
@@ -311,23 +344,27 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         isEqualizerExpanded = false
     }
 
-    BackHandler(enabled = isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+    BackHandler(enabled = isListenTogetherExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+        isListenTogetherExpanded = false
+    }
+
+    BackHandler(enabled = isNowPlayingExpanded && !isListenTogetherExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         isNowPlayingExpanded = false
     }
 
-    BackHandler(enabled = isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+    BackHandler(enabled = isAlbumDetailsOpen && !isListenTogetherExpanded && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         viewModel.closeAlbumDetails()
     }
 
-    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet != null && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet != null && !isListenTogetherExpanded && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         viewModel.closeHomeCollectionSheet()
     }
 
-    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet == null && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
+    BackHandler(enabled = isArtistDetailsOpen && uiState.activeHomeCollectionSheet == null && !isListenTogetherExpanded && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded) {
         viewModel.closeArtistDetails()
     }
 
-    BackHandler(enabled = !isArtistDetailsOpen && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded && currentDestination != AppDestination.HOME) {
+    BackHandler(enabled = !isListenTogetherExpanded && !isArtistDetailsOpen && !isAlbumDetailsOpen && !isNowPlayingExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded && currentDestination != AppDestination.HOME) {
         viewModel.clearFilters()
         currentDestination = AppDestination.HOME
     }
@@ -518,9 +555,13 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onOpenArtist = { artist ->
                                 viewModel.openArtistDetails(artist)
                             },
+                            onOpenListenTogether = { isListenTogetherExpanded = true },
+                            listenTogetherRoomCode = listenTogetherState.room?.roomCode,
+                            listenTogetherParticipantCount = listenTogetherState.room?.participants?.size ?: 0,
                             onSavePlaylistToLibrary = { title, songs, cb ->
                                 viewModel.savePlaylistToLibrary(title, songs, cb)
                             },
+                            onOpenSongOptions = { song -> songOptionsTarget = song },
                             listState = phoneHomeListState
                         )
 
@@ -576,7 +617,11 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             },
                             onSavePlaylistToLibrary = { title, songs, cb ->
                                 viewModel.savePlaylistToLibrary(title, songs, cb)
-                            }
+                            },
+                            onOpenListenTogether = { isListenTogetherExpanded = true },
+                            listenTogetherRoomCode = listenTogetherState.room?.roomCode,
+                            listenTogetherParticipantCount = listenTogetherState.room?.participants?.size ?: 0,
+                            onOpenSongOptions = { song -> songOptionsTarget = song }
                         )
 
                         AppDestination.SEARCH -> SearchScreen(
@@ -609,6 +654,7 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                                 currentDestination = AppDestination.LIBRARY
                             },
                             onOpenDiagnostics = { isDiagnosticExpanded = true },
+                            onOpenSongOptions = { song -> songOptionsTarget = song },
                             listState = phoneSearchListState
                         )
 
@@ -646,7 +692,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onPauseDownload = { songId -> viewModel.pauseDownload(songId) },
                             onResumeDownload = { songId -> viewModel.resumeDownload(songId) },
                             onCancelDownload = { songId -> viewModel.cancelDownload(songId) },
-                            onRetryDownload = { songId -> viewModel.retryDownload(songId) }
+                            onRetryDownload = { songId -> viewModel.retryDownload(songId) },
+                            onOpenSongOptions = { song -> songOptionsTarget = song }
                         )
                     }
                 }
@@ -742,7 +789,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     onOpenPlaylist = { playlist -> viewModel.openCuratedHomePlaylist(playlist) },
                     onSaveMixToLibrary = { title, songs, cb ->
                         viewModel.savePlaylistToLibrary(title, songs, cb)
-                    }
+                    },
+                    onOpenSongOptions = { song -> songOptionsTarget = song }
                 )
 
                 val artistPlaylistSheet = uiState.activeHomeCollectionSheet
@@ -785,7 +833,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                             onDownloadSong = { song -> viewModel.downloadSong(song) },
                             onSaveToLibrary = { title, songs, cb ->
                                 viewModel.savePlaylistToLibrary(title, songs, cb)
-                            }
+                            },
+                            onOpenSongOptions = { song -> songOptionsTarget = song }
                         )
                     }
                 }
@@ -839,7 +888,8 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 onDownloadAlbum = { tracks, callback ->
                     viewModel.downloadAlbum(tracks, callback)
                 },
-                onDownloadSong = { song -> viewModel.downloadSong(song) }
+                onDownloadSong = { song -> viewModel.downloadSong(song) },
+                onOpenSongOptions = { song -> songOptionsTarget = song }
             )
         }
 
@@ -892,7 +942,50 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                     viewModel.addToQueue(song, callback)
                 },
                 onFetchLyrics = { song -> viewModel.fetchLyrics(song) },
-                onDownloadSong = { song -> viewModel.downloadSong(song) }
+                onDownloadSong = { song -> viewModel.downloadSong(song) },
+                isInListenTogetherRoom = listenTogetherState.isInRoom,
+                onOpenListenTogether = {
+                    isNowPlayingExpanded = false
+                    isListenTogetherExpanded = true
+                },
+                onAddToListenTogetherQueue = { song ->
+                    viewModel.addSongToListenTogetherQueue(song, autoPlayIfEmpty = false)
+                }
+            )
+        }
+
+        // Dedicated Real-Time Listen Together Overlay
+        AnimatedVisibility(
+            visible = isListenTogetherExpanded && !isEqualizerExpanded && !isSettingsExpanded && !isPluginManagerExpanded,
+            enter = slideInVertically(initialOffsetY = { it / 5 }) + fadeIn(tween(220)),
+            exit = slideOutVertically(targetOffsetY = { it / 5 }) + fadeOut(tween(180))
+        ) {
+            ListenTogetherScreen(
+                state = listenTogetherState,
+                playbackProgressFlow = viewModel.playbackProgress,
+                onBack = { isListenTogetherExpanded = false },
+                onCreateRoom = { name, mode -> viewModel.createListenTogetherRoom(name, mode) },
+                onJoinRoom = { codeOrLink, name -> viewModel.joinListenTogetherRoom(codeOrLink, name) },
+                onLeaveRoom = { viewModel.leaveListenTogetherRoom() },
+                onEndRoom = { viewModel.endListenTogetherRoom() },
+                onSetControlMode = { mode -> viewModel.setListenTogetherControlMode(mode) },
+                onSetQuality = { quality -> viewModel.setListenTogetherQuality(quality) },
+                onUpdateDisplayName = { name -> viewModel.updateListenTogetherDisplayName(name) },
+                onUpdateServerUrl = { url -> viewModel.updateListenTogetherServerUrl(url) },
+                onVerifyServerHealth = { url -> viewModel.verifyListenTogetherServerHealth(url) },
+                onTogglePlayPause = { viewModel.togglePlayPause() },
+                onSkipNext = { viewModel.skipToNext() },
+                onSkipPrevious = { viewModel.skipToPrevious() },
+                onSeekTo = { pos -> viewModel.seekTo(pos) },
+                onRequestResync = { viewModel.requestListenTogetherResync() },
+                onPlayQueueIndex = { idx -> viewModel.playListenTogetherQueueIndex(idx) },
+                onRemoveQueueIndex = { idx -> viewModel.removeListenTogetherQueueIndex(idx) },
+                onAddTrackToQueue = { song, autoPlay -> viewModel.addSongToListenTogetherQueue(song, autoPlay) },
+                onPlayTrackNow = { song -> viewModel.playSongInListenTogether(song) },
+                onSearchSongs = { query -> viewModel.searchListenTogetherTracks(query) },
+                onClearError = { viewModel.clearListenTogetherError() },
+                onClearBanner = { viewModel.clearListenTogetherBanner() },
+                onClearPendingDeepLink = { viewModel.clearListenTogetherPendingDeepLink() }
             )
         }
 
@@ -924,7 +1017,52 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
                 uiState = uiState,
                 onRescanClick = { viewModel.scanMusicLibrary() },
                 onOpenExtensions = { isPluginManagerExpanded = true },
-                onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) }
+                onToggleProvider = { id, enabled -> viewModel.toggleProvider(id, enabled) },
+                onSelectStreamingQuality = { quality -> viewModel.setStreamingQuality(quality) }
+            )
+        }
+
+        // Unified Three-Dot Song Options Bottom Sheet (Phone & TV)
+        val activeOptionsSong = songOptionsTarget
+        if (activeOptionsSong != null) {
+            com.usman.musicplayer.ui.components.SongOptionsBottomSheet(
+                song = activeOptionsSong,
+                playlists = uiState.playlists,
+                isInListenTogetherRoom = listenTogetherState.isInRoom,
+                canControlListenTogether = listenTogetherState.canControlPlayback,
+                selectedStreamingQuality = uiState.selectedStreamingQuality,
+                activeStreamQualityLabel = uiState.activeStreamQualityLabel,
+                onDismiss = { songOptionsTarget = null },
+                onPlayNow = { song ->
+                    viewModel.playSong(song)
+                    isNowPlayingExpanded = true
+                },
+                onPlayNext = { song, cb -> viewModel.playNext(song, cb) },
+                onAddToQueue = { song, cb -> viewModel.addToQueue(song, cb) },
+                onAddToPlaylist = { playlistId, song, allowDup, cb ->
+                    viewModel.addSongToPlaylist(playlistId, song, allowDup, cb)
+                },
+                onCreatePlaylist = { name, song, cb ->
+                    viewModel.createPlaylist(name, song, cb)
+                },
+                onDownloadOffline = { song -> viewModel.downloadSong(song) },
+                onOpenLyrics = { song ->
+                    if (uiState.currentSong?.id != song.id) {
+                        viewModel.playSong(song)
+                    }
+                    coroutineScope.launch {
+                        viewModel.fetchLyrics(song)
+                    }
+                    isNowPlayingExpanded = true
+                },
+                onOpenEqualizer = { isEqualizerExpanded = true },
+                onOpenListenTogether = { isListenTogetherExpanded = true },
+                onAddToListenTogetherQueue = { song ->
+                    viewModel.addSongToListenTogetherQueue(song, autoPlayIfEmpty = false)
+                },
+                onPlayInListenTogetherRoom = { song ->
+                    viewModel.playSongInListenTogether(song)
+                }
             )
         }
 

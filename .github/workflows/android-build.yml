@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_RELEASE_SIGNING: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+      LISTEN_TOGETHER_WS_URL: ${{ secrets.LISTEN_TOGETHER_WS_URL }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

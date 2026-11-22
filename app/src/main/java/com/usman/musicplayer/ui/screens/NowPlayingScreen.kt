@@ -113,6 +113,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -223,6 +224,9 @@ fun NowPlayingScreen(
     onAddToQueue: (Song, (String) -> Unit) -> Unit = { _, _ -> },
     onFetchLyrics: suspend (Song) -> String? = { null },
     onDownloadSong: (Song) -> Unit = {},
+    isInListenTogetherRoom: Boolean = false,
+    onOpenListenTogether: () -> Unit = {},
+    onAddToListenTogetherQueue: (Song) -> Unit = {},
     isExpanded: Boolean = true,
     modifier: Modifier = Modifier,
     playbackProgressFlow: StateFlow<PlaybackProgress>? = null
@@ -564,6 +568,31 @@ fun NowPlayingScreen(
                         onClick = {
                             showThreeDotSheet = false
                             song?.let { onPlayNext(it) { msg -> feedbackMessage = msg } }
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Default.QueueMusic,
+                        title = "Add to Queue",
+                        tint = Color(0xFF60A5FA),
+                        onClick = {
+                            showThreeDotSheet = false
+                            song?.let { onAddToQueue(it) { msg -> feedbackMessage = msg } }
+                        }
+                    )
+
+                    MenuOptionRow(
+                        icon = Icons.Rounded.Groups,
+                        title = if (isInListenTogetherRoom) "Add to Listen Together Queue" else "Listen Together",
+                        tint = Color(0xFF38BDF8),
+                        onClick = {
+                            showThreeDotSheet = false
+                            if (isInListenTogetherRoom && song != null) {
+                                onAddToListenTogetherQueue(song)
+                                feedbackMessage = "Added '${song.title}' to Listen Together queue"
+                            } else {
+                                onOpenListenTogether()
+                            }
                         }
                     )
 

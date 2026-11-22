@@ -107,6 +107,7 @@ fun ArtistDetailsScreen(
     onOpenAlbum: (AlbumSearchResult) -> Unit,
     onOpenPlaylist: (CuratedPlaylist) -> Unit,
     onSaveMixToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit,
+    onOpenSongOptions: (Song) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
@@ -442,10 +443,7 @@ fun ArtistDetailsScreen(
                                 isTv = isTv,
                                 onPlay = { onPlaySong(song, popularSongs) },
                                 onToggleFavorite = { onToggleFavorite(song) },
-                                onDownload = {
-                                    onDownloadSong(song)
-                                    feedbackMessage = "Downloading \"${song.title}\""
-                                }
+                                onOpenOptions = { onOpenSongOptions(song) }
                             )
                         }
                     }
@@ -710,7 +708,7 @@ private fun ArtistSongRow(
     isTv: Boolean,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onDownload: () -> Unit
+    onOpenOptions: () -> Unit
 ) {
     var rowFocused by remember { mutableStateOf(false) }
     var favFocused by remember { mutableStateOf(false) }
@@ -800,19 +798,11 @@ private fun ArtistSongRow(
             )
         }
 
-        if (!isTv) {
-            IconButton(
-                onClick = onDownload,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = "Download ${song.title}",
-                    tint = SoftCyan,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
-        }
+        com.usman.musicplayer.ui.components.SongRowMoreButton(
+            songTitle = song.title,
+            onClick = onOpenOptions,
+            testTag = "song_options_button_${song.id}"
+        )
     }
 }
 
