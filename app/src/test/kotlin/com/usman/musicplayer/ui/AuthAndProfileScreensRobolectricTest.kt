@@ -2,12 +2,15 @@ package com.usman.musicplayer.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import com.usman.musicplayer.model.AuthGateDestination
 import com.usman.musicplayer.model.HomeLanguagePolicy
 import com.usman.musicplayer.model.UserProfileState
@@ -90,9 +93,22 @@ class AuthAndProfileScreensRobolectricTest {
             }
         }
 
-        // Required two sections present
+        composeRule.waitForIdle()
+
+        // Required three sections present (Profile, Streaming Quality, Audio Effects / Equalizer)
         composeRule.onNodeWithTag("settings_section_profile").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("settings_screen_list")
+            .performScrollToNode(hasTestTag("settings_section_streaming_quality"))
+        composeRule.onNodeWithTag("settings_section_streaming_quality").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_streaming_quality_card").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("settings_screen_list")
+            .performScrollToNode(hasTestTag("settings_section_equalizer"))
         composeRule.onNodeWithTag("settings_section_equalizer").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("settings_screen_list")
+            .performScrollToNode(hasText("Master Audio Processing"))
         composeRule.onNodeWithText("Master Audio Processing").assertIsDisplayed()
         composeRule.onNodeWithText("Graphic Equalizer").assertExists()
 

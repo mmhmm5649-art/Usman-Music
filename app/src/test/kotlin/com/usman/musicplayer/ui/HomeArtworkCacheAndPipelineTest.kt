@@ -302,6 +302,7 @@ class HomeArtworkCacheAndPipelineTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("home_quick_card_qa_telugu_hits").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_lazy_column").performScrollToNode(hasTestTag("featured_hero_card"))
         composeRule.onNodeWithTag("featured_hero_card").assertIsDisplayed()
         composeRule.onNodeWithTag("home_lazy_column").performScrollToNode(hasTestTag("discovery_section_sec_1"))
         composeRule.onNodeWithTag("discovery_section_sec_1").assertIsDisplayed()

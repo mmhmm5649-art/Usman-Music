@@ -88,7 +88,9 @@ fun SettingsScreen(
             }
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("settings_screen_list"),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 210.dp)
             ) {
                 // Section 1: Profile
