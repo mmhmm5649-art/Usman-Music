@@ -95,13 +95,16 @@ class AuthAndProfileScreensRobolectricTest {
 
         composeRule.waitForIdle()
 
-        // Required three sections present (Profile, Streaming Quality, Audio Effects / Equalizer)
+        // Required two top-level sections present: Profile (including Streaming Quality card) & Equalizer
         composeRule.onNodeWithTag("settings_section_profile").assertIsDisplayed()
+        composeRule.onNodeWithTag("profile_settings_card").assertIsDisplayed()
 
         composeRule.onNodeWithTag("settings_screen_list")
-            .performScrollToNode(hasTestTag("settings_section_streaming_quality"))
-        composeRule.onNodeWithTag("settings_section_streaming_quality").assertIsDisplayed()
+            .performScrollToNode(hasTestTag("settings_streaming_quality_card"))
         composeRule.onNodeWithTag("settings_streaming_quality_card").assertIsDisplayed()
+        composeRule.onNodeWithText("Data Saver").assertExists()
+        composeRule.onNodeWithText("Low Quality").assertExists()
+        composeRule.onNodeWithText("High Quality (HD)").assertExists()
 
         composeRule.onNodeWithTag("settings_screen_list")
             .performScrollToNode(hasTestTag("settings_section_equalizer"))

@@ -1,9 +1,12 @@
 package com.usman.musicplayer.data.repository
 
+import com.usman.musicplayer.data.recommendation.AiMoodIntelligenceEngine
 import com.usman.musicplayer.model.ArtistMatchingPolicy
 import com.usman.musicplayer.model.HomeLanguageFilter
 import com.usman.musicplayer.model.HomeSectionContentType
 import com.usman.musicplayer.model.HomeSectionDefinition
+import com.usman.musicplayer.model.ListeningMood
+import kotlin.math.abs
 
 object HomeDiscoveryCatalog {
 
@@ -31,6 +34,53 @@ object HomeDiscoveryCatalog {
             isPrimarySpotlight = true
         ),
         HomeSectionDefinition(
+            id = "discovery_mood_mixes",
+            title = "Daily Mood Mix",
+            subtitle = "AI-curated mixes tuned to how you feel right now",
+            language = HomeLanguageFilter.ALL,
+            contentType = HomeSectionContentType.PLAYLISTS,
+            query = "romantic chill motivational hits",
+            isPersonalized = true,
+            isPrimarySpotlight = true
+        ),
+        HomeSectionDefinition(
+            id = "discovery_your_current_mood",
+            title = "Your Current Mood",
+            subtitle = "Songs matching your active listening vibe",
+            language = HomeLanguageFilter.ALL,
+            contentType = HomeSectionContentType.SONGS,
+            query = "soulful romantic chill melody hits",
+            isPersonalized = true,
+            isPrimarySpotlight = true
+        ),
+        HomeSectionDefinition(
+            id = "discovery_because_you_listened",
+            title = "Because You Listened To...",
+            subtitle = "Curated full-length tracks inspired by your recent favourites",
+            language = HomeLanguageFilter.ALL,
+            contentType = HomeSectionContentType.SONGS,
+            query = "popular melody love hits",
+            isPersonalized = true
+        ),
+        HomeSectionDefinition(
+            id = "discovery_continue_your_vibe",
+            title = "Continue Your Vibe",
+            subtitle = "Natural mood transitions without sudden jumps",
+            language = HomeLanguageFilter.ALL,
+            contentType = HomeSectionContentType.SONGS,
+            query = "melodic acoustic chill hits",
+            isPersonalized = true
+        ),
+        HomeSectionDefinition(
+            id = "discovery_recently_played_moods",
+            title = "Recently Played Moods",
+            subtitle = "Jump right back into the vibes you enjoyed lately",
+            language = HomeLanguageFilter.ALL,
+            contentType = HomeSectionContentType.PLAYLISTS,
+            query = "top mood mixes",
+            isPersonalized = true
+        ),
+        HomeSectionDefinition(
             id = "discovery_recommended_for_you",
             title = "Recommended For You",
             subtitle = "Inspired by your artists, favourites & recent plays",
@@ -50,7 +100,7 @@ object HomeDiscoveryCatalog {
         ),
         HomeSectionDefinition(
             id = "discovery_discover_weekly",
-            title = "Discover Weekly",
+            title = "Discover Something New",
             subtitle = "Fresh recommendations across your favourite languages",
             language = HomeLanguageFilter.ALL,
             contentType = HomeSectionContentType.SONGS,
@@ -470,55 +520,157 @@ object HomeDiscoveryCatalog {
     val DEFINITION_BY_ID: Map<String, HomeSectionDefinition> = ALL_SECTIONS.associateBy { it.id }
 
     fun definitionsForFilter(filter: HomeLanguageFilter): List<HomeSectionDefinition> {
+        return orderedDefinitionsForSession(filter = filter, sessionSeed = 0L)
+    }
+
+    /**
+     * Returns Home sections ordered intelligently for the active app session.
+     * - When sessionSeed == 0L, preserves canonical deterministic order.
+     * - When sessionSeed != 0L, rotates eligible shelves & language highlights per session
+     *   while keeping core discovery & personalized anchors accessible near the top.
+     */
+    fun orderedDefinitionsForSession(
+        filter: HomeLanguageFilter,
+        sessionSeed: Long,
+        dominantMood: ListeningMood? = null
+    ): List<HomeSectionDefinition> {
         return when (filter) {
-            HomeLanguageFilter.ALL -> listOf(
-                DEFINITION_BY_ID.getValue("discovery_trending_now"),
-                DEFINITION_BY_ID.getValue("discovery_made_for_you"),
-                DEFINITION_BY_ID.getValue("discovery_popular_artists"),
-                DEFINITION_BY_ID.getValue("discovery_recommended_for_you"),
-                DEFINITION_BY_ID.getValue("discovery_heavy_rotation"),
-                DEFINITION_BY_ID.getValue("discovery_new_releases"),
-                DEFINITION_BY_ID.getValue("discovery_featured_albums"),
-                DEFINITION_BY_ID.getValue("discovery_movie_soundtracks"),
-                DEFINITION_BY_ID.getValue("discovery_discover_weekly")
-            ) +
-                // Priority highlights from all 4 supported languages + full browsable rows
-                TELUGU_SECTIONS.take(4) +
-                TAMIL_SECTIONS.take(4) +
-                ENGLISH_SECTIONS.take(4) +
-                HINDI_SECTIONS.take(4) +
-                TELUGU_SECTIONS.drop(4) +
-                TAMIL_SECTIONS.drop(4) +
-                ENGLISH_SECTIONS.drop(4) +
-                HINDI_SECTIONS.drop(4)
+            HomeLanguageFilter.ALL -> {
+                val baseDiscoveryTop = listOf(
+                    DEFINITION_BY_ID.getValue("discovery_trending_now"),
+                    DEFINITION_BY_ID.getValue("discovery_mood_mixes"),
+                    DEFINITION_BY_ID.getValue("discovery_made_for_you"),
+                    DEFINITION_BY_ID.getValue("discovery_popular_artists")
+                )
+                val rotatableDiscovery = listOf(
+                    DEFINITION_BY_ID.getValue("discovery_your_current_mood"),
+                    DEFINITION_BY_ID.getValue("discovery_because_you_listened"),
+                    DEFINITION_BY_ID.getValue("discovery_continue_your_vibe"),
+                    DEFINITION_BY_ID.getValue("discovery_recently_played_moods"),
+                    DEFINITION_BY_ID.getValue("discovery_recommended_for_you"),
+                    DEFINITION_BY_ID.getValue("discovery_heavy_rotation"),
+                    DEFINITION_BY_ID.getValue("discovery_new_releases"),
+                    DEFINITION_BY_ID.getValue("discovery_featured_albums"),
+                    DEFINITION_BY_ID.getValue("discovery_movie_soundtracks"),
+                    DEFINITION_BY_ID.getValue("discovery_discover_weekly")
+                )
+
+                if (sessionSeed == 0L) {
+                    listOf(
+                        DEFINITION_BY_ID.getValue("discovery_trending_now"),
+                        DEFINITION_BY_ID.getValue("discovery_made_for_you"),
+                        DEFINITION_BY_ID.getValue("discovery_popular_artists"),
+                        DEFINITION_BY_ID.getValue("discovery_mood_mixes"),
+                        DEFINITION_BY_ID.getValue("discovery_your_current_mood"),
+                        DEFINITION_BY_ID.getValue("discovery_because_you_listened"),
+                        DEFINITION_BY_ID.getValue("discovery_continue_your_vibe"),
+                        DEFINITION_BY_ID.getValue("discovery_recently_played_moods"),
+                        DEFINITION_BY_ID.getValue("discovery_recommended_for_you"),
+                        DEFINITION_BY_ID.getValue("discovery_heavy_rotation"),
+                        DEFINITION_BY_ID.getValue("discovery_new_releases"),
+                        DEFINITION_BY_ID.getValue("discovery_featured_albums"),
+                        DEFINITION_BY_ID.getValue("discovery_movie_soundtracks"),
+                        DEFINITION_BY_ID.getValue("discovery_discover_weekly")
+                    ) +
+                        TELUGU_SECTIONS.take(4) +
+                        TAMIL_SECTIONS.take(4) +
+                        ENGLISH_SECTIONS.take(4) +
+                        HINDI_SECTIONS.take(4) +
+                        TELUGU_SECTIONS.drop(4) +
+                        TAMIL_SECTIONS.drop(4) +
+                        ENGLISH_SECTIONS.drop(4) +
+                        HINDI_SECTIONS.drop(4)
+                } else {
+                    val orderedTop = listOf(
+                        baseDiscoveryTop[0],
+                        if ((abs(sessionSeed) % 2L) == 0L) baseDiscoveryTop[1] else baseDiscoveryTop[2],
+                        baseDiscoveryTop[3],
+                        if ((abs(sessionSeed) % 2L) == 0L) baseDiscoveryTop[2] else baseDiscoveryTop[1]
+                    )
+                    val orderedMiddle = AiMoodIntelligenceEngine.rotateListForSession(
+                        items = rotatableDiscovery,
+                        sessionSeed = sessionSeed,
+                        salt = "home_all_middle",
+                        keyExtractor = { it.id }
+                    )
+                    val languageBuckets = listOf(
+                        TELUGU_SECTIONS,
+                        TAMIL_SECTIONS,
+                        ENGLISH_SECTIONS,
+                        HINDI_SECTIONS
+                    )
+                    val rotatedBuckets = AiMoodIntelligenceEngine.rotateListForSession(
+                        items = languageBuckets,
+                        sessionSeed = sessionSeed,
+                        salt = "home_all_lang_buckets",
+                        keyExtractor = { it.first().language.name }
+                    )
+                    val orderedHighlights = rotatedBuckets.flatMap { bucket ->
+                        val anchor = bucket.take(2)
+                        val rotatedRest = AiMoodIntelligenceEngine.rotateListForSession(
+                            items = bucket.drop(2),
+                            sessionSeed = sessionSeed,
+                            salt = "lang_bucket_${bucket.first().language.name}",
+                            keyExtractor = { it.id }
+                        )
+                        anchor + rotatedRest.take(2)
+                    }
+                    val orderedRemaining = rotatedBuckets.flatMap { bucket ->
+                        AiMoodIntelligenceEngine.rotateListForSession(
+                            items = bucket.drop(2),
+                            sessionSeed = sessionSeed,
+                            salt = "lang_bucket_${bucket.first().language.name}",
+                            keyExtractor = { it.id }
+                        ).drop(2)
+                    }
+                    orderedTop + orderedMiddle + orderedHighlights + orderedRemaining
+                }
+            }
 
             HomeLanguageFilter.TELUGU -> buildLanguageFocusedOrder(
                 language = HomeLanguageFilter.TELUGU,
-                languageSections = TELUGU_SECTIONS
+                languageSections = TELUGU_SECTIONS,
+                sessionSeed = sessionSeed,
+                dominantMood = dominantMood
             )
 
             HomeLanguageFilter.TAMIL -> buildLanguageFocusedOrder(
                 language = HomeLanguageFilter.TAMIL,
-                languageSections = TAMIL_SECTIONS
+                languageSections = TAMIL_SECTIONS,
+                sessionSeed = sessionSeed,
+                dominantMood = dominantMood
             )
 
             HomeLanguageFilter.ENGLISH -> buildLanguageFocusedOrder(
                 language = HomeLanguageFilter.ENGLISH,
-                languageSections = ENGLISH_SECTIONS
+                languageSections = ENGLISH_SECTIONS,
+                sessionSeed = sessionSeed,
+                dominantMood = dominantMood
             )
 
             HomeLanguageFilter.HINDI -> buildLanguageFocusedOrder(
                 language = HomeLanguageFilter.HINDI,
-                languageSections = HINDI_SECTIONS
+                languageSections = HINDI_SECTIONS,
+                sessionSeed = sessionSeed,
+                dominantMood = dominantMood
             )
         }
     }
 
     private fun buildLanguageFocusedOrder(
         language: HomeLanguageFilter,
-        languageSections: List<HomeSectionDefinition>
+        languageSections: List<HomeSectionDefinition>,
+        sessionSeed: Long = 0L,
+        dominantMood: ListeningMood? = null
     ): List<HomeSectionDefinition> {
         val label = language.displayName
+        val moodMixForLang = DEFINITION_BY_ID.getValue("discovery_mood_mixes").copy(
+            id = "discovery_mood_mix_${language.jioSaavnLanguage}",
+            title = "Mood Mixes • $label",
+            subtitle = "AI-curated $label mixes tuned to your vibe",
+            language = language,
+            query = "$label mood mixes"
+        )
         val madeForLang = HomeSectionDefinition(
             id = "discovery_made_for_${language.jioSaavnLanguage}",
             title = "Made For You • $label",
@@ -550,10 +702,11 @@ object HomeDiscoveryCatalog {
             query = "$label hits"
         )
 
-        return listOf(
+        val defaultOrder = listOf(
             languageSections[0], // Top Hits
             languageSections[1], // Latest
             artistsForLang,
+            moodMixForLang,
             madeForLang,
             languageSections[2], // New Releases
             languageSections[3], // Trending
@@ -566,6 +719,24 @@ object HomeDiscoveryCatalog {
             languageSections[8], // Romantic / EDM / Hindi Soundtracks
             heavyForLang
         )
+        if (sessionSeed == 0L) return defaultOrder
+
+        val anchors = listOf(languageSections[0], languageSections[1], artistsForLang, moodMixForLang)
+        val rotatable = defaultOrder.filterNot { it in anchors }
+        val sortedRotatable = rotatable.sortedByDescending { def ->
+            val moodBoost = when (dominantMood) {
+                ListeningMood.SAD_HEARTBREAK, ListeningMood.EMOTIONAL ->
+                    if (def.id.contains("sad") || def.id.contains("melody") || def.id.contains("love")) 2500L else 0L
+                ListeningMood.ROMANTIC_LOVE ->
+                    if (def.id.contains("romantic") || def.id.contains("love") || def.id.contains("melody")) 2500L else 0L
+                ListeningMood.PARTY_DANCE, ListeningMood.ENERGETIC ->
+                    if (def.id.contains("mass") || def.id.contains("party") || def.id.contains("edm") || def.id.contains("hip_hop")) 2500L else 0L
+                else -> 0L
+            }
+            val hash = abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "lang_${language.name}_${def.id}") % 10_000L)
+            moodBoost + hash
+        }
+        return anchors + sortedRotatable
     }
 
     val TELUGU_ARTIST_SEEDS: List<String> = listOf(

@@ -9,6 +9,17 @@ export const CONTROL_MODES = {
   EVERYONE: 'EVERYONE',
 };
 
+export const LISTENING_MODES = {
+  NORMAL: 'NORMAL',
+  STEREO_SPLIT: 'STEREO_SPLIT',
+};
+
+export const SPEAKER_ROLES = {
+  STEREO: 'STEREO',
+  LEFT: 'LEFT',
+  RIGHT: 'RIGHT',
+};
+
 export const VALID_QUALITY_LABELS = new Set([
   'Data Saver',
   'Low',
@@ -97,7 +108,8 @@ export class RoomManager {
     this.now = options.now || (() => Date.now());
     this.roomTtlMs = options.roomTtlMs ?? 6 * 60 * 60 * 1000; // 6 hours
     this.maxRoomLifetimeMs = options.maxRoomLifetimeMs ?? 24 * 60 * 60 * 1000; // 24 hours hard cap
-    this.maxParticipantsPerRoom = options.maxParticipantsPerRoom ?? 16;
+    this.maxParticipantsPerRoom = options.maxParticipantsPerRoom ?? 10;
+    this.maxStereoSplitParticipants = options.maxStereoSplitParticipants ?? 2;
     this.maxQueueSize = options.maxQueueSize ?? 100;
     this.maxRooms = options.maxRooms ?? 10000;
     this.hostTransferGraceMs = options.hostTransferGraceMs ?? 20_000;
@@ -141,6 +153,8 @@ export class RoomManager {
       exists: true,
       roomCode: room.roomCode,
       participantCount: room.participants.size,
+      maxParticipants: this._maxParticipantsForRoom(room),
+      listeningMode: room.listeningMode,
       controlMode: room.controlMode,
       expiresAt: room.expiresAt,
       isPlaying: room.playback.isPlaying,
@@ -200,6 +214,12 @@ export class RoomManager {
         break;
       case 'update_quality':
         this._handleUpdateQuality(ws, msg);
+        break;
+      case 'set_listening_mode':
+        this._handleSetListeningMode(ws, msg);
+        break;
+      case 'assign_speaker_role':
+        this._handleAssignSpeakerRole(ws, msg);
         break;
       case 'sync_request':
         this._handleSyncRequest(ws);
@@ -290,6 +310,9 @@ export class RoomManager {
     const controlMode = msg.controlMode === CONTROL_MODES.EVERYONE
       ? CONTROL_MODES.EVERYONE
       : CONTROL_MODES.HOST_ONLY;
+    const listeningMode = msg.listeningMode === LISTENING_MODES.STEREO_SPLIT
+      ? LISTENING_MODES.STEREO_SPLIT
+      : LISTENING_MODES.NORMAL;
 
     const participantId = crypto.randomUUID();
     const sessionToken = generateSecureToken(24);
@@ -333,6 +356,7 @@ export class RoomManager {
       sessionToken,
       displayName,
       qualityLabel,
+      speakerRole: listeningMode === LISTENING_MODES.STEREO_SPLIT ? SPEAKER_ROLES.LEFT : SPEAKER_ROLES.STEREO,
       isHost: true,
       connectionState: 'CONNECTED',
       joinedAt: now,
@@ -349,6 +373,7 @@ export class RoomManager {
       expiresAt: now + this.roomTtlMs,
       hostId: participantId,
       controlMode,
+      listeningMode,
       participants: new Map([[participantId, participant]]),
       queue,
       currentIndex,
@@ -403,8 +428,21 @@ export class RoomManager {
       this._sendError(ws, 'ROOM_EXPIRED', 'This listening room has expired');
       return;
     }
-    if (room.participants.size >= this.maxParticipantsPerRoom) {
-      this._sendError(ws, 'ROOM_FULL', 'This room has reached the participant limit');
+    const maxAllowed = this._maxParticipantsForRoom(room);
+    if (room.participants.size >= maxAllowed) {
+      if (room.listeningMode === LISTENING_MODES.STEREO_SPLIT) {
+        this._sendError(
+          ws,
+          'STEREO_ROOM_FULL',
+          `Stereo Split Speaker Mode supports only ${this.maxStereoSplitParticipants} active speaker devices (Left & Right). Switch back to Normal Mode to allow up to ${this.maxParticipantsPerRoom} listeners.`
+        );
+      } else {
+        this._sendError(
+          ws,
+          'ROOM_FULL',
+          `This room has reached the maximum of ${this.maxParticipantsPerRoom} listeners.`
+        );
+      }
       return;
     }
 
@@ -416,12 +454,16 @@ export class RoomManager {
     const sessionToken = generateSecureToken(24);
     const displayName = sanitizeDisplayName(msg.displayName);
     const qualityLabel = sanitizeQualityLabel(msg.qualityLabel);
+    const assignedRole = room.listeningMode === LISTENING_MODES.STEREO_SPLIT
+      ? this._nextVacantSpeakerRole(room)
+      : SPEAKER_ROLES.STEREO;
 
     const participant = {
       participantId,
       sessionToken,
       displayName,
       qualityLabel,
+      speakerRole: assignedRole,
       isHost: false,
       connectionState: 'CONNECTED',
       joinedAt: now,
@@ -588,6 +630,147 @@ export class RoomManager {
     participant.qualityLabel = sanitizeQualityLabel(msg.qualityLabel);
     participant.lastSeenAt = this.now();
     this._broadcastRoomState(room, 'participant_updated');
+  }
+
+  _canControlRoomSettings(room, participant) {
+    return participant.isHost || room.controlMode === CONTROL_MODES.EVERYONE;
+  }
+
+  _maxParticipantsForRoom(room) {
+    return room.listeningMode === LISTENING_MODES.STEREO_SPLIT
+      ? this.maxStereoSplitParticipants
+      : this.maxParticipantsPerRoom;
+  }
+
+  _nextVacantSpeakerRole(room) {
+    const taken = new Set();
+    for (const member of room.participants.values()) {
+      if (member.speakerRole === SPEAKER_ROLES.LEFT || member.speakerRole === SPEAKER_ROLES.RIGHT) {
+        taken.add(member.speakerRole);
+      }
+    }
+    if (!taken.has(SPEAKER_ROLES.LEFT)) return SPEAKER_ROLES.LEFT;
+    if (!taken.has(SPEAKER_ROLES.RIGHT)) return SPEAKER_ROLES.RIGHT;
+    return SPEAKER_ROLES.STEREO;
+  }
+
+  _handleSetListeningMode(ws, msg) {
+    const context = this._requireRoomParticipant(ws);
+    if (!context) return;
+    const { room, participant } = context;
+
+    if (!this._canControlRoomSettings(room, participant)) {
+      this._sendError(ws, 'FORBIDDEN', 'Only the room host can change listening mode while Host Controls Only is active');
+      return;
+    }
+
+    const nextMode = msg.listeningMode;
+    if (nextMode !== LISTENING_MODES.NORMAL && nextMode !== LISTENING_MODES.STEREO_SPLIT) {
+      this._sendError(ws, 'INVALID_LISTENING_MODE', 'Listening mode must be NORMAL or STEREO_SPLIT');
+      return;
+    }
+
+    if (nextMode === LISTENING_MODES.STEREO_SPLIT && room.participants.size > this.maxStereoSplitParticipants) {
+      this._sendError(
+        ws,
+        'STEREO_MODE_PARTICIPANT_LIMIT',
+        `Stereo Split Speaker Mode supports at most ${this.maxStereoSplitParticipants} devices (Left & Right). Currently ${room.participants.size} devices are in this room.`
+      );
+      return;
+    }
+
+    const now = this.now();
+    room.listeningMode = nextMode;
+
+    if (nextMode === LISTENING_MODES.NORMAL) {
+      for (const member of room.participants.values()) {
+        member.speakerRole = SPEAKER_ROLES.STEREO;
+      }
+    } else {
+      // Assign host LEFT first, then the second participant RIGHT (no duplicate roles)
+      const ordered = Array.from(room.participants.values()).sort((a, b) => {
+        if (a.isHost && !b.isHost) return -1;
+        if (!a.isHost && b.isHost) return 1;
+        return a.joinedAt - b.joinedAt;
+      });
+      ordered.forEach((member, idx) => {
+        member.speakerRole = idx === 0 ? SPEAKER_ROLES.LEFT : SPEAKER_ROLES.RIGHT;
+      });
+    }
+
+    room.playback.stateRevision += 1;
+    room.playback.lastUpdatedBy = participant.participantId;
+    room.playback.lastAction = nextMode === LISTENING_MODES.STEREO_SPLIT
+      ? 'STEREO_SPLIT_ENABLED'
+      : 'NORMAL_MODE_ENABLED';
+    this._touchRoom(room, now);
+    this._broadcastRoomState(room, 'room_state');
+  }
+
+  _handleAssignSpeakerRole(ws, msg) {
+    const context = this._requireRoomParticipant(ws);
+    if (!context) return;
+    const { room, participant } = context;
+
+    if (!this._canControlRoomSettings(room, participant)) {
+      this._sendError(ws, 'FORBIDDEN', 'Only the room host can assign Left/Right speaker channels');
+      return;
+    }
+
+    if (room.listeningMode !== LISTENING_MODES.STEREO_SPLIT) {
+      this._sendError(ws, 'NOT_IN_STEREO_MODE', 'Switch to Stereo Split Speaker Mode before assigning Left/Right channels');
+      return;
+    }
+
+    const requestedRole = msg.speakerRole;
+    if (requestedRole !== SPEAKER_ROLES.LEFT && requestedRole !== SPEAKER_ROLES.RIGHT) {
+      this._sendError(ws, 'INVALID_SPEAKER_ROLE', 'Speaker role must be LEFT or RIGHT');
+      return;
+    }
+
+    const rawTargetId = typeof msg.targetParticipantId === 'string' && msg.targetParticipantId.trim()
+      ? msg.targetParticipantId.trim()
+      : (typeof msg.participantId === 'string' && msg.participantId.trim()
+        ? msg.participantId.trim()
+        : participant.participantId);
+    const target = room.participants.get(rawTargetId);
+    if (!target) {
+      this._sendError(ws, 'PARTICIPANT_NOT_FOUND', 'Target speaker device is not in this room');
+      return;
+    }
+
+    const otherHoldingRole = Array.from(room.participants.values()).find(
+      (member) => member.participantId !== target.participantId && member.speakerRole === requestedRole
+    );
+
+    if (otherHoldingRole) {
+      if (msg.swap === true) {
+        const oppositeRole = requestedRole === SPEAKER_ROLES.LEFT
+          ? SPEAKER_ROLES.RIGHT
+          : SPEAKER_ROLES.LEFT;
+        otherHoldingRole.speakerRole =
+          target.speakerRole === SPEAKER_ROLES.LEFT || target.speakerRole === SPEAKER_ROLES.RIGHT
+            ? target.speakerRole
+            : oppositeRole;
+        target.speakerRole = requestedRole;
+      } else {
+        this._sendError(
+          ws,
+          'DUPLICATE_SPEAKER_ROLE',
+          `${requestedRole} speaker channel is already assigned to ${otherHoldingRole.displayName}. Use Swap Channels to switch roles.`
+        );
+        return;
+      }
+    } else {
+      target.speakerRole = requestedRole;
+    }
+
+    const now = this.now();
+    room.playback.stateRevision += 1;
+    room.playback.lastUpdatedBy = participant.participantId;
+    room.playback.lastAction = 'SPEAKER_ROLE_ASSIGNED';
+    this._touchRoom(room, now);
+    this._broadcastRoomState(room, 'room_state');
   }
 
   _handleSyncRequest(ws) {
@@ -1182,6 +1365,8 @@ export class RoomManager {
       expiresAt: room.expiresAt,
       hostId: room.hostId,
       controlMode: room.controlMode,
+      listeningMode: room.listeningMode,
+      maxParticipants: this._maxParticipantsForRoom(room),
       currentIndex: room.currentIndex,
       currentTrack,
       queue: room.queue,
@@ -1192,6 +1377,7 @@ export class RoomManager {
         connectionState: p.connectionState,
         joinedAt: p.joinedAt,
         qualityLabel: p.qualityLabel,
+        speakerRole: p.speakerRole || SPEAKER_ROLES.STEREO,
       })),
       playback: {
         isPlaying: room.playback.isPlaying,

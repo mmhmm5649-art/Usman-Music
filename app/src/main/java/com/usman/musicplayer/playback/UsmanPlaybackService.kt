@@ -103,7 +103,12 @@ class UsmanPlaybackService : MediaSessionService() {
                 return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                    .setAudioProcessors(arrayOf(AudioEffectsManager.getAudioProcessor()))
+                    .setAudioProcessors(
+                        arrayOf(
+                            StereoSplitAudioController.audioProcessor,
+                            AudioEffectsManager.getAudioProcessor()
+                        )
+                    )
                     .build()
             }
         }.setEnableDecoderFallback(true)
@@ -266,6 +271,7 @@ class UsmanPlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
+        StereoSplitAudioController.resetToNormalStereo()
         AudioEffectsManager.releaseEffects()
         AudioSpectrumManager.release()
         mediaSession?.run {

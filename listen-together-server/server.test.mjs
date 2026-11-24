@@ -424,3 +424,152 @@ test('only host can end room, broadcasting room_ended and removing room state', 
   }
 });
 
+test('Normal mode supports up to 10 devices and rejects the 11th participant cleanly', async () => {
+  const { instance, wsUrl } = await startTestServer();
+  const clients = [];
+  try {
+    const host = new TestWsClient(wsUrl);
+    clients.push(host);
+    await host.ready;
+
+    host.send({ type: 'create_room', displayName: 'Phone 1', listeningMode: 'NORMAL' });
+    const created = await host.nextMessage((m) => m.type === 'room_joined');
+    assert.equal(created.room.listeningMode, 'NORMAL');
+    assert.equal(created.room.maxParticipants, 10);
+    assert.equal(created.room.participants[0].speakerRole, 'STEREO');
+
+    // Join 9 more devices (total 10)
+    for (let i = 2; i <= 10; i++) {
+      const guest = new TestWsClient(wsUrl);
+      clients.push(guest);
+      await guest.ready;
+      guest.send({ type: 'join_room', roomCode: created.room.roomCode, displayName: `Phone ${i}` });
+      const joined = await guest.nextMessage((m) => m.type === 'room_joined');
+      assert.equal(joined.room.participants.length, i);
+      const me = joined.room.participants.find((p) => p.participantId === joined.participantId);
+      assert.equal(me.speakerRole, 'STEREO');
+    }
+
+    // 11th device must be rejected with ROOM_FULL
+    const eleventh = new TestWsClient(wsUrl);
+    clients.push(eleventh);
+    await eleventh.ready;
+    eleventh.send({ type: 'join_room', roomCode: created.room.roomCode, displayName: 'Phone 11' });
+    const err = await eleventh.nextMessage((m) => m.type === 'error');
+    assert.equal(err.code, 'ROOM_FULL');
+  } finally {
+    clients.forEach((c) => c.close());
+    await instance.close();
+  }
+});
+
+test('Stereo Split mode enforces 2-device cap, LEFT/RIGHT roles, duplicate prevention, swap, slot release, reconnect, and return to NORMAL', async () => {
+  const { instance, wsUrl } = await startTestServer();
+  const host = new TestWsClient(wsUrl);
+  const phone2 = new TestWsClient(wsUrl);
+  const phone3 = new TestWsClient(wsUrl);
+  const phone2b = new TestWsClient(wsUrl);
+  let phone2Reconnect = null;
+
+  try {
+    await Promise.all([host.ready, phone2.ready, phone3.ready, phone2b.ready]);
+
+    // 1. Create normal room with 2 devices
+    host.send({ type: 'create_room', displayName: 'Phone Left', initialTrack: SAMPLE_TRACK_1, initialIsPlaying: true });
+    const hostJoined = await host.nextMessage((m) => m.type === 'room_joined');
+    const code = hostJoined.room.roomCode;
+    assert.equal(hostJoined.room.listeningMode, 'NORMAL');
+
+    phone2.send({ type: 'join_room', roomCode: code, displayName: 'Phone Right' });
+    const phone2Joined = await phone2.nextMessage((m) => m.type === 'room_joined');
+    await host.nextMessage((m) => m.type === 'participant_updated');
+
+    // 2. Host switches room into STEREO_SPLIT -> host gets LEFT, phone2 gets RIGHT
+    host.send({ type: 'set_listening_mode', listeningMode: 'STEREO_SPLIT' });
+    const [hostSplit, p2Split] = await Promise.all([
+      host.nextMessage((m) => m.type === 'room_state' && m.room.listeningMode === 'STEREO_SPLIT'),
+      phone2.nextMessage((m) => m.type === 'room_state' && m.room.listeningMode === 'STEREO_SPLIT'),
+    ]);
+    assert.equal(hostSplit.room.maxParticipants, 2);
+    assert.equal(p2Split.room.participants.find((p) => p.participantId === hostJoined.participantId).speakerRole, 'LEFT');
+    assert.equal(p2Split.room.participants.find((p) => p.participantId === phone2Joined.participantId).speakerRole, 'RIGHT');
+
+    // 3. 3rd participant joining STEREO_SPLIT room is rejected with STEREO_ROOM_FULL
+    phone3.send({ type: 'join_room', roomCode: code, displayName: 'Phone 3' });
+    const thirdErr = await phone3.nextMessage((m) => m.type === 'error');
+    assert.equal(thirdErr.code, 'STEREO_ROOM_FULL');
+
+    // 4. Duplicate role assignment without swap=true is rejected
+    host.send({
+      type: 'assign_speaker_role',
+      participantId: phone2Joined.participantId,
+      speakerRole: 'LEFT',
+      swap: false,
+    });
+    const dupErr = await host.nextMessage((m) => m.type === 'error');
+    assert.equal(dupErr.code, 'DUPLICATE_SPEAKER_ROLE');
+
+    // 5. Swap LEFT/RIGHT cleanly with swap=true
+    host.send({
+      type: 'assign_speaker_role',
+      participantId: hostJoined.participantId,
+      speakerRole: 'RIGHT',
+      swap: true,
+    });
+    const [hostSwapped, p2Swapped] = await Promise.all([
+      host.nextMessage((m) => m.type === 'room_state' && m.room.participants.find((p) => p.participantId === hostJoined.participantId).speakerRole === 'RIGHT'),
+      phone2.nextMessage((m) => m.type === 'room_state' && m.room.participants.find((p) => p.participantId === phone2Joined.participantId).speakerRole === 'LEFT'),
+    ]);
+    assert.equal(hostSwapped.room.participants.find((p) => p.participantId === hostJoined.participantId).speakerRole, 'RIGHT');
+    assert.equal(p2Swapped.room.participants.find((p) => p.participantId === phone2Joined.participantId).speakerRole, 'LEFT');
+
+    // 6. Reconnect preserves STEREO_SPLIT mode and assigned LEFT role
+    phone2.close();
+    await host.nextMessage((m) => m.type === 'participant_updated');
+    phone2Reconnect = new TestWsClient(wsUrl);
+    await phone2Reconnect.ready;
+    phone2Reconnect.send({
+      type: 'reconnect_room',
+      roomCode: code,
+      participantId: phone2Joined.participantId,
+      sessionToken: phone2Joined.sessionToken,
+    });
+    const restored = await phone2Reconnect.nextMessage((m) => m.type === 'room_joined');
+    assert.equal(restored.room.listeningMode, 'STEREO_SPLIT');
+    assert.equal(restored.room.participants.find((p) => p.participantId === phone2Joined.participantId).speakerRole, 'LEFT');
+
+    // 7. Phone 2 leaves -> slot is released -> new Phone 2B joins and gets vacant LEFT role
+    phone2Reconnect.send({ type: 'leave_room' });
+    await host.nextMessage((m) => m.type === 'participant_updated' && m.room.participants.length === 1);
+
+    phone2b.send({ type: 'join_room', roomCode: code, displayName: 'Replacement Phone' });
+    const p2bJoined = await phone2b.nextMessage((m) => m.type === 'room_joined');
+    assert.equal(p2bJoined.room.participants.length, 2);
+    assert.equal(p2bJoined.room.participants.find((p) => p.participantId === p2bJoined.participantId).speakerRole, 'LEFT');
+
+    // 8. Switch back to NORMAL -> restores STEREO on all participants and allows 3rd phone to join
+    host.send({ type: 'set_listening_mode', listeningMode: 'NORMAL' });
+    const [hostNormal, p2bNormal] = await Promise.all([
+      host.nextMessage((m) => m.type === 'room_state' && m.room.listeningMode === 'NORMAL'),
+      phone2b.nextMessage((m) => m.type === 'room_state' && m.room.listeningMode === 'NORMAL'),
+    ]);
+    assert.equal(hostNormal.room.maxParticipants, 10);
+    assert.ok(p2bNormal.room.participants.every((p) => p.speakerRole === 'STEREO'));
+
+    // 9. Phone 3 joins now that room is NORMAL; trying to switch to STEREO_SPLIT with 3 devices fails cleanly
+    phone3.send({ type: 'join_room', roomCode: code, displayName: 'Phone 3' });
+    await phone3.nextMessage((m) => m.type === 'room_joined');
+    host.send({ type: 'set_listening_mode', listeningMode: 'STEREO_SPLIT' });
+    const limitErr = await host.nextMessage((m) => m.type === 'error');
+    assert.equal(limitErr.code, 'STEREO_MODE_PARTICIPANT_LIMIT');
+  } finally {
+    host.close();
+    phone2.close();
+    phone3.close();
+    phone2b.close();
+    phone2Reconnect?.close();
+    await instance.close();
+  }
+});
+
+

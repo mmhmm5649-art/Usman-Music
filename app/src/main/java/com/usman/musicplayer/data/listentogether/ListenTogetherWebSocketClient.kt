@@ -265,6 +265,30 @@ class ListenTogetherWebSocketClient(
         )
     }
 
+    fun sendSetListeningMode(mode: ListenTogetherListeningMode): Boolean {
+        return sendJson(
+            buildJsonObject {
+                put("type", "set_listening_mode")
+                put("listeningMode", mode.wireValue)
+            }
+        )
+    }
+
+    fun sendAssignSpeakerRole(
+        targetParticipantId: String,
+        role: ListenTogetherSpeakerRole,
+        swap: Boolean = false
+    ): Boolean {
+        return sendJson(
+            buildJsonObject {
+                put("type", "assign_speaker_role")
+                put("targetParticipantId", targetParticipantId)
+                put("speakerRole", role.wireValue)
+                put("swap", swap)
+            }
+        )
+    }
+
     fun sendUpdateQuality(qualityLabel: String): Boolean {
         return sendJson(
             buildJsonObject {
@@ -648,7 +672,8 @@ class ListenTogetherWebSocketClient(
                     isHost = p.optBoolean("isHost", false),
                     connectionState = ParticipantConnectionState.fromWire(p.optString("connectionState")),
                     joinedAt = p.optLong("joinedAt", 0L),
-                    qualityLabel = p.optString("qualityLabel", "HD")
+                    qualityLabel = p.optString("qualityLabel", "HD"),
+                    speakerRole = ListenTogetherSpeakerRole.fromWire(p.optString("speakerRole"))
                 )
             }.orEmpty()
 
@@ -669,6 +694,8 @@ class ListenTogetherWebSocketClient(
             val currentIndex = obj.optInt("currentIndex", -1)
             val currentTrack = parseTrack(obj.optObject("currentTrack"))
                 ?: queue.getOrNull(currentIndex)
+            val listeningMode = ListenTogetherListeningMode.fromWire(obj.optString("listeningMode"))
+            val defaultMax = if (listeningMode == ListenTogetherListeningMode.STEREO_SPLIT) 2 else 10
 
             return ListenTogetherRoomState(
                 roomId = obj.optString("roomId"),
@@ -677,6 +704,8 @@ class ListenTogetherWebSocketClient(
                 expiresAt = obj.optLong("expiresAt", 0L),
                 hostId = obj.optString("hostId"),
                 controlMode = ListenTogetherControlMode.fromWire(obj.optString("controlMode")),
+                listeningMode = listeningMode,
+                maxParticipants = obj.optInt("maxParticipants", defaultMax).coerceAtLeast(2),
                 currentIndex = currentIndex,
                 currentTrack = currentTrack,
                 queue = queue,

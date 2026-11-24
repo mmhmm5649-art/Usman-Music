@@ -10,6 +10,8 @@ import android.util.Log
 import com.usman.musicplayer.BuildConfig
 import com.usman.musicplayer.data.repository.UnifiedMusicRepository
 import com.usman.musicplayer.model.StreamingQuality
+import com.usman.musicplayer.playback.PcmSpeakerChannelRole
+import com.usman.musicplayer.playback.StereoSplitAudioController
 import com.usman.musicplayer.sdk.Song
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,13 +92,16 @@ class ListenTogetherCoordinator(
 
     init {
         observeWebSocket()
+        observeStereoSplitAudioTelemetry()
         registerNetworkObserver()
     }
 
     private fun loadInitialUiState(): ListenTogetherUiState {
         val savedServerUrl = prefs.getString(KEY_SERVER_URL, null)?.trim().orEmpty()
         val buildConfigUrl = BuildConfig.LISTEN_TOGETHER_WS_URL.trim()
-        val resolvedServerUrl = savedServerUrl.ifBlank { buildConfigUrl }
+        val resolvedServerUrl = savedServerUrl
+            .ifBlank { buildConfigUrl }
+            .ifBlank { DEFAULT_DEPLOYED_WS_URL }
 
         val savedName = prefs.getString(KEY_DISPLAY_NAME, null)?.trim().orEmpty()
         val defaultDeviceName = savedName.ifBlank {
@@ -132,6 +137,25 @@ class ListenTogetherCoordinator(
         scope.launch {
             wsClient.events.collect { event ->
                 handleServerEvent(event)
+            }
+        }
+    }
+
+    private fun observeStereoSplitAudioTelemetry() {
+        scope.launch {
+            StereoSplitAudioController.telemetry.collect { telemetry ->
+                _uiState.update { state ->
+                    val isSplit = state.isStereoSplitMode
+                    val notice = if (isSplit && telemetry.isMonoSource) {
+                        "Current track is mono (1 channel) — meaningful Left/Right stereo separation is not available for mono audio."
+                    } else {
+                        null
+                    }
+                    state.copy(
+                        isCurrentTrackMono = telemetry.isMonoSource,
+                        stereoSplitNotice = notice
+                    )
+                }
             }
         }
     }
@@ -318,6 +342,68 @@ class ListenTogetherCoordinator(
             return
         }
         wsClient.sendSetControlMode(mode)
+    }
+
+    fun setListeningMode(mode: ListenTogetherListeningMode) {
+        if (!guardCanControl()) return
+        val state = _uiState.value
+        val room = state.room ?: return
+        if (mode == ListenTogetherListeningMode.STEREO_SPLIT && room.participants.size > 2) {
+            _uiState.update {
+                it.copy(
+                    errorMessage = "Stereo Split Speaker Mode supports at most 2 devices (Left & Right). Currently ${room.participants.size} devices are in this room."
+                )
+            }
+            return
+        }
+        wsClient.sendSetListeningMode(mode)
+    }
+
+    fun assignSpeakerRole(
+        targetParticipantId: String,
+        role: ListenTogetherSpeakerRole,
+        swap: Boolean = false
+    ) {
+        if (!guardCanControl()) return
+        val room = _uiState.value.room ?: return
+        if (room.listeningMode != ListenTogetherListeningMode.STEREO_SPLIT) {
+            _uiState.update {
+                it.copy(errorMessage = "Enable Stereo Split Speaker Mode before assigning Left/Right speakers.")
+            }
+            return
+        }
+        wsClient.sendAssignSpeakerRole(
+            targetParticipantId = targetParticipantId,
+            role = role,
+            swap = swap
+        )
+    }
+
+    private fun syncLocalSpeakerChannelRole(room: ListenTogetherRoomState?, participantId: String?) {
+        val effectiveRole = if (room == null || room.listeningMode != ListenTogetherListeningMode.STEREO_SPLIT) {
+            ListenTogetherSpeakerRole.STEREO
+        } else {
+            room.participants.firstOrNull { it.participantId == participantId }?.speakerRole
+                ?: ListenTogetherSpeakerRole.STEREO
+        }
+        val pcmRole = when (effectiveRole) {
+            ListenTogetherSpeakerRole.LEFT -> PcmSpeakerChannelRole.LEFT
+            ListenTogetherSpeakerRole.RIGHT -> PcmSpeakerChannelRole.RIGHT
+            ListenTogetherSpeakerRole.STEREO -> PcmSpeakerChannelRole.STEREO
+        }
+        StereoSplitAudioController.setChannelRole(pcmRole)
+        val telemetry = StereoSplitAudioController.telemetry.value
+        _uiState.update { state ->
+            state.copy(
+                localSpeakerRole = effectiveRole,
+                isCurrentTrackMono = telemetry.isMonoSource,
+                stereoSplitNotice = if (room?.listeningMode == ListenTogetherListeningMode.STEREO_SPLIT && telemetry.isMonoSource) {
+                    "Current track is mono (1 channel) — meaningful Left/Right stereo separation is not available for mono audio."
+                } else {
+                    null
+                }
+            )
+        }
     }
 
     /**
@@ -539,6 +625,7 @@ class ListenTogetherCoordinator(
     }
 
     fun release() {
+        StereoSplitAudioController.resetToNormalStereo()
         stopSyncLoops()
         unregisterNetworkObserver()
         wsClient.disconnect(clearSession = true)
@@ -581,6 +668,7 @@ class ListenTogetherCoordinator(
                         infoBanner = if (event.reconnected) "Reconnected and resynced room" else "Connected to room ${event.room.roomCode}"
                     )
                 }
+                syncLocalSpeakerChannelRole(event.room, event.participantId)
                 startSyncLoops()
                 applyAuthoritativeRoomState(event.room, forceImmediateSeek = true)
             }
@@ -588,6 +676,7 @@ class ListenTogetherCoordinator(
             is ListenTogetherServerEvent.RoomStateUpdated -> {
                 clockSyncEngine.seedCoarseOffsetIfUnsynced(event.serverTimeMs)
                 _uiState.update { it.copy(room = event.room, isBusy = false) }
+                syncLocalSpeakerChannelRole(event.room, _uiState.value.participantId)
                 if (event.type == "playback_state" || event.type == "room_state") {
                     applyAuthoritativeRoomState(event.room, forceImmediateSeek = event.room.playback.lastAction == "SEEK")
                 }
@@ -607,6 +696,7 @@ class ListenTogetherCoordinator(
                         infoBanner = notice
                     )
                 }
+                syncLocalSpeakerChannelRole(event.room, _uiState.value.participantId)
                 applyAuthoritativeRoomState(event.room, forceImmediateSeek = false)
             }
 
@@ -920,6 +1010,7 @@ class ListenTogetherCoordinator(
     }
 
     private fun resetLocalRoomState(infoMessage: String? = null, errorMessage: String? = null) {
+        StereoSplitAudioController.resetToNormalStereo()
         runAsRemoteAction { playbackBridge.setPlaybackSpeed(1.0f) }
         loadedTrackId = null
         loadedQuality = null
@@ -933,6 +1024,8 @@ class ListenTogetherCoordinator(
                 room = null,
                 isBusy = false,
                 isQualitySwitching = false,
+                localSpeakerRole = ListenTogetherSpeakerRole.STEREO,
+                stereoSplitNotice = null,
                 diagnostics = SyncDiagnostics(),
                 infoBanner = infoMessage,
                 errorMessage = errorMessage
@@ -999,5 +1092,6 @@ class ListenTogetherCoordinator(
         private const val KEY_SERVER_URL = "server_ws_url"
         private const val KEY_DISPLAY_NAME = "display_name"
         private const val KEY_STREAMING_QUALITY = "streaming_quality"
+        const val DEFAULT_DEPLOYED_WS_URL = "wss://usman-music-listen-together.onrender.com/ws"
     }
 }

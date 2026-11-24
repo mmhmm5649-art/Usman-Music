@@ -31,7 +31,7 @@ enum class StreamingQuality(
     ),
     HD(
         key = "hd",
-        displayName = "HD Quality",
+        displayName = "High Quality (HD)",
         shortLabel = "HD",
         description = "Highest available bitrate (up to 320 kbps)",
         targetBitrateKbps = 320,
@@ -60,14 +60,14 @@ data class ResolvedStream(
 
     val actualQualityLabel: String
         get() {
+            val codec = codecLabel
             val base = when {
-                actualBitrateKbps == null -> requestedQuality.shortLabel
+                actualBitrateKbps == null -> return codec ?: "Provider Stream"
                 actualBitrateKbps >= 320 -> "320 kbps HD"
                 actualBitrateKbps >= 160 -> "160 kbps"
                 actualBitrateKbps >= 96 -> "96 kbps"
                 else -> "$actualBitrateKbps kbps"
             }
-            val codec = codecLabel
             return if (!codec.isNullOrBlank()) "$base • $codec" else base
         }
 
@@ -82,9 +82,9 @@ data class ResolvedStream(
     val fallbackNotice: String?
         get() = when {
             isDowngradedFromHd ->
-                "Requested HD (320 kbps) • Provider supplied $actualBitrateKbps kbps"
+                "Requested High Quality (HD) • Provider supplied $actualBitrateKbps kbps"
             isFallbackVariant ->
-                "Requested ${requestedQuality.displayName} (~${requestedQuality.targetBitrateKbps} kbps) • Playing $actualBitrateKbps kbps"
+                "Requested ${requestedQuality.displayName} • Playing $actualBitrateKbps kbps"
             else -> null
         }
 }

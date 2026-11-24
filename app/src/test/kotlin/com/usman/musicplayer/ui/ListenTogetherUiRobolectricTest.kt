@@ -346,17 +346,26 @@ class ListenTogetherUiRobolectricTest {
                     uiState = MusicPlayerUiState(
                         selectedStreamingQuality = StreamingQuality.HD,
                         activeStreamQualityLabel = "160 kbps • AAC",
-                        activeStreamFallbackNotice = "Requested HD (320 kbps) • Provider supplied 160 kbps"
+                        activeStreamFallbackNotice = "Requested High Quality (HD) • Provider supplied 160 kbps"
                     ),
                     onSelectStreamingQuality = { pickedQuality = it }
                 )
             }
         }
 
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_section_profile").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_streaming_quality_card").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_active_quality_label").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_quality_fallback_notice").assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_quality_option_data_saver").performClick()
+        composeRule.onNodeWithText("Data Saver").assertExists()
+        composeRule.onNodeWithText("Low Quality").assertExists()
+        composeRule.onNodeWithText("High Quality (HD)").assertExists()
+        composeRule.onNodeWithTag("settings_quality_selected_indicator_hd", useUnmergedTree = true).assertExists()
+
+        composeRule.onNodeWithTag("settings_quality_option_data_saver").performScrollTo().performClick()
         assertEquals(StreamingQuality.DATA_SAVER, pickedQuality)
+        composeRule.onNodeWithTag("settings_quality_option_low").performScrollTo().performClick()
+        assertEquals(StreamingQuality.LOW, pickedQuality)
     }
 }

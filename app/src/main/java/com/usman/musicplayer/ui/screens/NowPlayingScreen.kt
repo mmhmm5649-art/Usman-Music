@@ -56,18 +56,24 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -124,7 +130,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -167,10 +177,13 @@ import com.usman.musicplayer.data.repository.ExternalServiceType
 import com.usman.musicplayer.model.LyricLine
 import com.usman.musicplayer.model.LyricWord
 import com.usman.musicplayer.model.LyricsParser
+import com.usman.musicplayer.model.MoodNextRecommendation
 import com.usman.musicplayer.model.PlaybackProgress
 import com.usman.musicplayer.model.Playlist
 import com.usman.musicplayer.model.RepeatMode
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.model.SongMoodProfile
+import com.usman.musicplayer.model.StreamingQuality
 import com.usman.musicplayer.ui.components.GlassButtonSurface
 import com.usman.musicplayer.ui.components.GlassSlider
 import com.usman.musicplayer.ui.components.LiquidGlassPanel
@@ -227,12 +240,14 @@ fun NowPlayingScreen(
     isInListenTogetherRoom: Boolean = false,
     onOpenListenTogether: () -> Unit = {},
     onAddToListenTogetherQueue: (Song) -> Unit = {},
+    onToggleMoodAutoplay: () -> Unit = {},
     isExpanded: Boolean = true,
     modifier: Modifier = Modifier,
-    playbackProgressFlow: StateFlow<PlaybackProgress>? = null
+    playbackProgressFlow: StateFlow<PlaybackProgress>? = null,
+    isTvOverride: Boolean? = null
 ) {
     val context = LocalContext.current
-    val isTv = remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
+    val isTv = isTvOverride ?: remember { com.usman.musicplayer.util.DeviceUtils.isTvDevice(context) }
     val scope = rememberCoroutineScope()
     val song = uiState.currentSong
 
@@ -316,21 +331,50 @@ fun NowPlayingScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() }
-            ) {
-                // Consume background and empty-area taps so they never leak through to underlying screens
+            .onPreviewKeyEvent { keyEvent ->
+                if (!isTv || keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (keyEvent.key) {
+                    Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
+                        onPlayPauseToggle()
+                        true
+                    }
+                    Key.MediaNext -> {
+                        onSkipNext()
+                        true
+                    }
+                    Key.MediaPrevious -> {
+                        onSkipPrevious()
+                        true
+                    }
+                    Key.MediaFastForward -> {
+                        val currentPos = playbackProgressFlow?.value?.currentPositionMs ?: playbackProgress.currentPositionMs
+                        val duration = resolveDurationMs()
+                        if (duration > 0L) onSeekTo((currentPos + 10_000L).coerceAtMost(duration))
+                        true
+                    }
+                    Key.MediaRewind -> {
+                        val currentPos = playbackProgressFlow?.value?.currentPositionMs ?: playbackProgress.currentPositionMs
+                        onSeekTo((currentPos - 10_000L).coerceAtLeast(0L))
+                        true
+                    }
+                    else -> false
+                }
             }
+            .pointerInput(Unit) {}
     ) {
         // --- 1. FULL-SCREEN ATMOSPHERIC ALBUM-ARTWORK BLUR BACKGROUND ---
         ThemeAlbumBackground(song = song, palette = albumPalette)
 
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+        ) {
+        val isCompactScreen = maxHeight < 600.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .widthIn(max = 680.dp)
                 .align(Alignment.Center)
                 .padding(horizontal = 22.dp),
@@ -448,6 +492,9 @@ fun NowPlayingScreen(
                         AlbumArtworkTrackView(
                             song = song,
                             isFavorite = uiState.isFavorite,
+                            selectedStreamingQuality = uiState.selectedStreamingQuality,
+                            activeQualityLabel = uiState.activeStreamQualityLabel,
+                            fallbackNotice = uiState.activeStreamFallbackNotice,
                             palette = albumPalette,
                             onToggleFavorite = { song?.let { onToggleFavorite(it) } },
                             onAddToPlaylist = { showAddToPlaylistSheet = true },
@@ -464,9 +511,9 @@ fun NowPlayingScreen(
             if (!isTv) {
                 RainbowAudioVisualizer(
                     isPlaying = uiState.isPlaying,
-                    height = 76.dp,
+                    height = if (isCompactScreen) 36.dp else 76.dp,
                     showGlow = true,
-                    showReflection = true,
+                    showReflection = !isCompactScreen,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("audio_rainbow_visualizer")
@@ -483,7 +530,7 @@ fun NowPlayingScreen(
                 onSeekTo = onSeekTo
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(if (isCompactScreen) 4.dp else 8.dp))
 
             // --- PLAYBACK CONTROLS ROW ---
             PlaybackControlsRow(
@@ -498,9 +545,10 @@ fun NowPlayingScreen(
                 onToggleRepeat = onToggleRepeat
             )
 
-            Spacer(modifier = Modifier.height(52.dp))
+            Spacer(modifier = Modifier.height(if (isCompactScreen) 8.dp else 52.dp))
 
 
+        }
         }
 
         // --- FLOATING FEEDBACK BANNER ---
@@ -530,19 +578,47 @@ fun NowPlayingScreen(
             }
         }
 
-        // --- THREE-DOT MENU MODAL BOTTOM SHEET ---
+        // --- THREE-DOT MENU BOTTOM SHEET OVERLAY ---
         if (showThreeDotSheet) {
-            ModalBottomSheet(
-                onDismissRequest = { showThreeDotSheet = false },
-                containerColor = Color(0xF2080D1A),
-                scrimColor = Color.Black.copy(alpha = 0.75f),
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+            BackHandler(enabled = true) {
+                showThreeDotSheet = false
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.75f))
             ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showThreeDotSheet = false }
+                )
                 Column(
                     modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                        .widthIn(max = 600.dp)
+                        .heightIn(max = 560.dp)
+                        .background(
+                            color = Color(0xF2080D1A),
+                            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                        )
+                        .navigationBarsPadding()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .padding(bottom = 12.dp)
+                            .size(width = 36.dp, height = 4.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x66FFFFFF))
+                    )
                     Text(
                         text = "Options",
                         color = Color.White,
@@ -550,6 +626,60 @@ fun NowPlayingScreen(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable {
+                                val nextEnabled = !uiState.isMoodAutoplayEnabled
+                                onToggleMoodAutoplay()
+                                feedbackMessage = if (nextEnabled) {
+                                    "AI Mood Autoplay enabled"
+                                } else {
+                                    "AI Mood Autoplay paused"
+                                }
+                            }
+                            .padding(vertical = 10.dp, horizontal = 10.dp)
+                            .testTag("mood_autoplay_toggle_option"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MusicNote,
+                            contentDescription = "AI Mood Autoplay",
+                            tint = albumPalette.accent,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "AI Mood Autoplay",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (uiState.isMoodAutoplayEnabled) {
+                                    "Enabled • Plays matching mood next"
+                                } else {
+                                    "Disabled • Stops after track or queue"
+                                },
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp
+                            )
+                        }
+                        Switch(
+                            checked = uiState.isMoodAutoplayEnabled,
+                            onCheckedChange = null,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.Black,
+                                checkedTrackColor = albumPalette.accent,
+                                uncheckedThumbColor = Color(0xFFCBD5E1),
+                                uncheckedTrackColor = Color(0x33FFFFFF)
+                            )
+                        )
+                    }
 
                     MenuOptionRow(
                         icon = Icons.Default.PlaylistAdd,
@@ -729,7 +859,7 @@ fun NowPlayingScreen(
                         )
                     } else {
                         LazyColumn(modifier = Modifier.heightIn(max = 260.dp)) {
-                            items(uiState.playlists) { playlist ->
+                            items(uiState.playlists, key = { it.id }) { playlist ->
                                 PlaylistItemRow(
                                     playlist = playlist,
                                     palette = albumPalette,
@@ -811,7 +941,15 @@ fun NowPlayingScreen(
                         InfoRow("Artist", song.artist)
                         InfoRow("Album", song.album)
                         InfoRow("Duration", formatMs(song.durationMs))
-                        InfoRow("Quality", if (song.isOnline) "320 KBPS AAC HD" else "Local Storage")
+                        InfoRow(
+                            "Quality",
+                            resolveMinimalQualityLabel(
+                                isOnline = song.isOnline,
+                                selectedQuality = uiState.selectedStreamingQuality,
+                                fallbackNotice = uiState.activeStreamFallbackNotice,
+                                actualQualityLabel = uiState.activeStreamQualityLabel
+                            )
+                        )
                         InfoRow("Player", "USMAN MUSIC")
                     }
                 },
@@ -910,8 +1048,9 @@ private fun ThemeAlbumBackground(
     palette: AlbumPalette
 ) {
     val context = LocalContext.current
-    // Decode 256x256 for the heavily blurred ambient layer (4x fewer pixels -> ~4x faster blur & lower RAM)
-    var backgroundBitmap by remember(song?.id, song?.albumArtUri) {
+    // Keep the previous blurred artwork visible until the next track's artwork finishes loading
+    // so track changes smoothly crossfade without any black flash on Phone or Android TV.
+    var backgroundBitmap by remember {
         mutableStateOf<Bitmap?>(
             song?.let { AlbumArtworkCache.getCached(it.id, it.albumArtUri, 256, 256) }
         )
@@ -919,16 +1058,22 @@ private fun ThemeAlbumBackground(
 
     LaunchedEffect(song?.id, song?.albumArtUri, song?.filePath) {
         if (song != null) {
-            backgroundBitmap = AlbumArtworkCache.loadArtwork(
-                context = context,
-                songId = song.id,
-                albumArtUri = song.albumArtUri,
-                filePath = song.filePath,
-                targetWidth = 256,
-                targetHeight = 256
-            )
-        } else {
-            backgroundBitmap = null
+            val cached = AlbumArtworkCache.getCached(song.id, song.albumArtUri, 256, 256)
+            if (cached != null) {
+                backgroundBitmap = cached
+            } else {
+                val loaded = AlbumArtworkCache.loadArtwork(
+                    context = context,
+                    songId = song.id,
+                    albumArtUri = song.albumArtUri,
+                    filePath = song.filePath,
+                    targetWidth = 256,
+                    targetHeight = 256
+                )
+                if (loaded != null) {
+                    backgroundBitmap = loaded
+                }
+            }
         }
     }
 
@@ -951,12 +1096,12 @@ private fun ThemeAlbumBackground(
                 .background(paletteGradientBrush)
         )
 
-        // 2. Full-screen heavily blurred album artwork with edge bleeding prevention (scale 1.08f)
+        // 2. Full-screen heavily blurred album artwork with edge bleeding prevention (scale 1.14f)
         val bmp = backgroundBitmap
         if (bmp != null) {
             Crossfade(
                 targetState = bmp,
-                animationSpec = tween(500, easing = FastOutSlowInEasing),
+                animationSpec = tween(550, easing = FastOutSlowInEasing),
                 label = "AlbumBackgroundBlurCrossfade"
             ) { bitmap ->
                 Image(
@@ -966,10 +1111,10 @@ private fun ThemeAlbumBackground(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            scaleX = 1.08f
-                            scaleY = 1.08f
+                            scaleX = 1.14f
+                            scaleY = 1.14f
                         }
-                        .cloudy(radius = 38)
+                        .cloudy(radius = 44)
                 )
             }
         }
@@ -1179,88 +1324,209 @@ private fun NowPlayingTopBar(
     }
 }
 
+/**
+ * Resolves the minimal Now Playing quality label matching the user's selected
+ * streaming quality in Settings:
+ * - Data Saver  -> "Data Saver"
+ * - Low Quality -> "Low Quality"
+ * - HD Quality  -> "HD"
+ * - Local MP3   -> "LOCAL AUDIO"
+ * Strictly no bitrate numbers (no 320 kbps, 160 kbps, etc.) and no codec names (no AAC, MP3, etc.).
+ * If the provider experienced an actual truthful fallback, reports the actual fallback tier.
+ */
+internal fun resolveMinimalQualityLabel(
+    isOnline: Boolean,
+    selectedQuality: StreamingQuality,
+    fallbackNotice: String? = null,
+    actualQualityLabel: String? = null
+): String {
+    if (!isOnline) {
+        return "LOCAL AUDIO"
+    }
+
+    // Check if provider experienced an actual fallback
+    val fallbackBitrate = if (!fallbackNotice.isNullOrBlank()) {
+        Regex("""(?:supplied|Playing)\s+(\d+)\s*kbps""", RegexOption.IGNORE_CASE)
+            .find(fallbackNotice)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    } else null
+
+    val effectiveBitrate = fallbackBitrate ?: run {
+        if (selectedQuality == StreamingQuality.HD && !actualQualityLabel.isNullOrBlank() && !actualQualityLabel.contains("320")) {
+            Regex("""(\d+)\s*kbps""", RegexOption.IGNORE_CASE)
+                .find(actualQualityLabel)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        } else null
+    }
+
+    if (effectiveBitrate != null) {
+        return when {
+            effectiveBitrate >= 320 -> "HD"
+            effectiveBitrate >= 160 -> "Low Quality"
+            else -> "Data Saver"
+        }
+    }
+
+    return when (selectedQuality) {
+        StreamingQuality.DATA_SAVER -> "Data Saver"
+        StreamingQuality.LOW -> "Low Quality"
+        StreamingQuality.HD -> "HD"
+    }
+}
+
 @Composable
 private fun AlbumArtworkTrackView(
     song: Song?,
     isFavorite: Boolean,
+    selectedStreamingQuality: StreamingQuality = StreamingQuality.HD,
+    activeQualityLabel: String? = null,
+    fallbackNotice: String? = null,
     palette: AlbumPalette,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onOpenEqualizer: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceEvenly
-    ) {
-        // Large Artwork Frame (Clean, Sharp Artwork)
-        Box(
-            modifier = Modifier
-                .size(260.dp)
-                .shadow(
-                    elevation = 20.dp,
-                    shape = RoundedCornerShape(24.dp),
-                    spotColor = Color(0x77000000)
-                )
-                .clip(RoundedCornerShape(24.dp))
-                .testTag("now_playing_artwork"),
-            contentAlignment = Alignment.Center
-        ) {
-            SongAlbumArtwork(
-                song = song,
-                modifier = Modifier.fillMaxSize(),
-                cornerRadius = 24.dp,
-                showGlowBorder = false
-            )
+    BoxWithConstraints(modifier = modifier) {
+        val isCompactHeight = maxHeight < 250.dp
+        val isUltraCompact = maxHeight < 170.dp
+        val artworkSize = if (isCompactHeight) {
+            (maxHeight * 0.30f).coerceIn(36.dp, 64.dp)
+        } else {
+            (maxHeight - 160.dp).coerceIn(120.dp, 280.dp)
         }
-
-        // Track Identity & Action Badges
+        val actionBtnSize = if (isCompactHeight) 34.dp else 44.dp
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = song?.title ?: "Select a song",
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "${song?.artist ?: "Unknown Artist"} • ${song?.album ?: "Single"}",
-                color = Color(0xFFCBD5E1),
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Audio Quality Tag
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0x281E2338))
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = if (song?.isOnline == true) "320 KBPS AAC • USMAN MUSIC HD" else "LOCAL HIGH-RES AUDIO",
-                    color = palette.accent,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.8.sp
-                )
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (isCompactHeight) {
+                Arrangement.spacedBy(4.dp, Alignment.CenterVertically)
+            } else {
+                Arrangement.SpaceEvenly
             }
-        }
+        ) {
+            // Large Artwork Frame (Responsive to container height)
+            if (!isCompactHeight) {
+                Box(
+                    modifier = Modifier
+                        .size(artworkSize)
+                        .shadow(
+                            elevation = 20.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            spotColor = Color(0x77000000)
+                        )
+                        .clip(RoundedCornerShape(24.dp))
+                        .testTag("now_playing_artwork"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    SongAlbumArtwork(
+                        song = song,
+                        modifier = Modifier.fillMaxSize(),
+                        cornerRadius = 24.dp,
+                        showGlowBorder = false
+                    )
+                }
+            }
+
+            // Track Identity & Action Badges
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (isCompactHeight) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(artworkSize)
+                                .clip(RoundedCornerShape(10.dp))
+                                .testTag("now_playing_artwork")
+                        ) {
+                            SongAlbumArtwork(
+                                song = song,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 10.dp,
+                                showGlowBorder = false
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(
+                            modifier = Modifier.weight(1f, fill = false),
+                            horizontalAlignment = Alignment.Start
+                        ) {
+                            Text(
+                                text = song?.title ?: "Select a song",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${song?.artist ?: "Unknown Artist"} • ${song?.album ?: "Single"}",
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        text = song?.title ?: "Select a song",
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "${song?.artist ?: "Unknown Artist"} • ${song?.album ?: "Single"}",
+                        color = Color(0xFFCBD5E1),
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                if (!isUltraCompact) {
+                    Spacer(modifier = Modifier.height(if (isCompactHeight) 4.dp else 8.dp))
+
+                    val qualityText = resolveMinimalQualityLabel(
+                        isOnline = song?.isOnline == true,
+                        selectedQuality = selectedStreamingQuality,
+                        fallbackNotice = fallbackNotice,
+                        actualQualityLabel = activeQualityLabel
+                    )
+
+                    // Audio Quality Tag (Strictly minimal: Data Saver, Low Quality, HD, or LOCAL AUDIO)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0x281E2338))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                            .testTag("now_playing_quality_tag")
+                    ) {
+                        Text(
+                            text = qualityText,
+                            modifier = Modifier.testTag("now_playing_quality_label"),
+                            color = palette.accent,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                    }
+                }
+            }
 
         // Action Buttons Row (Clean Theme Buttons with D-pad remote focus)
+        if (!isUltraCompact) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1268,7 +1534,7 @@ private fun AlbumArtworkTrackView(
         ) {
             NowPlayingControlButton(
                 onClick = onAddToPlaylist,
-                size = 44.dp,
+                size = actionBtnSize,
                 cornerRadius = 14.dp,
                 backgroundColor = Color(0x281E2338)
             ) {
@@ -1282,7 +1548,7 @@ private fun AlbumArtworkTrackView(
 
             NowPlayingControlButton(
                 onClick = onOpenEqualizer,
-                size = 44.dp,
+                size = actionBtnSize,
                 cornerRadius = 14.dp,
                 backgroundColor = Color(0x281E2338),
                 focusedBorderColor = palette.accent
@@ -1297,7 +1563,7 @@ private fun AlbumArtworkTrackView(
 
             NowPlayingControlButton(
                 onClick = onToggleFavorite,
-                size = 44.dp,
+                size = actionBtnSize,
                 cornerRadius = 14.dp,
                 backgroundColor = if (isFavorite) Color(0x35F43F5E) else Color(0x281E2338),
                 focusedBorderColor = NeonPink
@@ -1310,8 +1576,8 @@ private fun AlbumArtworkTrackView(
                 )
             }
         }
-
-
+        }
+        }
     }
 }
 

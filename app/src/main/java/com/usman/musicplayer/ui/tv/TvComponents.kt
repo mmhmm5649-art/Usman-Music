@@ -22,8 +22,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
@@ -43,6 +45,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -55,7 +58,7 @@ import com.usman.musicplayer.ui.theme.SoftCyan
 
 /**
  * TV Navigation Rail for Android TV / Google TV.
- * Provides easy D-pad navigation across destinations (Home, Search, Library, Settings).
+ * Provides easy D-pad navigation across destinations (Home, Search, Library, Listen Together, Settings).
  */
 @Composable
 fun TvNavigationRail(
@@ -63,20 +66,22 @@ fun TvNavigationRail(
     onNavigate: (AppDestination) -> Unit,
     onOpenNowPlaying: () -> Unit,
     hasCurrentSong: Boolean,
+    onOpenListenTogether: () -> Unit = {},
+    listenTogetherRoomCode: String? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .width(100.dp)
+            .width(104.dp)
             .background(Color(0xFF0D121F))
-            .padding(vertical = 24.dp, horizontal = 12.dp),
+            .padding(vertical = 20.dp, horizontal = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // App Icon
             Box(
@@ -94,35 +99,48 @@ fun TvNavigationRail(
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Nav Destinations
             TvNavRailItem(
                 icon = Icons.Default.Home,
                 label = "Home",
                 isSelected = currentDestination == AppDestination.HOME,
-                onClick = { onNavigate(AppDestination.HOME) }
+                onClick = { onNavigate(AppDestination.HOME) },
+                testTag = "tv_rail_home"
             )
 
             TvNavRailItem(
                 icon = Icons.Default.Search,
                 label = "Search",
                 isSelected = currentDestination == AppDestination.SEARCH,
-                onClick = { onNavigate(AppDestination.SEARCH) }
+                onClick = { onNavigate(AppDestination.SEARCH) },
+                testTag = "tv_rail_search"
             )
 
             TvNavRailItem(
                 icon = Icons.Default.LibraryMusic,
                 label = "Library",
                 isSelected = currentDestination == AppDestination.LIBRARY,
-                onClick = { onNavigate(AppDestination.LIBRARY) }
+                onClick = { onNavigate(AppDestination.LIBRARY) },
+                testTag = "tv_rail_library"
+            )
+
+            TvNavRailItem(
+                icon = Icons.Default.Groups,
+                label = if (!listenTogetherRoomCode.isNullOrBlank()) "Live" else "Together",
+                isSelected = !listenTogetherRoomCode.isNullOrBlank(),
+                accentColor = if (!listenTogetherRoomCode.isNullOrBlank()) Color(0xFF34D399) else SoftCyan,
+                onClick = onOpenListenTogether,
+                testTag = "tv_rail_listen_together"
             )
 
             TvNavRailItem(
                 icon = Icons.Default.Settings,
                 label = "Settings",
                 isSelected = currentDestination == AppDestination.NEW, // Settings destination
-                onClick = { onNavigate(AppDestination.NEW) }
+                onClick = { onNavigate(AppDestination.NEW) },
+                testTag = "tv_rail_settings"
             )
         }
 
@@ -132,7 +150,8 @@ fun TvNavigationRail(
                 label = "Player",
                 isSelected = false,
                 accentColor = SoftCyan,
-                onClick = onOpenNowPlaying
+                onClick = onOpenNowPlaying,
+                testTag = "tv_rail_player"
             )
         }
     }
@@ -144,6 +163,7 @@ private fun TvNavRailItem(
     label: String,
     isSelected: Boolean,
     accentColor: Color = SoftCyan,
+    testTag: String? = null,
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
@@ -157,6 +177,7 @@ private fun TvNavRailItem(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -176,7 +197,7 @@ private fun TvNavRailItem(
                 }
             )
             .clickable(onClick = onClick)
-            .padding(12.dp)
+            .padding(horizontal = 10.dp, vertical = 10.dp)
     ) {
         Icon(
             imageVector = icon,
@@ -189,13 +210,16 @@ private fun TvNavRailItem(
             text = label,
             color = if (isFocused || isSelected) Color.White else Color(0xFF94A3B8),
             fontSize = 11.sp,
-            fontWeight = if (isFocused || isSelected) FontWeight.Bold else FontWeight.Medium
+            fontWeight = if (isFocused || isSelected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
 /**
- * TV Song Card Component with clear D-pad focus highlight, scale animation, artwork, and song info.
+ * TV Song Card Component with clear D-pad focus highlight, scale animation, artwork, song info,
+ * and optional 3-dot options button for full feature parity with Phone UI.
  */
 @Composable
 fun TvSongCard(
@@ -203,12 +227,13 @@ fun TvSongCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     cardWidth: Dp = 160.dp,
-    cardHeight: Dp = 210.dp
+    cardHeight: Dp = 214.dp,
+    onMoreOptions: (() -> Unit)? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.08f else 1.0f,
+        targetValue = if (isFocused) 1.07f else 1.0f,
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "tvSongCardScale_${song.id}"
     )
@@ -249,22 +274,55 @@ fun TvSongCard(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        Text(
-            text = song.title,
-            color = Color.White,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = song.title,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
 
-        Text(
-            text = song.artist,
-            color = Color(0xFFCBD5E1),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+                Text(
+                    text = song.artist,
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (onMoreOptions != null) {
+                var moreFocused by remember { mutableStateOf(false) }
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .onFocusChanged { moreFocused = it.isFocused }
+                        .clip(CircleShape)
+                        .background(if (moreFocused) SoftCyan.copy(alpha = 0.35f) else Color.Transparent)
+                        .border(
+                            width = if (moreFocused) 1.5.dp else 0.dp,
+                            color = if (moreFocused) SoftCyan else Color.Transparent,
+                            shape = CircleShape
+                        )
+                        .clickable(onClick = onMoreOptions)
+                        .testTag("tv_song_more_${song.id}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Song options for ${song.title}",
+                        tint = if (moreFocused) Color.White else Color(0xFF94A3B8),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
     }
 }

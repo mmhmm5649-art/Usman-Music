@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -80,6 +81,7 @@ fun TvSearchScreen(
     onOpenOnlineAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenOnlineArtist: (OnlineArtistResult) -> Unit = {},
     onOpenLocalAlbum: (Album) -> Unit = {},
+    onOpenSongOptions: ((Song) -> Unit)? = null,
     modifier: Modifier = Modifier,
     gridState: LazyGridState = rememberLazyGridState()
 ) {
@@ -90,6 +92,7 @@ fun TvSearchScreen(
     }
     val isOnlineMode = uiState.searchSource == SearchSource.ONLINE
     val filter = uiState.searchFilterCategory
+    var showOnScreenKeyboard by remember { mutableStateOf(true) }
 
     Column(
         modifier = modifier
@@ -111,8 +114,14 @@ fun TvSearchScreen(
                 letterSpacing = 1.sp
             )
 
-            // Search Source Pills (Online Catalog vs Device Library)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Search Source Pills + On-Screen Keyboard Toggle
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                TvSourcePill(
+                    label = if (showOnScreenKeyboard) "Hide Keyboard" else "TV Keyboard",
+                    isSelected = showOnScreenKeyboard,
+                    onClick = { showOnScreenKeyboard = !showOnScreenKeyboard },
+                    testTag = "tv_keyboard_toggle_button"
+                )
                 TvSourcePill(
                     label = "Online Catalog",
                     isSelected = isOnlineMode,
@@ -168,7 +177,33 @@ fun TvSearchScreen(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (showOnScreenKeyboard) {
+            TvOnScreenKeyboard(
+                onCharacter = { ch ->
+                    onSearchQueryChange(uiState.searchQuery + ch)
+                },
+                onBackspace = {
+                    if (uiState.searchQuery.isNotEmpty()) {
+                        onSearchQueryChange(uiState.searchQuery.dropLast(1))
+                    }
+                },
+                onSpace = {
+                    onSearchQueryChange(uiState.searchQuery + " ")
+                },
+                onClear = {
+                    onSearchQueryChange("")
+                },
+                onSubmit = {
+                    if (isOnlineMode && uiState.searchQuery.isNotBlank()) {
+                        onTriggerOnlineSearch(uiState.searchQuery.trim())
+                    }
+                    showOnScreenKeyboard = false
+                }
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+        }
 
         // Filter Category Row (All / Songs / Albums / Artists)
         SearchFilterCategoryBar(
@@ -183,7 +218,7 @@ fun TvSearchScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(horizontal = 2.dp)
         ) {
-            items(recentQueries) { query ->
+            items(recentQueries, key = { it }) { query ->
                 var isFocused by remember { mutableStateOf(false) }
                 Box(
                     modifier = Modifier
@@ -331,7 +366,8 @@ fun TvSearchScreen(
                                     song = song,
                                     onClick = { onPlaySong(song) },
                                     cardWidth = 168.dp,
-                                    cardHeight = 216.dp
+                                    cardHeight = 216.dp,
+                                    onMoreOptions = onOpenSongOptions?.let { cb -> { cb(song) } }
                                 )
                             }
                         }
@@ -387,7 +423,8 @@ fun TvSearchScreen(
                                     song = song,
                                     onClick = { onPlaySong(song) },
                                     cardWidth = 168.dp,
-                                    cardHeight = 216.dp
+                                    cardHeight = 216.dp,
+                                    onMoreOptions = onOpenSongOptions?.let { cb -> { cb(song) } }
                                 )
                             }
                         }
@@ -399,15 +436,131 @@ fun TvSearchScreen(
 }
 
 @Composable
+private fun TvOnScreenKeyboard(
+    onCharacter: (String) -> Unit,
+    onBackspace: () -> Unit,
+    onSpace: () -> Unit,
+    onClear: () -> Unit,
+    onSubmit: () -> Unit
+) {
+    val rows = remember {
+        listOf(
+            listOf("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"),
+            listOf("N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"),
+            listOf("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF101524))
+            .border(1.dp, Color(0x2800E5FF), RoundedCornerShape(14.dp))
+            .padding(10.dp)
+            .testTag("tv_keyboard_panel"),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        rows.forEachIndexed { rowIdx, keys ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                keys.forEach { key ->
+                    TvKeyButton(
+                        label = key,
+                        onClick = { onCharacter(key.lowercase()) },
+                        modifier = Modifier.weight(1f),
+                        testTag = "tv_key_${key.lowercase()}"
+                    )
+                }
+                if (rowIdx == 2) {
+                    TvKeyButton(
+                        label = "SPACE",
+                        onClick = onSpace,
+                        accent = false,
+                        modifier = Modifier.weight(1.6f),
+                        testTag = "tv_key_space"
+                    )
+                    TvKeyButton(
+                        label = "DEL",
+                        onClick = onBackspace,
+                        accent = false,
+                        modifier = Modifier.weight(1.2f),
+                        testTag = "tv_key_backspace"
+                    )
+                    TvKeyButton(
+                        label = "CLR",
+                        onClick = onClear,
+                        accent = false,
+                        modifier = Modifier.weight(1.2f),
+                        testTag = "tv_key_clear"
+                    )
+                    TvKeyButton(
+                        label = "GO",
+                        onClick = onSubmit,
+                        accent = true,
+                        modifier = Modifier.weight(1.4f),
+                        testTag = "tv_key_search"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvKeyButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    accent: Boolean = false,
+    testTag: String? = null
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .height(38.dp)
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+            .onFocusChanged { isFocused = it.isFocused }
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                when {
+                    isFocused -> SoftCyan
+                    accent -> SoftCyan.copy(alpha = 0.25f)
+                    else -> Color(0xFF1A2136)
+                }
+            )
+            .border(
+                width = if (isFocused) 2.dp else 1.dp,
+                color = if (isFocused) Color.White else Color.White.copy(alpha = 0.1f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (isFocused) Color(0xFF040710) else Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
 private fun TvSourcePill(
     label: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    testTag: String? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .onFocusChanged { isFocused = it.isFocused }
             .border(
                 width = if (isFocused) 2.dp else 0.dp,

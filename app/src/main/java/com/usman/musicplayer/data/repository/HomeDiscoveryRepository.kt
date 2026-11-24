@@ -5,6 +5,7 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.usman.musicplayer.data.remote.JioSaavnApiService
 import com.usman.musicplayer.data.repository.providers.JioSaavnMusicProvider
+import com.usman.musicplayer.data.recommendation.AiMoodIntelligenceEngine
 import com.usman.musicplayer.model.AlbumSearchResult
 import com.usman.musicplayer.model.ArtistDetailsData
 import com.usman.musicplayer.model.ArtistMatchingPolicy
@@ -18,9 +19,14 @@ import com.usman.musicplayer.model.HomeQuickAccessCard
 import com.usman.musicplayer.model.HomeQuickAccessType
 import com.usman.musicplayer.model.HomeSectionContentType
 import com.usman.musicplayer.model.HomeSectionDefinition
+import com.usman.musicplayer.model.ListeningMood
 import com.usman.musicplayer.model.OnlineArtistResult
+import com.usman.musicplayer.model.RecommendationPreference
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.model.UserMoodAffinityProfile
 import com.usman.musicplayer.sdk.ProviderRegistry
+import java.util.Calendar
+import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -171,7 +177,12 @@ class HomeDiscoveryRepository(
         recentlyPlayed: List<Song> = emptyList(),
         favoriteSongs: List<Song> = emptyList(),
         playStats: List<PersistedPlayStat> = emptyList(),
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        sessionSeed: Long = 0L,
+        previousSessionShownKeys: Set<String> = emptySet(),
+        userMoodProfile: UserMoodAffinityProfile = UserMoodAffinityProfile(),
+        recommendationPreference: RecommendationPreference = RecommendationPreference.BALANCED,
+        excludeRecentlyPlayed: Boolean = true
     ): HomeDiscoverySection = withContext(Dispatchers.IO) {
         if (page == 1 && !forceRefresh && !definition.isPersonalized) {
             val cached = sectionCache[definition.id]
@@ -190,7 +201,12 @@ class HomeDiscoveryRepository(
                     page = page,
                     recentlyPlayed = recentlyPlayed,
                     favoriteSongs = favoriteSongs,
-                    playStats = playStats
+                    playStats = playStats,
+                    sessionSeed = sessionSeed,
+                    previousSessionShownKeys = previousSessionShownKeys,
+                    userMoodProfile = userMoodProfile,
+                    recommendationPreference = recommendationPreference,
+                    excludeRecentlyPlayed = excludeRecentlyPlayed
                 )
             }
         } catch (ce: CancellationException) {
@@ -222,13 +238,35 @@ class HomeDiscoveryRepository(
         page: Int,
         recentlyPlayed: List<Song>,
         favoriteSongs: List<Song>,
-        playStats: List<PersistedPlayStat>
+        playStats: List<PersistedPlayStat>,
+        sessionSeed: Long,
+        previousSessionShownKeys: Set<String>,
+        userMoodProfile: UserMoodAffinityProfile,
+        recommendationPreference: RecommendationPreference,
+        excludeRecentlyPlayed: Boolean
     ): HomeDiscoverySection {
         return when (definition.contentType) {
-            HomeSectionContentType.SONGS -> fetchSongsSection(definition, page, recentlyPlayed, favoriteSongs, playStats)
-            HomeSectionContentType.ALBUMS -> fetchAlbumsSection(definition, page)
-            HomeSectionContentType.ARTISTS -> fetchArtistsSection(definition)
-            HomeSectionContentType.PLAYLISTS -> fetchPlaylistsSection(definition, recentlyPlayed, favoriteSongs)
+            HomeSectionContentType.SONGS -> fetchSongsSection(
+                definition = definition,
+                page = page,
+                recentlyPlayed = recentlyPlayed,
+                favoriteSongs = favoriteSongs,
+                playStats = playStats,
+                sessionSeed = sessionSeed,
+                previousSessionShownKeys = previousSessionShownKeys,
+                userMoodProfile = userMoodProfile,
+                recommendationPreference = recommendationPreference,
+                excludeRecentlyPlayed = excludeRecentlyPlayed
+            )
+            HomeSectionContentType.ALBUMS -> fetchAlbumsSection(definition, page, sessionSeed)
+            HomeSectionContentType.ARTISTS -> fetchArtistsSection(definition, sessionSeed)
+            HomeSectionContentType.PLAYLISTS -> fetchPlaylistsSection(
+                definition = definition,
+                recentlyPlayed = recentlyPlayed,
+                favoriteSongs = favoriteSongs,
+                sessionSeed = sessionSeed,
+                userMoodProfile = userMoodProfile
+            )
         }
     }
 
@@ -237,7 +275,12 @@ class HomeDiscoveryRepository(
         page: Int,
         recentlyPlayed: List<Song>,
         favoriteSongs: List<Song>,
-        playStats: List<PersistedPlayStat>
+        playStats: List<PersistedPlayStat>,
+        sessionSeed: Long,
+        previousSessionShownKeys: Set<String>,
+        userMoodProfile: UserMoodAffinityProfile,
+        recommendationPreference: RecommendationPreference = RecommendationPreference.BALANCED,
+        excludeRecentlyPlayed: Boolean = true
     ): HomeDiscoverySection {
         val rawSongs = mutableListOf<Song>()
 
@@ -259,6 +302,7 @@ class HomeDiscoveryRepository(
                         isOnline = s.isOnline,
                         externalUrl = s.externalUrl,
                         language = s.language,
+                        genre = s.genre,
                         sourceProvider = s.sourceProvider,
                         isStreamable = true,
                         isFullTrackVerified = true,
@@ -277,25 +321,88 @@ class HomeDiscoveryRepository(
             rawSongs.addAll(combinedPersonal)
         }
 
-        val queryToUse = rotateQuery(definition)
+        val queryToUse = rotateQuery(definition, sessionSeed)
+        val anchorSong = recentlyPlayed.firstOrNull() ?: favoriteSongs.firstOrNull()
+        val activeMood = userMoodProfile.dominantMood
+            ?: anchorSong?.let { AiMoodIntelligenceEngine.analyzeSongMood(it).primaryMood }
+        val preferredLangKey = definition.language.jioSaavnLanguage
+            ?: userMoodProfile.favoriteLanguages.firstOrNull()
+            ?: "all"
+
+        val dynamicTitle = when (definition.id) {
+            "discovery_your_current_mood" -> if (activeMood != null) {
+                "Your Current Mood • ${activeMood.shortLabel}"
+            } else {
+                definition.title
+            }
+            "discovery_because_you_listened" -> {
+                val anchorArtist = anchorSong?.artist?.split(",")?.firstOrNull()?.trim()
+                    ?.takeIf { it.length in 3..26 && !it.equals("Unknown Artist", true) }
+                if (anchorArtist != null) "Because You Listened To $anchorArtist" else definition.title
+            }
+            else -> definition.title
+        }
+
         val personalizedQuery = when {
+            definition.id == "discovery_your_current_mood" -> {
+                val mood = activeMood ?: ListeningMood.ROMANTIC_LOVE
+                val seeds = mood.querySeedsByLanguage[preferredLangKey]
+                    ?: mood.querySeedsByLanguage["all"].orEmpty()
+                AiMoodIntelligenceEngine.rotateListForSession(seeds, sessionSeed, "current_mood").firstOrNull()
+                    ?: queryToUse
+            }
+            definition.id == "discovery_because_you_listened" -> {
+                val anchorArtist = anchorSong?.artist?.split(",")?.firstOrNull()?.trim()
+                    ?.takeIf { it.length >= 3 && !it.equals("Unknown Artist", true) }
+                if (anchorArtist != null) {
+                    "$anchorArtist hits"
+                } else {
+                    buildPersonalizedRecommendationQuery(
+                        targetLanguage = definition.language,
+                        recentlyPlayed = recentlyPlayed,
+                        favoriteSongs = favoriteSongs,
+                        playStats = playStats,
+                        userMoodProfile = userMoodProfile,
+                        sessionSeed = sessionSeed,
+                        fallbackQuery = queryToUse
+                    )
+                }
+            }
+            definition.id == "discovery_continue_your_vibe" -> {
+                val trailMood = userMoodProfile.recentMoodTrail.firstOrNull() ?: activeMood ?: ListeningMood.CHILL_RELAXING
+                val seeds = trailMood.querySeedsByLanguage[preferredLangKey]
+                    ?: trailMood.querySeedsByLanguage["all"].orEmpty()
+                AiMoodIntelligenceEngine.rotateListForSession(seeds, sessionSeed, "continue_vibe").firstOrNull()
+                    ?: queryToUse
+            }
             definition.id.startsWith("discovery_recommended_") -> buildPersonalizedRecommendationQuery(
                 targetLanguage = definition.language,
                 recentlyPlayed = recentlyPlayed,
                 favoriteSongs = favoriteSongs,
                 playStats = playStats,
+                userMoodProfile = userMoodProfile,
+                sessionSeed = sessionSeed,
                 fallbackQuery = queryToUse
             )
             definition.id == "discovery_discover_weekly" -> buildDiscoverWeeklyQuery(
                 recentlyPlayed = recentlyPlayed,
                 favoriteSongs = favoriteSongs,
+                userMoodProfile = userMoodProfile,
+                sessionSeed = sessionSeed,
                 fallbackQuery = queryToUse
             )
             else -> queryToUse
         }
 
+        val fetchPage = if (page == 1 && sessionSeed != 0L && (definition.id == "discovery_trending_now" || definition.id.endsWith("_top_hits"))) {
+            (abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "fetch_page_${definition.id}") % 2L).toInt()) + 1
+        } else {
+            page
+        }
+
         if (rawSongs.size < 12) {
-            val fetchedPrimary = gateway.searchSongs(personalizedQuery, limit = 22, page = page)
+            val fetchedPrimary = gateway.searchSongs(personalizedQuery, limit = 22, page = fetchPage)
+                .ifEmpty { if (fetchPage > 1) gateway.searchSongs(personalizedQuery, limit = 22, page = 1) else emptyList() }
             rawSongs.addAll(fetchedPrimary)
             if (fetchedPrimary.isEmpty() && page == 1) {
                 for (alt in definition.fallbackQueries) {
@@ -328,23 +435,43 @@ class HomeDiscoveryRepository(
         val verified = rawSongs
             .filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
             .filter { HomeLanguagePolicy.matchesTargetLanguage(it.language, definition.language, "${it.title} ${it.album}") }
-            .sortedByDescending {
+            .distinctBy { songDedupKey(it) }
+
+        val recentKeys = recentlyPlayed.take(12).mapTo(hashSetOf()) { HomeUserSignalsStore.songIdentityKey(it) }
+        val shouldExcludeRecent = excludeRecentlyPlayed &&
+            !definition.id.startsWith("discovery_heavy_")
+
+        val rotatedVerified = if (sessionSeed != 0L || previousSessionShownKeys.isNotEmpty() || shouldExcludeRecent) {
+            AiMoodIntelligenceEngine.scoreAndRotateSongsForSession(
+                songs = verified,
+                sessionSeed = sessionSeed,
+                sectionSalt = definition.id,
+                userMoodProfile = userMoodProfile,
+                previousShownKeys = previousSessionShownKeys,
+                targetLanguage = definition.language,
+                prioritizeMoodMatch = definition.isPersonalized,
+                recommendationPreference = recommendationPreference,
+                recentlyPlayedKeys = recentKeys,
+                excludeRecentlyPlayed = shouldExcludeRecent
+            )
+        } else {
+            verified.sortedByDescending {
                 val targetLang = definition.language.jioSaavnLanguage
                 val matchesExplicit = targetLang != null && HomeLanguagePolicy.normalizeLanguage(it.language) == targetLang
                 if (matchesExplicit) 1 else 0
             }
-            .distinctBy { songDedupKey(it) }
+        }
 
         return HomeDiscoverySection(
             id = definition.id,
-            title = definition.title,
+            title = dynamicTitle,
             subtitle = definition.subtitle,
             language = definition.language,
             contentType = definition.contentType,
-            songs = verified,
+            songs = rotatedVerified,
             isLoading = false,
             hasAttemptedLoad = true,
-            canLoadMore = verified.size >= 10,
+            canLoadMore = rotatedVerified.size >= 10,
             currentPage = page,
             isPersonalized = definition.isPersonalized
         )
@@ -352,10 +479,17 @@ class HomeDiscoveryRepository(
 
     private suspend fun fetchAlbumsSection(
         definition: HomeSectionDefinition,
-        page: Int
+        page: Int,
+        sessionSeed: Long
     ): HomeDiscoverySection {
         val collected = mutableListOf<AlbumSearchResult>()
-        val primary = gateway.searchAlbums(definition.query, limit = 16, page = page)
+        val fetchPage = if (page == 1 && sessionSeed != 0L) {
+            (abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "album_page_${definition.id}") % 2L).toInt()) + 1
+        } else {
+            page
+        }
+        val primary = gateway.searchAlbums(definition.query, limit = 16, page = fetchPage)
+            .ifEmpty { if (fetchPage > 1) gateway.searchAlbums(definition.query, limit = 16, page = 1) else emptyList() }
         collected.addAll(primary)
 
         if (collected.size < 4 && page == 1) {
@@ -401,22 +535,36 @@ class HomeDiscoveryRepository(
             .filter { HomeLanguagePolicy.matchesTargetLanguage(it.language, definition.language, "${it.title} ${it.movieName.orEmpty()}") }
             .distinctBy { it.id.ifBlank { "${it.title.lowercase()}_${it.artist.lowercase()}" } }
 
+        val rotatedAlbums = if (sessionSeed != 0L) {
+            AiMoodIntelligenceEngine.rotateListForSession(
+                items = cleaned,
+                sessionSeed = sessionSeed,
+                salt = "albums_${definition.id}",
+                keyExtractor = { it.id.ifBlank { it.title } }
+            )
+        } else {
+            cleaned
+        }
+
         return HomeDiscoverySection(
             id = definition.id,
             title = definition.title,
             subtitle = definition.subtitle,
             language = definition.language,
             contentType = HomeSectionContentType.ALBUMS,
-            albums = cleaned,
+            albums = rotatedAlbums,
             isLoading = false,
             hasAttemptedLoad = true,
-            canLoadMore = cleaned.size >= 8,
+            canLoadMore = rotatedAlbums.size >= 8,
             currentPage = page,
             isPersonalized = definition.isPersonalized
         )
     }
 
-    private suspend fun fetchArtistsSection(definition: HomeSectionDefinition): HomeDiscoverySection {
+    private suspend fun fetchArtistsSection(
+        definition: HomeSectionDefinition,
+        sessionSeed: Long
+    ): HomeDiscoverySection {
         val seeds = HomeDiscoveryCatalog.POPULAR_ARTIST_SEEDS[definition.language]
             ?: HomeDiscoveryCatalog.POPULAR_ARTIST_SEEDS.getValue(HomeLanguageFilter.ALL)
 
@@ -429,6 +577,16 @@ class HomeDiscoveryRepository(
         }
 
         val dedupedArtists = ArtistMatchingPolicy.deduplicateArtists(resolvedArtists)
+        val rotatedArtists = if (sessionSeed != 0L) {
+            AiMoodIntelligenceEngine.rotateListForSession(
+                items = dedupedArtists,
+                sessionSeed = sessionSeed,
+                salt = "artists_${definition.id}",
+                keyExtractor = { it.name }
+            )
+        } else {
+            dedupedArtists
+        }
 
         return HomeDiscoverySection(
             id = definition.id,
@@ -436,7 +594,7 @@ class HomeDiscoveryRepository(
             subtitle = definition.subtitle,
             language = definition.language,
             contentType = HomeSectionContentType.ARTISTS,
-            artists = dedupedArtists,
+            artists = rotatedArtists,
             isLoading = false,
             hasAttemptedLoad = true,
             canLoadMore = false,
@@ -668,8 +826,18 @@ class HomeDiscoveryRepository(
     private suspend fun fetchPlaylistsSection(
         definition: HomeSectionDefinition,
         recentlyPlayed: List<Song>,
-        favoriteSongs: List<Song>
+        favoriteSongs: List<Song>,
+        sessionSeed: Long,
+        userMoodProfile: UserMoodAffinityProfile
     ): HomeDiscoverySection {
+        if (definition.id.startsWith("discovery_mood_mix") || definition.id == "discovery_recently_played_moods") {
+            return fetchMoodMixesSection(
+                definition = definition,
+                sessionSeed = sessionSeed,
+                userMoodProfile = userMoodProfile
+            )
+        }
+
         val playlists = mutableListOf<CuratedPlaylist>()
 
         val languageSeeds = if (definition.language == HomeLanguageFilter.ALL) {
@@ -687,7 +855,7 @@ class HomeDiscoveryRepository(
             )
         }
 
-        // Fetch authentic JioSaavn playlists first
+        // Fetch authentic playlists first
         val fetchedPlaylists = coroutineScope {
             languageSeeds.map { (q, _) ->
                 async { gateway.searchPlaylists(q, limit = 3) }
@@ -699,7 +867,7 @@ class HomeDiscoveryRepository(
 
         playlists.addAll(fetchedPlaylists)
 
-        // Hydrate song Mix playlists from real JioSaavn songs when provider returns thin list
+        // Hydrate song Mix playlists from real songs when provider returns thin list
         if (playlists.size < 4) {
             val songMixes = coroutineScope {
                 languageSeeds.map { (query, label) ->
@@ -724,11 +892,22 @@ class HomeDiscoveryRepository(
             playlists.addAll(songMixes)
         }
 
+        val rotatedBase = if (sessionSeed != 0L) {
+            AiMoodIntelligenceEngine.rotateListForSession(
+                items = playlists,
+                sessionSeed = sessionSeed,
+                salt = "playlists_${definition.id}",
+                keyExtractor = { it.id.ifBlank { it.title } }
+            ).toMutableList()
+        } else {
+            playlists
+        }
+
         // Personalized Favourite Mix if user has saved favourites
         if (favoriteSongs.isNotEmpty() && definition.language == HomeLanguageFilter.ALL) {
             val favs = favoriteSongs.filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
             if (favs.isNotEmpty()) {
-                playlists.add(
+                rotatedBase.add(
                     0,
                     CuratedPlaylist(
                         id = "personalized_favorites_mix",
@@ -741,7 +920,7 @@ class HomeDiscoveryRepository(
             }
         }
 
-        val deduped = playlists
+        val deduped = rotatedBase
             .filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) }
             .distinctBy { it.id.ifBlank { it.title.lowercase() } }
 
@@ -757,6 +936,84 @@ class HomeDiscoveryRepository(
             canLoadMore = false,
             currentPage = 1,
             isPersonalized = definition.isPersonalized
+        )
+    }
+
+    private suspend fun fetchMoodMixesSection(
+        definition: HomeSectionDefinition,
+        sessionSeed: Long,
+        userMoodProfile: UserMoodAffinityProfile
+    ): HomeDiscoverySection {
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val timeOfDayMood = when (hour) {
+            in 5..11 -> ListeningMood.HAPPY_FEEL_GOOD
+            in 12..16 -> ListeningMood.CHILL_RELAXING
+            in 17..20 -> ListeningMood.ROMANTIC_LOVE
+            else -> ListeningMood.PEACEFUL_NIGHT
+        }
+
+        val candidatePool = AiMoodIntelligenceEngine.rotateListForSession(
+            items = ListeningMood.entries.toList(),
+            sessionSeed = sessionSeed,
+            salt = "mood_mixes_${definition.id}",
+            keyExtractor = { it.id }
+        )
+        val selectedMoods = buildList {
+            userMoodProfile.dominantMood?.let { add(it) }
+            if (timeOfDayMood !in this) add(timeOfDayMood)
+            for (m in candidatePool) {
+                if (m !in this) add(m)
+                if (size >= 4) break
+            }
+        }
+
+        val langKey = definition.language.jioSaavnLanguage
+            ?: userMoodProfile.favoriteLanguages.firstOrNull()?.takeIf { it in HomeLanguagePolicy.ALLOWED_LANGUAGES }
+            ?: "all"
+
+        val moodPlaylists = coroutineScope {
+            selectedMoods.map { mood ->
+                async {
+                    val queries = mood.querySeedsByLanguage[langKey]
+                        ?: mood.querySeedsByLanguage["all"].orEmpty()
+                    val rotatedQueries = AiMoodIntelligenceEngine.rotateListForSession(
+                        items = queries,
+                        sessionSeed = sessionSeed,
+                        salt = "mood_q_${mood.id}"
+                    )
+                    val query = rotatedQueries.firstOrNull() ?: "${mood.shortLabel} songs"
+                    val songs = gateway.searchSongs(query, limit = 14, page = 1)
+                        .filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
+                        .filter { HomeLanguagePolicy.matchesTargetLanguage(it.language, definition.language, "${it.title} ${it.album}") }
+                        .distinctBy { songDedupKey(it) }
+                    if (songs.isNotEmpty()) {
+                        val langBadge = if (definition.language == HomeLanguageFilter.ALL) "" else " • ${definition.language.displayName}"
+                        CuratedPlaylist(
+                            id = "mood_mix_${mood.id}_${definition.language.name.lowercase()}",
+                            title = "${mood.shortLabel} Mix$langBadge",
+                            description = mood.subtitle,
+                            coverArtUri = songs.firstOrNull { !it.albumArtUri.isNullOrBlank() }?.albumArtUri,
+                            songs = songs
+                        )
+                    } else {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }.filter { HomeLanguagePolicy.isAllowedHomePlaylist(it) }
+
+        return HomeDiscoverySection(
+            id = definition.id,
+            title = definition.title,
+            subtitle = definition.subtitle,
+            language = definition.language,
+            contentType = HomeSectionContentType.PLAYLISTS,
+            playlists = moodPlaylists,
+            isLoading = false,
+            hasAttemptedLoad = true,
+            canLoadMore = false,
+            currentPage = 1,
+            isPersonalized = true
         )
     }
 
@@ -852,7 +1109,8 @@ class HomeDiscoveryRepository(
     fun buildHeroFeature(
         activeLanguage: HomeLanguageFilter,
         sectionsById: Map<String, HomeDiscoverySection>,
-        recentlyPlayed: List<Song>
+        recentlyPlayed: List<Song>,
+        sessionSeed: Long = 0L
     ): HomeHeroFeature? {
         val preferredSongs: List<Song> = when (activeLanguage) {
             HomeLanguageFilter.TELUGU -> sectionsById["telugu_top_hits"]?.songs.orEmpty()
@@ -868,7 +1126,12 @@ class HomeDiscoveryRepository(
                 .ifEmpty { recentlyPlayed }
         }.filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
 
-        val lead = preferredSongs.firstOrNull()
+        val heroLeadIndex = if (sessionSeed != 0L && preferredSongs.size > 1) {
+            abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "hero_${activeLanguage.name}") % minOf(5, preferredSongs.size)).toInt()
+        } else {
+            0
+        }
+        val lead = preferredSongs.getOrNull(heroLeadIndex) ?: preferredSongs.firstOrNull()
         val albumCandidate = when (activeLanguage) {
             HomeLanguageFilter.TELUGU -> sectionsById["telugu_movie_soundtracks"]?.albums?.firstOrNull()
             HomeLanguageFilter.TAMIL -> sectionsById["tamil_movie_soundtracks"]?.albums?.firstOrNull()
@@ -884,6 +1147,12 @@ class HomeDiscoveryRepository(
             else -> "FEATURED ${activeLanguage.chipLabel} SPOTLIGHT"
         }
 
+        val rotatedQueue = if (heroLeadIndex > 0 && preferredSongs.size > 1) {
+            listOf(preferredSongs[heroLeadIndex]) + preferredSongs.filterIndexed { i, _ -> i != heroLeadIndex }
+        } else {
+            preferredSongs
+        }
+
         return HomeHeroFeature(
             id = "hero_${activeLanguage.name.lowercase()}_${lead?.id ?: albumCandidate?.id}",
             badge = badgeText,
@@ -896,7 +1165,7 @@ class HomeDiscoveryRepository(
             artworkUri = lead?.albumArtUri ?: albumCandidate?.artworkUri,
             language = activeLanguage,
             primarySong = lead,
-            queueSongs = preferredSongs,
+            queueSongs = rotatedQueue,
             album = albumCandidate
         )
     }
@@ -955,20 +1224,30 @@ class HomeDiscoveryRepository(
         recentlyPlayed: List<Song>,
         favoriteSongs: List<Song>,
         playStats: List<PersistedPlayStat>,
+        userMoodProfile: UserMoodAffinityProfile,
+        sessionSeed: Long,
         fallbackQuery: String
     ): String {
         val signals = (favoriteSongs + recentlyPlayed)
             .filter { HomeLanguagePolicy.isAllowedJioSaavnSong(it) }
             .filter { HomeLanguagePolicy.matchesTargetLanguage(it.language, targetLanguage, it.title) }
 
-        val topArtist = signals
+        val rankedArtists = signals
             .flatMap { it.artist.split(",") }
             .map { it.trim() }
             .filter { it.length >= 3 && !it.equals("Unknown Artist", true) && !it.equals("Various Artists", true) }
             .groupingBy { it }
             .eachCount()
-            .maxByOrNull { it.value }
-            ?.key
+            .entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+
+        val topArtist = if (sessionSeed != 0L && rankedArtists.size > 1) {
+            val pickIdx = abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "rec_artist_${targetLanguage.name}") % minOf(3, rankedArtists.size)).toInt()
+            rankedArtists[pickIdx]
+        } else {
+            rankedArtists.firstOrNull()
+        }
 
         val topLang = if (targetLanguage != HomeLanguageFilter.ALL) {
             targetLanguage.displayName
@@ -982,10 +1261,30 @@ class HomeDiscoveryRepository(
                 ?: playStats.firstOrNull()?.song?.language?.let { HomeLanguagePolicy.normalizeLanguage(it) }
         }
 
+        val moodHint = if (sessionSeed != 0L && userMoodProfile.dominantMood != null) {
+            when (userMoodProfile.dominantMood) {
+                ListeningMood.SAD_HEARTBREAK -> "sad"
+                ListeningMood.ROMANTIC_LOVE -> "romantic"
+                ListeningMood.CHILL_RELAXING -> "chill"
+                ListeningMood.MOTIVATIONAL -> "motivational"
+                ListeningMood.ENERGETIC -> "energetic"
+                ListeningMood.PARTY_DANCE -> "party"
+                ListeningMood.PEACEFUL_NIGHT -> "peaceful"
+                ListeningMood.FOCUS_STUDY -> "instrumental"
+                ListeningMood.EMOTIONAL -> "emotional"
+                ListeningMood.HAPPY_FEEL_GOOD -> "feel good"
+            }
+        } else {
+            null
+        }
+
         return when {
-            !topArtist.isNullOrBlank() && !topLang.isNullOrBlank() -> "$topArtist $topLang hits"
+            !topArtist.isNullOrBlank() && !topLang.isNullOrBlank() ->
+                listOfNotNull(topArtist, topLang, moodHint ?: "hits").joinToString(" ")
             !topArtist.isNullOrBlank() -> "$topArtist top songs"
+            !topLang.isNullOrBlank() && !moodHint.isNullOrBlank() -> "$topLang $moodHint songs"
             !topLang.isNullOrBlank() -> "$topLang top melody hits"
+            !moodHint.isNullOrBlank() -> "$moodHint hits"
             else -> fallbackQuery
         }
     }
@@ -993,6 +1292,8 @@ class HomeDiscoveryRepository(
     private fun buildDiscoverWeeklyQuery(
         recentlyPlayed: List<Song>,
         favoriteSongs: List<Song>,
+        userMoodProfile: UserMoodAffinityProfile,
+        sessionSeed: Long,
         fallbackQuery: String
     ): String {
         val artists = (recentlyPlayed + favoriteSongs)
@@ -1000,19 +1301,29 @@ class HomeDiscoveryRepository(
             .map { it.trim() }
             .filter { it.length >= 3 && !it.equals("Unknown Artist", true) }
             .distinct()
-        val secondaryArtist = artists.drop(1).firstOrNull() ?: artists.firstOrNull()
-        return if (!secondaryArtist.isNullOrBlank()) {
-            "$secondaryArtist latest songs"
+        val pickIdx = if (sessionSeed != 0L && artists.size > 1) {
+            abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "discover_artist") % artists.size).toInt()
+        } else if (artists.size > 1) {
+            1
         } else {
-            fallbackQuery
+            0
+        }
+        val chosenArtist = artists.getOrNull(pickIdx)
+        val moodQuery = userMoodProfile.dominantMood?.let { mood ->
+            mood.querySeedsByLanguage[userMoodProfile.favoriteLanguages.firstOrNull() ?: "all"]?.firstOrNull()
+        }
+        return when {
+            !chosenArtist.isNullOrBlank() -> "$chosenArtist latest songs"
+            !moodQuery.isNullOrBlank() -> moodQuery
+            else -> fallbackQuery
         }
     }
 
-    private fun rotateQuery(definition: HomeSectionDefinition): String {
+    private fun rotateQuery(definition: HomeSectionDefinition, sessionSeed: Long): String {
         val allQueries = listOf(definition.query) + definition.fallbackQueries
         if (allQueries.isEmpty()) return definition.query
-        val sessionSeed = (System.currentTimeMillis() / (5 * 60 * 1000L)).toInt()
-        val index = Math.abs((definition.id.hashCode() + sessionSeed)) % allQueries.size
+        if (sessionSeed == 0L) return allQueries.first()
+        val index = (abs(AiMoodIntelligenceEngine.deterministicHash(sessionSeed, "query_${definition.id}")) % allQueries.size).toInt()
         return allQueries[index]
     }
 

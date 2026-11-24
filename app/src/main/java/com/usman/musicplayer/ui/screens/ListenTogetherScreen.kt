@@ -98,9 +98,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.usman.musicplayer.data.listentogether.ListenTogetherConnectionStatus
 import com.usman.musicplayer.data.listentogether.ListenTogetherControlMode
+import com.usman.musicplayer.data.listentogether.ListenTogetherCoordinator
+import com.usman.musicplayer.data.listentogether.ListenTogetherListeningMode
 import com.usman.musicplayer.data.listentogether.ListenTogetherParticipant
 import com.usman.musicplayer.data.listentogether.ListenTogetherQrCodec
 import com.usman.musicplayer.data.listentogether.ListenTogetherRoomState
+import com.usman.musicplayer.data.listentogether.ListenTogetherSpeakerRole
 import com.usman.musicplayer.data.listentogether.ListenTogetherTrack
 import com.usman.musicplayer.data.listentogether.ListenTogetherUiState
 import com.usman.musicplayer.data.listentogether.ParticipantConnectionState
@@ -130,6 +133,8 @@ fun ListenTogetherScreen(
     onLeaveRoom: () -> Unit,
     onEndRoom: () -> Unit = onLeaveRoom,
     onSetControlMode: (ListenTogetherControlMode) -> Unit,
+    onSetListeningMode: (ListenTogetherListeningMode) -> Unit = {},
+    onAssignSpeakerRole: (String, ListenTogetherSpeakerRole, Boolean) -> Unit = { _, _, _ -> },
     onSetQuality: (StreamingQuality) -> Unit,
     onUpdateDisplayName: (String) -> Unit,
     onUpdateServerUrl: (String) -> Result<String>,
@@ -206,7 +211,7 @@ fun ListenTogetherScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 640.dp)
+                .widthIn(max = 780.dp)
                 .align(Alignment.TopCenter)
         ) {
             // Top App Bar
@@ -335,6 +340,8 @@ fun ListenTogetherScreen(
                     onRequestResync = onRequestResync,
                     onSelectQuality = onSetQuality,
                     onSelectControlMode = onSetControlMode,
+                    onSelectListeningMode = onSetListeningMode,
+                    onAssignSpeakerRole = onAssignSpeakerRole,
                     onOpenAddSong = { showAddSongSheet = true },
                     onPlayQueueIndex = onPlayQueueIndex,
                     onRemoveQueueIndex = onRemoveQueueIndex,
@@ -733,6 +740,8 @@ private fun ListenTogetherActiveRoomContent(
     onRequestResync: () -> Unit,
     onSelectQuality: (StreamingQuality) -> Unit,
     onSelectControlMode: (ListenTogetherControlMode) -> Unit,
+    onSelectListeningMode: (ListenTogetherListeningMode) -> Unit,
+    onAssignSpeakerRole: (String, ListenTogetherSpeakerRole, Boolean) -> Unit,
     onOpenAddSong: () -> Unit,
     onPlayQueueIndex: (Int) -> Unit,
     onRemoveQueueIndex: (Int) -> Unit,
@@ -842,6 +851,23 @@ private fun ListenTogetherActiveRoomContent(
             )
         }
 
+        // Listening Mode Card: Mode A (Normal Listening, up to 10 phones) vs Mode B (Stereo Split Speaker, 2 phones L/R)
+        item(key = "active_listening_mode_card") {
+            StereoSplitModeCard(
+                room = room,
+                state = state,
+                onSelectListeningMode = onSelectListeningMode,
+                onSwapChannels = {
+                    val leftSpeaker = room.participants.firstOrNull { it.speakerRole == ListenTogetherSpeakerRole.LEFT }
+                    val rightSpeaker = room.participants.firstOrNull { it.speakerRole == ListenTogetherSpeakerRole.RIGHT }
+                    when {
+                        leftSpeaker != null -> onAssignSpeakerRole(leftSpeaker.participantId, ListenTogetherSpeakerRole.RIGHT, true)
+                        rightSpeaker != null -> onAssignSpeakerRole(rightSpeaker.participantId, ListenTogetherSpeakerRole.LEFT, true)
+                    }
+                }
+            )
+        }
+
         // Control Permissions Card
         item(key = "active_control_mode_card") {
             GlassSectionCard {
@@ -874,18 +900,43 @@ private fun ListenTogetherActiveRoomContent(
         // Participants List Card
         item(key = "active_participants_card") {
             GlassSectionCard {
-                Text(
-                    text = "Participants (${room.participants.size})",
-                    color = TextPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Participants (${room.participants.size}/${room.maxParticipants})",
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("listen_together_participants_header")
+                    )
+                    Text(
+                        text = if (room.listeningMode == ListenTogetherListeningMode.STEREO_SPLIT) {
+                            "2-Speaker Stereo Split"
+                        } else {
+                            "Up to ${room.maxParticipants} phones"
+                        },
+                        color = SoftCyan,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     room.participants.forEach { participant ->
                         ParticipantRow(
                             participant = participant,
-                            isMe = participant.participantId == state.participantId
+                            isMe = participant.participantId == state.participantId,
+                            isStereoSplitMode = room.listeningMode == ListenTogetherListeningMode.STEREO_SPLIT,
+                            canAssignRole = state.canControlPlayback,
+                            onAssignRole = { role ->
+                                val otherHasRole = room.participants.any {
+                                    it.participantId != participant.participantId && it.speakerRole == role
+                                }
+                                onAssignSpeakerRole(participant.participantId, role, otherHasRole)
+                            }
                         )
                     }
                 }
@@ -1365,76 +1416,310 @@ private fun ControlModeSelectorRow(
 }
 
 @Composable
+private fun StereoSplitModeCard(
+    room: ListenTogetherRoomState,
+    state: ListenTogetherUiState,
+    onSelectListeningMode: (ListenTogetherListeningMode) -> Unit,
+    onSwapChannels: () -> Unit
+) {
+    val isStereoSplit = room.listeningMode == ListenTogetherListeningMode.STEREO_SPLIT
+    val canSwitchMode = state.canControlPlayback
+    val hasLeft = room.participants.any { it.speakerRole == ListenTogetherSpeakerRole.LEFT }
+    val hasRight = room.participants.any { it.speakerRole == ListenTogetherSpeakerRole.RIGHT }
+
+    GlassSectionCard(
+        borderColor = if (isStereoSplit) Color(0x99A855F7) else Color.White.copy(alpha = 0.12f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Audio Channel Mode",
+                color = TextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(
+                        when (state.localSpeakerRole) {
+                            ListenTogetherSpeakerRole.LEFT -> Color(0x3300E5FF)
+                            ListenTogetherSpeakerRole.RIGHT -> Color(0x33A855F7)
+                            ListenTogetherSpeakerRole.STEREO -> Color.White.copy(alpha = 0.08f)
+                        }
+                    )
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .testTag("listen_together_local_role_badge")
+            ) {
+                Text(
+                    text = when (state.localSpeakerRole) {
+                        ListenTogetherSpeakerRole.LEFT -> "THIS DEVICE: LEFT CHANNEL"
+                        ListenTogetherSpeakerRole.RIGHT -> "THIS DEVICE: RIGHT CHANNEL"
+                        ListenTogetherSpeakerRole.STEREO -> "FULL STEREO"
+                    },
+                    color = when (state.localSpeakerRole) {
+                        ListenTogetherSpeakerRole.LEFT -> SoftCyan
+                        ListenTogetherSpeakerRole.RIGHT -> Color(0xFFD8B4FE)
+                        ListenTogetherSpeakerRole.STEREO -> TextSecondary
+                    },
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = if (isStereoSplit) {
+                "Real-time PCM stereo separation active. Max 2 speakers: Left plays only original Left channel; Right plays only original Right channel."
+            } else {
+                "Normal Listening Mode (default): up to ${room.maxParticipants} phones play complete unmodified stereo audio in sync."
+            },
+            color = TextSecondary,
+            fontSize = 12.sp
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ListenTogetherListeningMode.entries.forEach { mode ->
+                val isSelected = room.listeningMode == mode
+                val blockedByCount = mode == ListenTogetherListeningMode.STEREO_SPLIT && room.participants.size > 2
+                val shape = RoundedCornerShape(12.dp)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 56.dp)
+                        .clip(shape)
+                        .background(
+                            when {
+                                isSelected && mode == ListenTogetherListeningMode.STEREO_SPLIT -> Color(0x33A855F7)
+                                isSelected -> ElectricBlue.copy(alpha = 0.26f)
+                                else -> Color.White.copy(alpha = 0.05f)
+                            }
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = when {
+                                isSelected && mode == ListenTogetherListeningMode.STEREO_SPLIT -> Color(0xFFC084FC)
+                                isSelected -> SoftCyan
+                                else -> Color.White.copy(alpha = 0.12f)
+                            },
+                            shape = shape
+                        )
+                        .clickable(enabled = canSwitchMode && !blockedByCount) {
+                            onSelectListeningMode(mode)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 9.dp)
+                        .testTag("listening_mode_${mode.wireValue.lowercase()}"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = mode.label,
+                        color = if (isSelected) TextPrimary else if (blockedByCount) TextMuted else TextSecondary,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (mode == ListenTogetherListeningMode.NORMAL) "Up to 10 phones" else "2 phones (L / R)",
+                        color = if (isSelected) SoftCyan else TextMuted,
+                        fontSize = 10.5.sp
+                    )
+                }
+            }
+        }
+
+        if (room.participants.size > 2 && !isStereoSplit) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Stereo Split Speaker Mode requires 2 or fewer phones in the room (currently ${room.participants.size}).",
+                color = Color(0xFFFBBF24),
+                fontSize = 11.5.sp
+            )
+        }
+
+        if (isStereoSplit) {
+            Spacer(modifier = Modifier.height(10.dp))
+            if (!hasLeft || !hasRight) {
+                val missingChannel = if (!hasLeft) "LEFT" else "RIGHT"
+                Text(
+                    text = "Waiting for a 2nd phone to join as the $missingChannel speaker…",
+                    color = Color(0xFFFDE68A),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.testTag("stereo_split_waiting_banner")
+                )
+            }
+            if (canSwitchMode && room.participants.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onSwapChannels,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("stereo_split_swap_button")
+                ) {
+                    Text("Swap LEFT / RIGHT Channels", color = SoftCyan, fontWeight = FontWeight.Bold)
+                }
+            }
+            val monoNotice = state.stereoSplitNotice
+            if (!monoNotice.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0x2BF59E0B))
+                        .border(1.dp, Color(0x88F59E0B), RoundedCornerShape(10.dp))
+                        .padding(10.dp)
+                        .testTag("stereo_split_mono_warning")
+                ) {
+                    Text(
+                        text = monoNotice,
+                        color = Color(0xFFFDE68A),
+                        fontSize = 11.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ParticipantRow(
     participant: ListenTogetherParticipant,
-    isMe: Boolean
+    isMe: Boolean,
+    isStereoSplitMode: Boolean = false,
+    canAssignRole: Boolean = false,
+    onAssignRole: (ListenTogetherSpeakerRole) -> Unit = {}
 ) {
     val isConnected = participant.connectionState == ParticipantConnectionState.CONNECTED
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Color.White.copy(alpha = 0.04f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(SoftCyan.copy(alpha = 0.18f)),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = if (participant.isHost) Icons.Rounded.Star else Icons.Rounded.Person,
-                contentDescription = null,
-                tint = if (participant.isHost) Color(0xFFFACC15) else SoftCyan,
-                modifier = Modifier.size(18.dp)
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(SoftCyan.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (participant.isHost) Icons.Rounded.Star else Icons.Rounded.Person,
+                    contentDescription = null,
+                    tint = if (participant.isHost) Color(0xFFFACC15) else SoftCyan,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = if (isMe) "${participant.displayName} (You)" else participant.displayName,
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (participant.isHost) {
+                        Text(
+                            text = "HOST",
+                            color = Color(0xFFFACC15),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFFFACC15).copy(alpha = 0.16f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (isStereoSplitMode) {
+                        val isLeft = participant.speakerRole == ListenTogetherSpeakerRole.LEFT
+                        Text(
+                            text = participant.speakerRole.badgeLabel,
+                            color = if (isLeft) SoftCyan else Color(0xFFD8B4FE),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isLeft) Color(0x2800E5FF) else Color(0x28A855F7))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("participant_role_${participant.participantId}")
+                        )
+                    }
+                }
+                Text(
+                    text = if (isConnected) "Connected" else "Reconnecting…",
+                    color = if (isConnected) Color(0xFF4ADE80) else Color(0xFFFBBF24),
+                    fontSize = 11.5.sp
+                )
+            }
+
+            Text(
+                text = participant.qualityLabel,
+                color = TextSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.07f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             )
         }
 
-        Spacer(modifier = Modifier.width(10.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = if (isMe) "${participant.displayName} (You)" else participant.displayName,
-                    color = TextPrimary,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (participant.isHost) {
-                    Text(
-                        text = "HOST",
-                        color = Color(0xFFFACC15),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
+        if (isStereoSplitMode && canAssignRole) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(ListenTogetherSpeakerRole.LEFT, ListenTogetherSpeakerRole.RIGHT).forEach { role ->
+                    val selected = participant.speakerRole == role
+                    Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFFFACC15).copy(alpha = 0.16f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                            .weight(1f)
+                            .heightIn(min = 38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) SoftCyan.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f))
+                            .border(
+                                1.dp,
+                                if (selected) SoftCyan else Color.White.copy(alpha = 0.12f),
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable(enabled = !selected) { onAssignRole(role) }
+                            .testTag("assign_${role.wireValue.lowercase()}_${participant.participantId}"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (role == ListenTogetherSpeakerRole.LEFT) "Assign LEFT" else "Assign RIGHT",
+                            color = if (selected) SoftCyan else TextSecondary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
-            Text(
-                text = if (isConnected) "Connected" else "Reconnecting…",
-                color = if (isConnected) Color(0xFF4ADE80) else Color(0xFFFBBF24),
-                fontSize = 11.5.sp
-            )
         }
-
-        Text(
-            text = participant.qualityLabel,
-            color = TextSecondary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.White.copy(alpha = 0.07f))
-                .padding(horizontal = 8.dp, vertical = 4.dp)
-        )
     }
 }
 
@@ -1627,6 +1912,16 @@ private fun ServerEndpointDialog(
                             Spacer(modifier = Modifier.width(6.dp))
                         }
                         Text("Test Connection", color = SoftCyan, fontSize = 12.sp)
+                    }
+
+                    TextButton(
+                        onClick = {
+                            urlInput = ListenTogetherCoordinator.DEFAULT_DEPLOYED_WS_URL
+                            testResultText = null
+                        },
+                        modifier = Modifier.testTag("listen_together_use_default_server_button")
+                    ) {
+                        Text("Use Official", color = SoftCyan, fontSize = 11.5.sp)
                     }
                 }
 

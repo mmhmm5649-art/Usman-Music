@@ -63,9 +63,19 @@ import com.usman.musicplayer.model.RepeatMode
 import com.usman.musicplayer.model.SearchFilterCategory
 import com.usman.musicplayer.data.listentogether.ListenTogetherControlMode
 import com.usman.musicplayer.data.listentogether.ListenTogetherCoordinator
+import com.usman.musicplayer.data.listentogether.ListenTogetherListeningMode
+import com.usman.musicplayer.data.listentogether.ListenTogetherSpeakerRole
 import com.usman.musicplayer.data.listentogether.ListenTogetherUiState
+import com.usman.musicplayer.data.recommendation.AiMoodIntelligenceEngine
+import com.usman.musicplayer.data.repository.HomeSessionState
+import com.usman.musicplayer.model.ListeningMood
+import com.usman.musicplayer.model.MoodNextRecommendation
+import com.usman.musicplayer.model.MoodTransitionPolicy
+import com.usman.musicplayer.model.RecommendationPreference
 import com.usman.musicplayer.model.Song
+import com.usman.musicplayer.model.SongMoodProfile
 import com.usman.musicplayer.model.StreamingQuality
+import com.usman.musicplayer.model.UserMoodAffinityProfile
 import com.usman.musicplayer.model.UserProfileState
 import com.usman.musicplayer.playback.AudioEffectsManager
 import com.usman.musicplayer.playback.AudioSpectrumManager
@@ -77,6 +87,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import com.usman.musicplayer.data.repository.LocalSearchIndexer
 import com.usman.musicplayer.data.repository.LocalMusicProvider
@@ -200,7 +211,17 @@ data class MusicPlayerUiState(
     val selectedStreamingQuality: StreamingQuality = StreamingQuality.HD,
     val activeStreamQualityLabel: String? = null,
     val activeStreamFallbackNotice: String? = null,
-    val isStreamingQualitySwitching: Boolean = false
+    val isStreamingQualitySwitching: Boolean = false,
+
+    // AI Mood Intelligence & Dynamic Session Home State
+    val isMoodAutoplayEnabled: Boolean = true,
+    val isDynamicHomeFeedEnabled: Boolean = true,
+    val recommendationPreference: RecommendationPreference = RecommendationPreference.BALANCED,
+    val excludeRecentlyPlayed: Boolean = true,
+    val currentSongMoodProfile: SongMoodProfile? = null,
+    val upcomingAutoplaySong: MoodNextRecommendation? = null,
+    val dominantListeningMood: ListeningMood? = null,
+    val homeSessionSeed: Long = 0L
 )
 
 @UnstableApi
@@ -245,6 +266,18 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     private var homeCollectionJob: Job? = null
     private var homeSnapshotJob: Job? = null
     private var playJob: Job? = null
+    private var moodPrepJob: Job? = null
+
+    private var homeSessionState: HomeSessionState = HomeSessionState(sessionNumber = 1L, sessionSeed = 0L)
+    private var userMoodAffinityProfile: UserMoodAffinityProfile = UserMoodAffinityProfile()
+    private val lyricsAnalysisCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val moodCandidateDiscoveryCache = java.util.concurrent.ConcurrentHashMap<String, List<Song>>()
+    private val sessionAutoplayHistoryKeys = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+    private val sessionRecentArtists = java.util.Collections.synchronizedList(mutableListOf<String>())
+    private var moodSkippedSignals: List<Pair<String, ListeningMood?>> = emptyList()
+    private var moodChoiceWeights: Map<String, Float> = emptyMap()
+    @Volatile
+    private var isExplicitCollectionPlayback: Boolean = false
 
     // Media3 MediaController connected to UsmanPlaybackService
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -403,39 +436,80 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             observeSavedAlbums()
             observeDownloads()
             viewModelScope.launch {
-                // Hydrate Home snapshot cache + lightweight signals off the Main Thread immediately
-                val (cachedHomeSections, _) = withContext(Dispatchers.IO) {
+                // Hydrate Home snapshot cache + lightweight signals + session seed off the Main Thread immediately
+                val startupBundle = withContext(Dispatchers.IO) {
                     AudioEffectsManager.init(application)
                     musicRepository.warmUp()
                     loadSearchHistory()
+                    val startedSession = signalsStore.startNewHomeSession()
+                    val enabled = signalsStore.loadMoodAutoplayEnabled()
+                    val dynamicFeed = signalsStore.loadDynamicHomeFeedEnabled()
+                    val recPref = signalsStore.loadRecommendationPreference()
+                    val excludeRecent = signalsStore.loadExcludeRecentlyPlayed()
                     val snapshot = signalsStore.loadHomeSectionsSnapshot()
-                    snapshot to true
+                    StartupMoodBundle(snapshot, enabled, dynamicFeed, recPref, excludeRecent, startedSession)
+                }
+                homeSessionState = startupBundle.sessionState
+                _uiState.update {
+                    it.copy(
+                        isMoodAutoplayEnabled = startupBundle.moodAutoplayEnabled,
+                        isDynamicHomeFeedEnabled = startupBundle.dynamicHomeFeedEnabled,
+                        recommendationPreference = startupBundle.recommendationPreference,
+                        excludeRecentlyPlayed = startupBundle.excludeRecentlyPlayed,
+                        homeSessionSeed = if (startupBundle.dynamicHomeFeedEnabled) startupBundle.sessionState.sessionSeed else 0L
+                    )
                 }
                 updateProviderStates()
 
-                if (cachedHomeSections.isNotEmpty()) {
-                    hydrateHomeFromCachedSnapshot(cachedHomeSections)
+                if (startupBundle.cachedHomeSections.isNotEmpty()) {
+                    hydrateHomeFromCachedSnapshot(startupBundle.cachedHomeSections)
                 }
 
                 // Load favorites/recent/play stats in parallel & start progressive network refresh
                 launch(Dispatchers.IO) { loadUserPlaybackSignals() }
-                loadInitialOnlineMusic(isBackgroundRefresh = cachedHomeSections.isNotEmpty())
+                loadInitialOnlineMusic(isBackgroundRefresh = startupBundle.cachedHomeSections.isNotEmpty())
             }
         }
     }
 
+    private data class StartupMoodBundle(
+        val cachedHomeSections: List<HomeDiscoverySection>,
+        val moodAutoplayEnabled: Boolean,
+        val dynamicHomeFeedEnabled: Boolean,
+        val recommendationPreference: RecommendationPreference,
+        val excludeRecentlyPlayed: Boolean,
+        val sessionState: HomeSessionState
+    )
+
     @androidx.annotation.VisibleForTesting
     internal fun startStartupSequenceForTest() {
         viewModelScope.launch {
-            val cachedHomeSections = withContext(Dispatchers.IO) {
+            val startupBundle = withContext(Dispatchers.IO) {
                 loadSearchHistory()
-                signalsStore.loadHomeSectionsSnapshot()
+                StartupMoodBundle(
+                    cachedHomeSections = signalsStore.loadHomeSectionsSnapshot(),
+                    moodAutoplayEnabled = signalsStore.loadMoodAutoplayEnabled(),
+                    dynamicHomeFeedEnabled = signalsStore.loadDynamicHomeFeedEnabled(),
+                    recommendationPreference = signalsStore.loadRecommendationPreference(),
+                    excludeRecentlyPlayed = signalsStore.loadExcludeRecentlyPlayed(),
+                    sessionState = signalsStore.startNewHomeSession()
+                )
             }
-            if (cachedHomeSections.isNotEmpty()) {
-                hydrateHomeFromCachedSnapshot(cachedHomeSections)
+            homeSessionState = startupBundle.sessionState
+            _uiState.update {
+                it.copy(
+                    isMoodAutoplayEnabled = startupBundle.moodAutoplayEnabled,
+                    isDynamicHomeFeedEnabled = startupBundle.dynamicHomeFeedEnabled,
+                    recommendationPreference = startupBundle.recommendationPreference,
+                    excludeRecentlyPlayed = startupBundle.excludeRecentlyPlayed,
+                    homeSessionSeed = if (startupBundle.dynamicHomeFeedEnabled) startupBundle.sessionState.sessionSeed else 0L
+                )
+            }
+            if (startupBundle.cachedHomeSections.isNotEmpty()) {
+                hydrateHomeFromCachedSnapshot(startupBundle.cachedHomeSections)
             }
             loadUserPlaybackSignals()
-            loadInitialOnlineMusic(isBackgroundRefresh = cachedHomeSections.isNotEmpty())
+            loadInitialOnlineMusic(isBackgroundRefresh = startupBundle.cachedHomeSections.isNotEmpty())
         }
     }
 
@@ -987,24 +1061,31 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                                         // Pass copy with contentUriString = null so it actually contacts the provider for a fresh URL
                                         // rather than returning the existing failed cached URL!
                                         val songToResolve = currentSong.copy(contentUriString = null)
-                                        val streamResult = musicRepository.getStreamUrl(songToResolve)
-                                        if (streamResult.isSuccess) {
-                                            var newUrl = streamResult.getOrNull()
-                                            if (!newUrl.isNullOrBlank()) {
-                                                // If same 320kbps URL is returned and already failed with 403, try 160kbps
-                                                if (newUrl == currentSong.contentUriString && newUrl.contains("_320.mp4")) {
-                                                    newUrl = newUrl.replace("_320.mp4", "_160.mp4")
+                                        val requestedQuality = _uiState.value.selectedStreamingQuality
+                                        val resolvedRetry = musicRepository.resolveStreamForQuality(songToResolve, requestedQuality).getOrNull()
+                                        if (resolvedRetry != null && resolvedRetry.url.isNotBlank()) {
+                                            var newUrl = resolvedRetry.url
+                                            // If same 320kbps URL is returned and already failed with 403, try 160kbps
+                                            if (newUrl == currentSong.contentUriString && newUrl.contains("_320.mp4")) {
+                                                newUrl = newUrl.replace("_320.mp4", "_160.mp4")
+                                            }
+                                            if (newUrl != currentSong.contentUriString) {
+                                                Log.d("MusicPlayerViewModel", "Re-resolved new stream URL: $newUrl. Retrying playback...")
+                                                val updatedSong = currentSong.copy(contentUriString = newUrl)
+                                                val retryStream = com.usman.musicplayer.model.StreamingQualitySelector
+                                                    .adaptVerifiedCdnUrlDownwardOnly(newUrl, requestedQuality)
+                                                _uiState.update {
+                                                    it.copy(
+                                                        currentSong = updatedSong,
+                                                        activeStreamQualityLabel = retryStream.actualQualityLabel,
+                                                        activeStreamFallbackNotice = retryStream.fallbackNotice
+                                                    )
                                                 }
-                                                if (newUrl != currentSong.contentUriString) {
-                                                    Log.d("MusicPlayerViewModel", "Re-resolved new stream URL: $newUrl. Retrying playback...")
-                                                    val updatedSong = currentSong.copy(contentUriString = newUrl)
-                                                    _uiState.update { it.copy(currentSong = updatedSong) }
-                                                    
-                                                    controller.setMediaItem(createMediaItem(updatedSong))
-                                                    controller.prepare()
-                                                    controller.play()
-                                                    return@launch
-                                                }
+
+                                                controller.setMediaItem(createMediaItem(updatedSong))
+                                                controller.prepare()
+                                                controller.play()
+                                                return@launch
                                             }
                                         }
 
@@ -1065,7 +1146,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     // --- Online Music Loading & Spotify-Style Home Discovery ---
 
     private suspend fun loadUserPlaybackSignals() {
-        val (favs, recent, stats) = withContext(Dispatchers.IO) {
+        val loaded = withContext(Dispatchers.IO) {
             val loadedFavs = signalsStore.loadFavorites().filter(::isAllowedUserFacingSong)
             val loadedRecent = signalsStore.loadRecentlyPlayed()
                 .filter(::isAllowedUserFacingSong)
@@ -1074,17 +1155,52 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                     if (isFav) s.copy(isFavorite = true) else s
                 }
             val loadedStats = signalsStore.loadPlayStats()
-            Triple(loadedFavs, loadedRecent, loadedStats)
+            val loadedMoodChoices = signalsStore.loadMoodChoices()
+            val loadedSkips = signalsStore.loadSkippedSignals()
+                .map { it.songKey to ListeningMood.fromId(it.moodId) }
+            val playlistSongs = _uiState.value.playlists.take(4).flatMap { pl ->
+                runCatching { playlistRepository.getSongsForPlaylistSync(pl.id) }.getOrDefault(emptyList())
+            }.filter(::isAllowedUserFacingSong)
+
+            val affinity = AiMoodIntelligenceEngine.buildUserAffinityProfile(
+                recentlyPlayed = loadedRecent,
+                favoriteSongs = loadedFavs,
+                playStats = loadedStats,
+                playlistSongs = playlistSongs,
+                persistedMoodChoices = loadedMoodChoices,
+                skippedSignals = loadedSkips
+            )
+            LoadedUserSignals(
+                favorites = loadedFavs,
+                recentlyPlayed = loadedRecent,
+                playStats = loadedStats,
+                moodChoices = loadedMoodChoices,
+                skippedSignals = loadedSkips,
+                affinityProfile = affinity
+            )
         }
-        persistedPlayStats = stats
+        persistedPlayStats = loaded.playStats
+        moodChoiceWeights = loaded.moodChoices
+        moodSkippedSignals = loaded.skippedSignals
+        userMoodAffinityProfile = loaded.affinityProfile
         _uiState.update {
             it.copy(
-                favoriteSongs = favs,
-                recentlyPlayed = recent
+                favoriteSongs = loaded.favorites,
+                recentlyPlayed = loaded.recentlyPlayed,
+                dominantListeningMood = loaded.affinityProfile.dominantMood
             )
         }
         rebuildHomeSectionsSnapshot()
     }
+
+    private data class LoadedUserSignals(
+        val favorites: List<Song>,
+        val recentlyPlayed: List<Song>,
+        val playStats: List<PersistedPlayStat>,
+        val moodChoices: Map<String, Float>,
+        val skippedSignals: List<Pair<String, ListeningMood?>>,
+        val affinityProfile: UserMoodAffinityProfile
+    )
 
     fun loadInitialOnlineMusic(
         isBackgroundRefresh: Boolean = false,
@@ -1134,8 +1250,9 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             }
             buildCuratedPlaylists()
 
-            // Stage 1: Primary 4-language & album carousels concurrently (repository Semaphore caps concurrency cleanly)
+            // Stage 1: Primary 4-language, Mood Mixes & album carousels concurrently
             val stage1Ids = listOf(
+                "discovery_mood_mixes",
                 "discovery_popular_artists",
                 "tamil_top_hits",
                 "english_global_top_hits",
@@ -1158,7 +1275,8 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 val secondaryIds = listOf(
                     "discovery_recommended_for_you",
                     "discovery_heavy_rotation",
-                    "discovery_movie_soundtracks"
+                    "discovery_movie_soundtracks",
+                    "discovery_discover_weekly"
                 )
                 secondaryIds.map { id ->
                     async {
@@ -1169,12 +1287,12 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                     }
                 }.awaitAll()
                 withContext(Dispatchers.IO) {
-                    signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+                    persistHomeSnapshotAndShownHistory()
                 }
             }
 
             withContext(Dispatchers.IO) {
-                signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+                persistHomeSnapshotAndShownHistory()
             }
         }
     }
@@ -1184,7 +1302,11 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         _uiState.update { it.copy(selectedHomeLanguage = language) }
         rebuildHomeSectionsSnapshot()
 
-        val defs = HomeDiscoveryCatalog.definitionsForFilter(language)
+        val defs = HomeDiscoveryCatalog.orderedDefinitionsForSession(
+            filter = language,
+            sessionSeed = effectiveHomeSessionSeed(),
+            dominantMood = userMoodAffinityProfile.dominantMood
+        )
         viewModelScope.launch {
             defs.take(6).map { def ->
                 async {
@@ -1195,6 +1317,10 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 }
             }.awaitAll()
         }
+    }
+
+    private fun effectiveHomeSessionSeed(): Long {
+        return if (_uiState.value.isDynamicHomeFeedEnabled) homeSessionState.sessionSeed else 0L
     }
 
     fun requestHomeSectionLoad(sectionId: String) {
@@ -1228,7 +1354,12 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 recentlyPlayed = _uiState.value.recentlyPlayed,
                 favoriteSongs = _uiState.value.favoriteSongs,
                 playStats = persistedPlayStats,
-                forceRefresh = true
+                forceRefresh = true,
+                sessionSeed = effectiveHomeSessionSeed(),
+                previousSessionShownKeys = if (_uiState.value.isDynamicHomeFeedEnabled) homeSessionState.previousShownSongKeys else emptySet(),
+                userMoodProfile = userMoodAffinityProfile,
+                recommendationPreference = _uiState.value.recommendationPreference,
+                excludeRecentlyPlayed = _uiState.value.excludeRecentlyPlayed
             )
 
             val mergedSongs = (existing.songs + nextSection.songs)
@@ -1256,14 +1387,36 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         viewModelScope.launch {
             inFlightSectionJobs.values.forEach { it.cancel() }
             inFlightSectionJobs.clear()
+            val refreshedSession = withContext(Dispatchers.IO) {
+                signalsStore.startNewHomeSession()
+            }
+            homeSessionState = refreshedSession
+            _uiState.update { it.copy(homeSessionSeed = refreshedSession.sessionSeed) }
             homeHasStartedInitialLoad = false
             // Keep existing populated content visible while rotating fresh dynamic recommendations
             loadInitialOnlineMusic(isBackgroundRefresh = true, forceReload = true)
-            val activeDefs = HomeDiscoveryCatalog.definitionsForFilter(_uiState.value.selectedHomeLanguage)
+            val activeDefs = HomeDiscoveryCatalog.orderedDefinitionsForSession(
+                filter = _uiState.value.selectedHomeLanguage,
+                sessionSeed = homeSessionState.sessionSeed,
+                dominantMood = userMoodAffinityProfile.dominantMood
+            )
             activeDefs.take(6).map { async { loadSectionInternal(it.id, forceRefresh = true) } }.awaitAll()
             withContext(Dispatchers.IO) {
-                signalsStore.saveHomeSectionsSnapshot(homeSectionsById.values.toList())
+                persistHomeSnapshotAndShownHistory()
             }
+        }
+    }
+
+    private fun persistHomeSnapshotAndShownHistory() {
+        val snapshotSections = homeSectionsById.values.toList()
+        signalsStore.saveHomeSectionsSnapshot(snapshotSections)
+        val shownKeys = snapshotSections
+            .flatMap { sec -> sec.songs.take(6) }
+            .map { HomeUserSignalsStore.songIdentityKey(it) }
+            .toSet()
+        val sectionOrder = _uiState.value.homeSections.map { it.id }
+        if (shownKeys.isNotEmpty() || sectionOrder.isNotEmpty()) {
+            signalsStore.recordShownHomeState(shownKeys, sectionOrder)
         }
     }
 
@@ -1295,7 +1448,12 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             recentlyPlayed = _uiState.value.recentlyPlayed,
             favoriteSongs = _uiState.value.favoriteSongs,
             playStats = persistedPlayStats,
-            forceRefresh = forceRefresh
+            forceRefresh = forceRefresh,
+            sessionSeed = effectiveHomeSessionSeed(),
+            previousSessionShownKeys = if (_uiState.value.isDynamicHomeFeedEnabled) homeSessionState.previousShownSongKeys else emptySet(),
+            userMoodProfile = userMoodAffinityProfile,
+            recommendationPreference = _uiState.value.recommendationPreference,
+            excludeRecentlyPlayed = _uiState.value.excludeRecentlyPlayed
         )
 
         val cleanedSongs = loaded.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
@@ -1350,15 +1508,19 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
 
     private fun definitionForDynamicOrCatalog(sectionId: String) =
         HomeDiscoveryCatalog.DEFINITION_BY_ID[sectionId]
-            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.TELUGU).find { it.id == sectionId }
-            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.TAMIL).find { it.id == sectionId }
-            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.ENGLISH).find { it.id == sectionId }
-            ?: HomeDiscoveryCatalog.definitionsForFilter(HomeLanguageFilter.HINDI).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.orderedDefinitionsForSession(HomeLanguageFilter.TELUGU, 0L).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.orderedDefinitionsForSession(HomeLanguageFilter.TAMIL, 0L).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.orderedDefinitionsForSession(HomeLanguageFilter.ENGLISH, 0L).find { it.id == sectionId }
+            ?: HomeDiscoveryCatalog.orderedDefinitionsForSession(HomeLanguageFilter.HINDI, 0L).find { it.id == sectionId }
 
     private fun rebuildHomeSectionsSnapshot() {
         val state = _uiState.value
         val activeLang = state.selectedHomeLanguage
-        val defs = HomeDiscoveryCatalog.definitionsForFilter(activeLang)
+        val defs = HomeDiscoveryCatalog.orderedDefinitionsForSession(
+            filter = activeLang,
+            sessionSeed = effectiveHomeSessionSeed(),
+            dominantMood = userMoodAffinityProfile.dominantMood
+        )
         val orderedSections = defs.mapNotNull { def ->
             val resolved = homeSectionsById[def.id]
             when {
@@ -1386,7 +1548,8 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         val hero = homeDiscoveryRepository.buildHeroFeature(
             activeLanguage = activeLang,
             sectionsById = homeSectionsById,
-            recentlyPlayed = state.recentlyPlayed
+            recentlyPlayed = state.recentlyPlayed,
+            sessionSeed = effectiveHomeSessionSeed()
         )
         val notifications = homeDiscoveryRepository.buildNotificationsFeed(
             sectionsById = homeSectionsById,
@@ -1414,7 +1577,8 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         val hero = homeDiscoveryRepository.buildHeroFeature(
             activeLanguage = state.selectedHomeLanguage,
             sectionsById = homeSectionsById,
-            recentlyPlayed = state.recentlyPlayed
+            recentlyPlayed = state.recentlyPlayed,
+            sessionSeed = homeSessionState.sessionSeed
         )
         val notifications = homeDiscoveryRepository.buildNotificationsFeed(
             sectionsById = homeSectionsById,
@@ -1503,6 +1667,16 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
 
     fun openCuratedHomePlaylist(playlist: CuratedPlaylist) {
         homeCollectionJob?.cancel()
+        if (playlist.id.startsWith("mood_mix_")) {
+            val rawMoodId = playlist.id.removePrefix("mood_mix_").substringBeforeLast("_")
+            ListeningMood.fromId(rawMoodId)?.let { chosenMood ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    signalsStore.recordMoodChoice(chosenMood.id, 1.25f)
+                    moodChoiceWeights = signalsStore.loadMoodChoices()
+                    refreshUserAffinityProfileFromSignals()
+                }
+            }
+        }
         val cleanExisting = playlist.songs.filter(::isAllowedUserFacingSong).map(::applyFavoriteFlag)
         _uiState.update {
             it.copy(
@@ -2108,7 +2282,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         val controller = mediaController
         controller?.shuffleModeEnabled = false
         _uiState.update { it.copy(isShuffleEnabled = shuffle) }
-        playSong(orderedTracks[safeStart], explicitQueue = orderedTracks)
+        playSong(orderedTracks[safeStart], explicitQueue = orderedTracks, isExplicitCollection = true)
     }
 
     fun toggleSaveAlbumToLibrary(details: AlbumDetails, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
@@ -2298,7 +2472,11 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         }
     }
 
-    fun playSong(song: Song, explicitQueue: List<Song>? = null) {
+    fun playSong(
+        song: Song,
+        explicitQueue: List<Song>? = null,
+        isExplicitCollection: Boolean = false
+    ) {
         // [Stage 3: playSong() input]
         Log.d("USMAN_PLAYBACK", "[Stage 3: playSong() input] ID: ${song.id}, Title: '${song.title}', Artist: '${song.artist}', Album: '${song.album}', Artwork: '${song.albumArtUri}', Duration: ${song.durationMs}")
 
@@ -2315,12 +2493,25 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             return
         }
 
+        val stateSnapshot = _uiState.value
+        val albumTracks = stateSnapshot.selectedAlbumDetails?.tracks.orEmpty()
+        val collectionTracks = stateSnapshot.activeHomeCollectionSheet?.songs.orEmpty()
+        val selectedPlaylistTracks = stateSnapshot.selectedPlaylistSongs
+        val isFromOpenedAlbum = albumTracks.any { it.id == song.id }
+        val isFromOpenedCollection = collectionTracks.any { it.id == song.id }
+        val isFromOpenedPlaylist = stateSnapshot.selectedPlaylist != null && selectedPlaylistTracks.any { it.id == song.id }
+        val treatedAsExplicitCollection = isExplicitCollection || isFromOpenedAlbum || isFromOpenedCollection || isFromOpenedPlaylist
+        isExplicitCollectionPlayback = treatedAsExplicitCollection
+
+        val moodAutoplayActive = stateSnapshot.isMoodAutoplayEnabled && !listenTogetherCoordinator.isInRoom
+
         // Immediately update UI state to avoid placeholders
         _uiState.update {
             it.copy(
                 currentSong = song,
                 isPlaying = true,
-                onlineSearchError = null
+                onlineSearchError = null,
+                upcomingAutoplaySong = null
             )
         }
 
@@ -2334,18 +2525,19 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 return@launch
             }
 
-            // Identify the active playlist queue for next/previous navigation
-            val albumTracks = _uiState.value.selectedAlbumDetails?.tracks.orEmpty()
+            // Use the explicit collection queue when inside an Album, Playlist or Mood Mix;
+            // For individual single-track plays when AI Mood Autoplay is ON, play immediately and queue mood-matched next songs.
             val homeSectionMatchingQueue = _uiState.value.homeSections
                 .firstOrNull { sec -> sec.songs.any { it.id == song.id } }
                 ?.songs
                 .orEmpty()
-            val collectionTracks = _uiState.value.activeHomeCollectionSheet?.songs.orEmpty()
             val rawQueue = when {
+                treatedAsExplicitCollection && !explicitQueue.isNullOrEmpty() -> explicitQueue
+                isFromOpenedAlbum -> albumTracks
+                isFromOpenedCollection -> collectionTracks
+                isFromOpenedPlaylist -> selectedPlaylistTracks
+                moodAutoplayActive -> listOf(song)
                 !explicitQueue.isNullOrEmpty() -> explicitQueue
-                albumTracks.any { it.id == song.id } -> albumTracks
-                collectionTracks.any { it.id == song.id } -> collectionTracks
-                _uiState.value.selectedPlaylistSongs.any { it.id == song.id } -> _uiState.value.selectedPlaylistSongs
                 homeSectionMatchingQueue.isNotEmpty() -> homeSectionMatchingQueue
                 _uiState.value.onlineSearchResults.any { it.id == song.id } -> _uiState.value.onlineSearchResults
                 _uiState.value.categorySongs.any { it.id == song.id } -> _uiState.value.categorySongs
@@ -2438,6 +2630,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 viewModelScope.launch(Dispatchers.IO) {
                     signalsStore.saveRecentlyPlayed(updatedRecent)
                     persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+                    refreshUserAffinityProfileFromSignals()
                 }
 
                 if (controller != null) {
@@ -2450,6 +2643,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 }
 
                 startProgressTracker()
+                analyzeCurrentSongMoodAndPrepareNext(songWithFav)
             } else {
                 // Start target song immediately in 1 roundtrip
                 val songWithFav = applyFavoriteFlag(resolvedTarget)
@@ -2476,6 +2670,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 viewModelScope.launch(Dispatchers.IO) {
                     signalsStore.saveRecentlyPlayed(updatedRecent)
                     persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+                    refreshUserAffinityProfileFromSignals()
                 }
 
                 if (controller != null) {
@@ -2485,6 +2680,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                     controller.volume = _uiState.value.volume
                 }
                 startProgressTracker()
+                analyzeCurrentSongMoodAndPrepareNext(songWithFav)
 
                 // Resolve sibling queue tracks concurrently in background and splice them seamlessly around the playing track
                 val resolvedList = withContext(Dispatchers.IO) {
@@ -2523,20 +2719,37 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             .filter { HomeUserSignalsStore.songIdentityKey(it) != HomeUserSignalsStore.songIdentityKey(songWithFav) }
             .toMutableList()).apply { add(0, songWithFav) }.take(20)
 
+        val requestedQuality = _uiState.value.selectedStreamingQuality
+        val transitionedStream = if (songWithFav.isOnline && !songWithFav.contentUriString.isNullOrBlank()) {
+            val detectedBitrate = com.usman.musicplayer.model.StreamingQualitySelector
+                .detectBitrateFromUrl(songWithFav.contentUriString)
+            com.usman.musicplayer.model.ResolvedStream(
+                url = songWithFav.contentUriString,
+                requestedQuality = requestedQuality,
+                actualBitrateKbps = detectedBitrate,
+                isExactMatch = detectedBitrate == requestedQuality.targetBitrateKbps
+            )
+        } else null
+
         _uiState.update {
             it.copy(
                 currentSong = songWithFav,
                 durationMs = songWithFav.durationMs,
                 currentPositionMs = 0L,
                 isFavorite = songWithFav.isFavorite,
-                recentlyPlayed = updatedRecent
+                recentlyPlayed = updatedRecent,
+                upcomingAutoplaySong = null,
+                activeStreamQualityLabel = if (songWithFav.isOnline) transitionedStream?.actualQualityLabel else "Local Audio",
+                activeStreamFallbackNotice = if (songWithFav.isOnline) transitionedStream?.fallbackNotice else null
             )
         }
         refreshDerivedHomeUi()
         viewModelScope.launch(Dispatchers.IO) {
             signalsStore.saveRecentlyPlayed(updatedRecent)
             persistedPlayStats = signalsStore.recordSongPlay(songWithFav)
+            refreshUserAffinityProfileFromSignals()
         }
+        analyzeCurrentSongMoodAndPrepareNext(songWithFav)
     }
 
     fun togglePlayPause() {
@@ -2580,24 +2793,50 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             listenTogetherCoordinator.requestNext()
             return
         }
+        recordEarlySkipIfApplicable()
+
         val controller = mediaController
         if (controller != null && controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
             return
         }
 
-        // Fallback to active queue or library list
         val current = _uiState.value
         val list = current.activePlaybackQueue.ifEmpty { current.songs }
+        val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
+        val hasMoreInList = !isExplicitCollectionPlayback && false ||
+            (currentIndex in 0 until list.lastIndex)
+
+        if (current.isMoodAutoplayEnabled && (!isExplicitCollectionPlayback || !hasMoreInList)) {
+            playNextMoodRecommendedSong()
+            return
+        }
+
         if (list.isEmpty()) return
 
-        val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
         val nextIndex = if (current.isShuffleEnabled) {
             (list.indices).filter { it != currentIndex }.randomOrNull() ?: 0
         } else {
             (currentIndex + 1) % list.size
         }
-        playSong(list[nextIndex], explicitQueue = list)
+        playSong(list[nextIndex], explicitQueue = list, isExplicitCollection = isExplicitCollectionPlayback)
+    }
+
+    private fun recordEarlySkipIfApplicable() {
+        val state = _uiState.value
+        val currentSong = state.currentSong ?: return
+        val posMs = mediaController?.currentPosition?.coerceAtLeast(0L) ?: _playbackProgress.value.currentPositionMs
+        val durationMs = state.durationMs.takeIf { it > 0L } ?: currentSong.durationMs
+        val isEarlySkip = posMs in 1_000L..30_000L && (durationMs <= 0L || posMs < (durationMs * 0.45f).toLong())
+        if (isEarlySkip) {
+            val moodId = state.currentSongMoodProfile?.primaryMood?.id
+            viewModelScope.launch(Dispatchers.IO) {
+                signalsStore.recordSkippedSong(currentSong, moodId)
+                moodSkippedSignals = signalsStore.loadSkippedSignals()
+                    .map { it.songKey to ListeningMood.fromId(it.moodId) }
+                refreshUserAffinityProfileFromSignals()
+            }
+        }
     }
 
     fun skipToPrevious() {
@@ -2737,6 +2976,9 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 activeHomeCollectionSheet = updatedSheet,
                 selectedArtistDetails = updatedArtistDetails
             )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            refreshUserAffinityProfileFromSignals()
         }
         rebuildHomeSectionsSnapshot()
     }
@@ -2896,14 +3138,33 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             onFeedback("Preview tracks cannot be queued")
             return
         }
+        isExplicitCollectionPlayback = true
         val controller = mediaController
-        if (controller != null) {
+        if (controller == null) {
+            onFeedback("Added to queue")
+            return
+        }
+        if (song.isOnline && song.playbackType == PlaybackType.FULL) {
+            val requestedQuality = _uiState.value.selectedStreamingQuality
+            viewModelScope.launch {
+                val resolved = withContext(Dispatchers.IO) {
+                    musicRepository.resolveStreamForQuality(song, requestedQuality).getOrNull()
+                }
+                val queuedSong = if (resolved != null && resolved.url.isNotBlank()) {
+                    song.copy(contentUriString = resolved.url)
+                } else {
+                    song
+                }
+                val item = createMediaItem(queuedSong)
+                val nextIndex = (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)
+                controller.addMediaItem(nextIndex, item)
+                onFeedback("Playing next: ${song.title}")
+            }
+        } else {
             val item = createMediaItem(song)
             val nextIndex = (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)
             controller.addMediaItem(nextIndex, item)
             onFeedback("Playing next: ${song.title}")
-        } else {
-            onFeedback("Added to queue")
         }
     }
 
@@ -2912,13 +3173,29 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
             onFeedback("Preview tracks cannot be queued")
             return
         }
+        isExplicitCollectionPlayback = true
         val controller = mediaController
-        if (controller != null) {
-            val item = createMediaItem(song)
-            controller.addMediaItem(item)
-            onFeedback("Added to queue: ${song.title}")
-        } else {
+        if (controller == null) {
             onFeedback("Added to queue")
+            return
+        }
+        if (song.isOnline && song.playbackType == PlaybackType.FULL) {
+            val requestedQuality = _uiState.value.selectedStreamingQuality
+            viewModelScope.launch {
+                val resolved = withContext(Dispatchers.IO) {
+                    musicRepository.resolveStreamForQuality(song, requestedQuality).getOrNull()
+                }
+                val queuedSong = if (resolved != null && resolved.url.isNotBlank()) {
+                    song.copy(contentUriString = resolved.url)
+                } else {
+                    song
+                }
+                controller.addMediaItem(createMediaItem(queuedSong))
+                onFeedback("Added to queue: ${song.title}")
+            }
+        } else {
+            controller.addMediaItem(createMediaItem(song))
+            onFeedback("Added to queue: ${song.title}")
         }
     }
 
@@ -2940,13 +3217,350 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 val current = _uiState.value
                 val list = current.activePlaybackQueue.ifEmpty { current.songs }
                 val currentIndex = list.indexOfFirst { it.id == current.currentSong?.id }
-                if (currentIndex < list.size - 1 && currentIndex >= 0) {
+                if (currentIndex in 0 until list.lastIndex) {
                     skipToNext()
+                } else if (current.isMoodAutoplayEnabled && current.currentSong != null) {
+                    playNextMoodRecommendedSong()
                 } else {
                     _uiState.update { it.copy(isPlaying = false, currentPositionMs = 0L) }
                 }
             }
         }
+    }
+
+    fun toggleMoodAutoplay() {
+        setMoodAutoplayEnabled(!_uiState.value.isMoodAutoplayEnabled)
+    }
+
+    fun setMoodAutoplayEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                isMoodAutoplayEnabled = enabled,
+                upcomingAutoplaySong = if (enabled) it.upcomingAutoplaySong else null
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            signalsStore.saveMoodAutoplayEnabled(enabled)
+        }
+        val current = _uiState.value.currentSong
+        if (enabled && current != null && !listenTogetherCoordinator.isInRoom) {
+            analyzeCurrentSongMoodAndPrepareNext(current)
+        }
+    }
+
+    fun setDynamicHomeFeedEnabled(enabled: Boolean) {
+        if (_uiState.value.isDynamicHomeFeedEnabled == enabled) return
+        _uiState.update {
+            it.copy(
+                isDynamicHomeFeedEnabled = enabled,
+                homeSessionSeed = if (enabled) homeSessionState.sessionSeed else 0L
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            signalsStore.saveDynamicHomeFeedEnabled(enabled)
+        }
+        rebuildHomeSectionsSnapshot()
+    }
+
+    fun setRecommendationPreference(preference: RecommendationPreference) {
+        if (_uiState.value.recommendationPreference == preference) return
+        _uiState.update { it.copy(recommendationPreference = preference) }
+        viewModelScope.launch(Dispatchers.IO) {
+            signalsStore.saveRecommendationPreference(preference)
+        }
+        val current = _uiState.value.currentSong
+        if (_uiState.value.isMoodAutoplayEnabled && current != null && !listenTogetherCoordinator.isInRoom) {
+            analyzeCurrentSongMoodAndPrepareNext(current, appendNextToController = false)
+        }
+    }
+
+    fun setExcludeRecentlyPlayed(exclude: Boolean) {
+        if (_uiState.value.excludeRecentlyPlayed == exclude) return
+        _uiState.update { it.copy(excludeRecentlyPlayed = exclude) }
+        viewModelScope.launch(Dispatchers.IO) {
+            signalsStore.saveExcludeRecentlyPlayed(exclude)
+        }
+        val current = _uiState.value.currentSong
+        if (_uiState.value.isMoodAutoplayEnabled && current != null && !listenTogetherCoordinator.isInRoom) {
+            analyzeCurrentSongMoodAndPrepareNext(current, appendNextToController = false)
+        }
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun analyzeCurrentSongMoodAndPrepareNext(
+        song: Song,
+        appendNextToController: Boolean = true
+    ) {
+        if (!isAllowedUserFacingSong(song)) return
+        val songKey = HomeUserSignalsStore.songIdentityKey(song)
+        synchronized(sessionAutoplayHistoryKeys) {
+            if (sessionAutoplayHistoryKeys.size > 40) {
+                val oldest = sessionAutoplayHistoryKeys.firstOrNull()
+                if (oldest != null) sessionAutoplayHistoryKeys.remove(oldest)
+            }
+            sessionAutoplayHistoryKeys.add(songKey)
+        }
+        val primaryArtist = song.artist.split(",").firstOrNull()?.trim().orEmpty()
+        if (primaryArtist.isNotBlank() && !primaryArtist.equals("Unknown Artist", true)) {
+            synchronized(sessionRecentArtists) {
+                sessionRecentArtists.removeAll { it.equals(primaryArtist, ignoreCase = true) }
+                sessionRecentArtists.add(0, primaryArtist)
+                while (sessionRecentArtists.size > 5) {
+                    sessionRecentArtists.removeAt(sessionRecentArtists.lastIndex)
+                }
+            }
+        }
+
+        val cachedLyrics = lyricsAnalysisCache[songKey]
+        val initialProfile = AiMoodIntelligenceEngine.analyzeSongMood(
+            song = song,
+            lyricsText = cachedLyrics,
+            userMoodProfile = userMoodAffinityProfile
+        )
+        _uiState.update {
+            if (it.currentSong?.id == song.id) it.copy(currentSongMoodProfile = initialProfile) else it
+        }
+
+        moodPrepJob?.cancel()
+        moodPrepJob = viewModelScope.launch {
+            var activeProfile = initialProfile
+            if (cachedLyrics == null && song.isOnline) {
+                val fetchedLyrics = withContext(Dispatchers.IO) {
+                    runCatching { fetchLyrics(song) }.getOrNull()
+                }
+                if (!fetchedLyrics.isNullOrBlank()) {
+                    lyricsAnalysisCache[songKey] = fetchedLyrics
+                    activeProfile = AiMoodIntelligenceEngine.analyzeSongMood(
+                        song = song,
+                        lyricsText = fetchedLyrics,
+                        userMoodProfile = userMoodAffinityProfile
+                    )
+                    _uiState.update {
+                        if (it.currentSong?.id == song.id) it.copy(currentSongMoodProfile = activeProfile) else it
+                    }
+                }
+            }
+
+            if (!_uiState.value.isMoodAutoplayEnabled || listenTogetherCoordinator.isInRoom) {
+                return@launch
+            }
+
+            val recommendation = withContext(Dispatchers.IO) {
+                resolveMoodRecommendationFor(song, activeProfile)
+            } ?: return@launch
+
+            if (!isActive || _uiState.value.currentSong?.id != song.id) return@launch
+
+            var finalRecommendation = recommendation
+            val controller = mediaController
+            val shouldAppendToController = appendNextToController &&
+                !isExplicitCollectionPlayback &&
+                _uiState.value.isMoodAutoplayEnabled &&
+                _uiState.value.repeatMode == RepeatMode.OFF &&
+                controller != null &&
+                !controller.hasNextMediaItem() &&
+                controller.currentMediaItem?.mediaId == song.id.toString()
+
+            if (shouldAppendToController) {
+                val resolvedNextSong = if (recommendation.song.isOnline && recommendation.song.playbackType == PlaybackType.FULL) {
+                    val streamResult = withContext(Dispatchers.IO) {
+                        musicRepository.resolveStreamForQuality(recommendation.song, _uiState.value.selectedStreamingQuality)
+                    }.getOrNull()
+                    if (streamResult != null && streamResult.url.isNotBlank()) {
+                        recommendation.song.copy(contentUriString = streamResult.url)
+                    } else {
+                        recommendation.song
+                    }
+                } else {
+                    recommendation.song
+                }
+
+                if (isActive &&
+                    _uiState.value.currentSong?.id == song.id &&
+                    !controller.hasNextMediaItem() &&
+                    controller.currentMediaItem?.mediaId == song.id.toString() &&
+                    (!resolvedNextSong.isOnline || !resolvedNextSong.contentUriString.isNullOrBlank())
+                ) {
+                    val queuedNext = applyFavoriteFlag(resolvedNextSong)
+                    finalRecommendation = recommendation.copy(song = queuedNext)
+                    controller.addMediaItem(createMediaItem(queuedNext))
+                    _uiState.update { state ->
+                        val updatedQueue = (state.activePlaybackQueue + queuedNext).distinctBy { it.id }
+                        state.copy(
+                            activePlaybackQueue = updatedQueue,
+                            upcomingAutoplaySong = finalRecommendation
+                        )
+                    }
+                    return@launch
+                }
+            }
+
+            _uiState.update {
+                if (it.currentSong?.id == song.id) it.copy(upcomingAutoplaySong = finalRecommendation) else it
+            }
+        }
+    }
+
+    private suspend fun resolveMoodRecommendationFor(
+        song: Song,
+        profile: SongMoodProfile
+    ): MoodNextRecommendation? {
+        val songKey = HomeUserSignalsStore.songIdentityKey(song)
+        val pool = collectMoodCandidatePool(preferOnline = song.isOnline).toMutableList()
+        val targetLang = AiMoodIntelligenceEngine.inferNormalizedSongLanguage(song)
+        val playedKeys = synchronized(sessionAutoplayHistoryKeys) { sessionAutoplayHistoryKeys.toSet() }
+        val recentArtists = synchronized(sessionRecentArtists) { sessionRecentArtists.toList() }
+        val skippedKeys = moodSkippedSignals.map { it.first }.toSet()
+
+        val strongExistingCount = pool.count { cand ->
+            val key = HomeUserSignalsStore.songIdentityKey(cand)
+            if (key == songKey || key in playedKeys || key in skippedKeys) return@count false
+            val candLang = AiMoodIntelligenceEngine.inferNormalizedSongLanguage(cand)
+            val langOk = targetLang == null || candLang == null || targetLang == candLang
+            val candMood = AiMoodIntelligenceEngine.analyzeSongMood(cand).primaryMood
+            langOk && MoodTransitionPolicy.compatibility(profile.primaryMood, candMood) >= 0.65f
+        }
+
+        if (song.isOnline && strongExistingCount < 3) {
+            val cacheKey = "${profile.primaryMood.id}|${targetLang ?: "all"}"
+            val cachedDiscovery = moodCandidateDiscoveryCache[cacheKey].orEmpty()
+            val unusedCached = cachedDiscovery.count {
+                val k = HomeUserSignalsStore.songIdentityKey(it)
+                k != songKey && k !in playedKeys && k !in skippedKeys
+            }
+            if (unusedCached < 3) {
+                val queries = AiMoodIntelligenceEngine.buildNextSongDiscoveryQueries(
+                    profile = profile,
+                    language = song.language,
+                    sessionSeed = homeSessionState.sessionSeed
+                ).take(2)
+                val discovered = coroutineScope {
+                    queries.map { q ->
+                        async { runCatching { musicRepository.searchAll(q, limit = 15) }.getOrDefault(emptyList()) }
+                    }.awaitAll().flatten()
+                }.filter(::isAllowedUserFacingSong)
+                    .distinctBy { HomeUserSignalsStore.songIdentityKey(it) }
+                if (discovered.isNotEmpty()) {
+                    moodCandidateDiscoveryCache[cacheKey] = discovered
+                    pool.addAll(discovered)
+                }
+            } else {
+                pool.addAll(cachedDiscovery)
+            }
+        }
+
+        val freshRecommendation = AiMoodIntelligenceEngine.selectNextMoodTrack(
+            currentSong = song,
+            currentMoodProfile = profile,
+            candidatePool = pool,
+            recentlyPlayed = _uiState.value.recentlyPlayed,
+            favoriteSongs = _uiState.value.favoriteSongs,
+            playStats = persistedPlayStats,
+            skippedKeys = skippedKeys,
+            recentAutoplayKeys = playedKeys,
+            recentArtists = recentArtists,
+            userMoodProfile = userMoodAffinityProfile,
+            sessionSeed = homeSessionState.sessionSeed,
+            recommendationPreference = _uiState.value.recommendationPreference,
+            excludeRecentlyPlayed = _uiState.value.excludeRecentlyPlayed
+        )
+
+        if (freshRecommendation != null) return freshRecommendation
+
+        // Graceful fallback if all session tracks were played
+        return AiMoodIntelligenceEngine.selectNextMoodTrack(
+            currentSong = song,
+            currentMoodProfile = profile,
+            candidatePool = pool,
+            recentlyPlayed = emptyList(),
+            favoriteSongs = _uiState.value.favoriteSongs,
+            playStats = persistedPlayStats,
+            skippedKeys = skippedKeys,
+            recentAutoplayKeys = emptySet(),
+            recentArtists = recentArtists,
+            userMoodProfile = userMoodAffinityProfile,
+            sessionSeed = homeSessionState.sessionSeed,
+            recommendationPreference = _uiState.value.recommendationPreference,
+            excludeRecentlyPlayed = false
+        )
+    }
+
+    private fun collectMoodCandidatePool(preferOnline: Boolean): List<Song> {
+        val state = _uiState.value
+        val onlinePool = buildList {
+            homeSectionsById.values.forEach { sec -> addAll(sec.songs) }
+            addAll(state.onlineTrendingSongs)
+            addAll(state.onlineTeluguSongs)
+            addAll(state.onlineIndianSongs)
+            addAll(state.onlineEnglishSongs)
+            addAll(state.onlineGlobalSongs)
+            addAll(state.favoriteSongs)
+            addAll(state.recentlyPlayed)
+            addAll(state.onlineSearchResults)
+            addAll(state.categorySongs)
+            moodCandidateDiscoveryCache.values.forEach { addAll(it) }
+        }
+        val combined = if (preferOnline) {
+            onlinePool + state.songs
+        } else {
+            state.songs + onlinePool
+        }
+        return combined
+            .filter(::isAllowedUserFacingSong)
+            .distinctBy { HomeUserSignalsStore.songIdentityKey(it) }
+    }
+
+    private fun playNextMoodRecommendedSong() {
+        val current = _uiState.value
+        val currentSong = current.currentSong
+        if (currentSong == null) {
+            _uiState.update { it.copy(isPlaying = false, currentPositionMs = 0L) }
+            return
+        }
+
+        isExplicitCollectionPlayback = false
+        val precomputed = current.upcomingAutoplaySong?.song
+        if (precomputed != null &&
+            HomeUserSignalsStore.songIdentityKey(precomputed) != HomeUserSignalsStore.songIdentityKey(currentSong)
+        ) {
+            playSong(precomputed, explicitQueue = listOf(precomputed), isExplicitCollection = false)
+            return
+        }
+
+        playJob?.cancel()
+        playJob = viewModelScope.launch {
+            val profile = current.currentSongMoodProfile ?: AiMoodIntelligenceEngine.analyzeSongMood(
+                song = currentSong,
+                lyricsText = lyricsAnalysisCache[HomeUserSignalsStore.songIdentityKey(currentSong)],
+                userMoodProfile = userMoodAffinityProfile
+            )
+            val recommendation = withContext(Dispatchers.IO) {
+                resolveMoodRecommendationFor(currentSong, profile)
+            }
+            if (recommendation != null) {
+                playSong(recommendation.song, explicitQueue = listOf(recommendation.song), isExplicitCollection = false)
+            } else {
+                _uiState.update { it.copy(isPlaying = false, currentPositionMs = 0L) }
+            }
+        }
+    }
+
+    private suspend fun refreshUserAffinityProfileFromSignals() {
+        val state = _uiState.value
+        val playlistSongs = state.playlists.take(4).flatMap { pl ->
+            runCatching { playlistRepository.getSongsForPlaylistSync(pl.id) }.getOrDefault(emptyList())
+        }.filter(::isAllowedUserFacingSong)
+
+        val updatedProfile = AiMoodIntelligenceEngine.buildUserAffinityProfile(
+            recentlyPlayed = state.recentlyPlayed,
+            favoriteSongs = state.favoriteSongs,
+            playStats = persistedPlayStats,
+            playlistSongs = playlistSongs,
+            persistedMoodChoices = moodChoiceWeights,
+            skippedSignals = moodSkippedSignals
+        )
+        userMoodAffinityProfile = updatedProfile
+        _uiState.update { it.copy(dominantListeningMood = updatedProfile.dominantMood) }
     }
 
     private fun startProgressTracker() {
@@ -3060,6 +3674,18 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         listenTogetherCoordinator.setControlMode(mode)
     }
 
+    fun setListenTogetherListeningMode(mode: ListenTogetherListeningMode) {
+        listenTogetherCoordinator.setListeningMode(mode)
+    }
+
+    fun assignListenTogetherSpeakerRole(
+        targetParticipantId: String,
+        role: ListenTogetherSpeakerRole,
+        swap: Boolean = false
+    ) {
+        listenTogetherCoordinator.assignSpeakerRole(targetParticipantId, role, swap)
+    }
+
     fun setListenTogetherQuality(quality: StreamingQuality) {
         setStreamingQuality(quality)
     }
@@ -3104,6 +3730,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 return@launch
             }
 
+            val urlChanged = resolved.url != current.contentUriString
             val updatedSong = current.copy(contentUriString = resolved.url)
             val updatedQueue = _uiState.value.activePlaybackQueue.map {
                 if (it.id == current.id) updatedSong else it
@@ -3118,13 +3745,15 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 )
             }
 
+            if (!urlChanged) return@launch
+
             val controller = mediaController ?: return@launch
             val currentIndex = controller.currentMediaItemIndex
             val preservedPositionMs = controller.currentPosition.coerceAtLeast(0L)
             val wasPlaying = controller.isPlaying
 
             if (currentIndex >= 0 && currentIndex < controller.mediaItemCount) {
-                // Replace only the active item in-place to preserve the full queue, crossfade & service
+                // Replace only the active item in-place to preserve the full queue, lyrics, crossfade & service
                 controller.replaceMediaItem(currentIndex, createMediaItem(updatedSong))
                 controller.seekTo(currentIndex, preservedPositionMs)
                 controller.prepare()
@@ -3212,6 +3841,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         playlistSongsJob?.cancel()
         homeSnapshotJob?.cancel()
         playJob?.cancel()
+        moodPrepJob?.cancel()
         AudioSpectrumManager.release()
         if (UsmanPlaybackService.currentAudioSessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) {
             AudioEffectsManager.releaseEffects()

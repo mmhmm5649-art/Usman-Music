@@ -175,6 +175,10 @@ class ListenTogetherSyncAndQualityTest {
         assertNotNull(honestHdFallback.fallbackNotice)
         assertTrue(honestHdFallback.fallbackNotice!!.contains("160 kbps"))
 
+        assertEquals("Data Saver", StreamingQuality.DATA_SAVER.displayName)
+        assertEquals("Low Quality", StreamingQuality.LOW.displayName)
+        assertEquals("High Quality (HD)", StreamingQuality.HD.displayName)
+
         // Downward-only CDN adaptation never invents _320.mp4 from _96.mp4
         val noFakeUpgrade = StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(
             url = "https://aac.saavncdn.com/789/song_96.mp4",
@@ -184,6 +188,15 @@ class ListenTogetherSyncAndQualityTest {
         assertEquals(96, noFakeUpgrade.actualBitrateKbps)
         assertTrue(noFakeUpgrade.isDowngradedFromHd)
         assertNotNull(noFakeUpgrade.fallbackNotice)
+
+        // Unknown-bitrate provider URL must never falsely claim HD
+        val unknownBitrate = StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(
+            url = "https://cdn.example.com/stream/track.m4a",
+            requested = StreamingQuality.HD
+        )
+        assertNull(unknownBitrate.actualBitrateKbps)
+        assertEquals("AAC", unknownBitrate.actualQualityLabel)
+        assertFalse(unknownBitrate.actualQualityLabel.contains("HD"))
     }
 
     @Test

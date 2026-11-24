@@ -271,14 +271,14 @@ class JioSaavnMusicProvider(
             val songId = song.filePath.takeIf { it.isNotBlank() && !it.startsWith("http") }
                 ?: song.id.toString().takeIf { it.isNotBlank() && it != "0" }
 
-            // Fast path: if song already holds a verified CDN URL that matches or exceeds requested quality,
-            // we can adapt downward cleanly without an extra network round-trip.
+            // Fast path: reuse cached CDN URL only when its verified bitrate already matches requested quality.
+            // When switching tiers (upward or downward), query discrete provider variants first for truthful selection.
             val cachedUrl = song.contentUriString
             if (!cachedUrl.isNullOrBlank()) {
                 val detected = StreamingQualitySelector.detectBitrateFromUrl(cachedUrl)
-                if (detected != null && detected >= quality.targetBitrateKbps) {
-                    val adapted = StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(cachedUrl, quality)
-                    return@withContext Result.success(adapted)
+                if (detected != null && detected == quality.targetBitrateKbps) {
+                    val exact = StreamingQualitySelector.adaptVerifiedCdnUrlDownwardOnly(cachedUrl, quality)
+                    return@withContext Result.success(exact)
                 }
             }
 
@@ -859,6 +859,12 @@ class JioSaavnMusicProvider(
             ?: moreInfo?.get("language")?.toString())
             ?.trim()?.lowercase()?.takeIf { it.isNotBlank() && it != "null" }
 
+        val resolvedGenre = (moreInfo?.get("genre")
+            ?: moreInfo?.get("mood")
+            ?: moreInfo?.get("sub_type")
+            ?: moreInfo?.get("music_type"))
+            ?.toString()?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+
         return Song(
             id = songIdLong,
             title = titleName,
@@ -873,6 +879,7 @@ class JioSaavnMusicProvider(
             playbackType = PlaybackType.FULL,
             externalUrl = permaUrl,
             language = resolvedLanguage,
+            genre = resolvedGenre,
             sourceProvider = "JioSaavn",
             attribution = "$artistName • JioSaavn",
             isStreamable = true,
@@ -998,6 +1005,9 @@ class JioSaavnMusicProvider(
         }
 
         val resolvedLanguage = language?.trim()?.lowercase()?.takeIf { it.isNotBlank() && it != "null" }
+        val resolvedGenre = type?.trim()?.takeIf {
+            it.isNotBlank() && it != "null" && !it.equals("song", ignoreCase = true)
+        }
 
         return Song(
             id = songIdLong,
@@ -1013,6 +1023,7 @@ class JioSaavnMusicProvider(
             playbackType = PlaybackType.FULL,
             externalUrl = url,
             language = resolvedLanguage,
+            genre = resolvedGenre,
             sourceProvider = "JioSaavn",
             attribution = "$artistName • JioSaavn",
             isStreamable = true,
@@ -1230,6 +1241,13 @@ class JioSaavnMusicProvider(
         val resolvedLanguage = (item["language"] ?: moreInfo?.get("language"))
             ?.toString()?.trim()?.lowercase()?.takeIf { it.isNotBlank() && it != "null" }
 
+        val resolvedGenre = (item["genre"]
+            ?: item["mood"]
+            ?: moreInfo?.get("genre")
+            ?: moreInfo?.get("mood")
+            ?: moreInfo?.get("sub_type"))
+            ?.toString()?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+
         return Song(
             id = songIdLong,
             title = title,
@@ -1244,6 +1262,7 @@ class JioSaavnMusicProvider(
             playbackType = PlaybackType.FULL,
             externalUrl = externalUrl,
             language = resolvedLanguage,
+            genre = resolvedGenre,
             sourceProvider = "JioSaavn",
             attribution = "$artist • JioSaavn",
             isStreamable = true,

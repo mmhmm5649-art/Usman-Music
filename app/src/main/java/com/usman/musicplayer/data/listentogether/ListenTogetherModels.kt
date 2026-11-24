@@ -15,6 +15,37 @@ enum class ListenTogetherControlMode(val wireValue: String, val label: String, v
     }
 }
 
+enum class ListenTogetherListeningMode(val wireValue: String, val label: String, val description: String) {
+    NORMAL(
+        wireValue = "NORMAL",
+        label = "Normal Listening",
+        description = "Up to 10 devices • Full original stereo audio on every phone"
+    ),
+    STEREO_SPLIT(
+        wireValue = "STEREO_SPLIT",
+        label = "Stereo Split Speaker",
+        description = "2 devices only • Phone A = LEFT channel, Phone B = RIGHT channel"
+    );
+
+    companion object {
+        fun fromWire(value: String?): ListenTogetherListeningMode {
+            return entries.firstOrNull { it.wireValue.equals(value, ignoreCase = true) } ?: NORMAL
+        }
+    }
+}
+
+enum class ListenTogetherSpeakerRole(val wireValue: String, val badgeLabel: String) {
+    STEREO("STEREO", "STEREO"),
+    LEFT("LEFT", "LEFT"),
+    RIGHT("RIGHT", "RIGHT");
+
+    companion object {
+        fun fromWire(value: String?): ListenTogetherSpeakerRole {
+            return entries.firstOrNull { it.wireValue.equals(value, ignoreCase = true) } ?: STEREO
+        }
+    }
+}
+
 enum class ListenTogetherConnectionStatus {
     DISCONNECTED,
     CONNECTING,
@@ -98,7 +129,8 @@ data class ListenTogetherParticipant(
     val isHost: Boolean,
     val connectionState: ParticipantConnectionState,
     val joinedAt: Long,
-    val qualityLabel: String = "HD"
+    val qualityLabel: String = "HD",
+    val speakerRole: ListenTogetherSpeakerRole = ListenTogetherSpeakerRole.STEREO
 )
 
 data class AuthoritativePlaybackState(
@@ -122,6 +154,8 @@ data class ListenTogetherRoomState(
     val expiresAt: Long,
     val hostId: String,
     val controlMode: ListenTogetherControlMode,
+    val listeningMode: ListenTogetherListeningMode = ListenTogetherListeningMode.NORMAL,
+    val maxParticipants: Int = 10,
     val currentIndex: Int,
     val currentTrack: ListenTogetherTrack?,
     val queue: List<ListenTogetherTrack>,
@@ -151,10 +185,15 @@ data class ListenTogetherUiState(
     val isBusy: Boolean = false,
     val errorMessage: String? = null,
     val infoBanner: String? = null,
-    val pendingDeepLinkRoomCode: String? = null
+    val pendingDeepLinkRoomCode: String? = null,
+    val localSpeakerRole: ListenTogetherSpeakerRole = ListenTogetherSpeakerRole.STEREO,
+    val isCurrentTrackMono: Boolean = false,
+    val stereoSplitNotice: String? = null
 ) {
     val isInRoom: Boolean get() = room != null
     val isHost: Boolean get() = room != null && participantId != null && room.hostId == participantId
     val canControlPlayback: Boolean
         get() = room != null && (isHost || room.controlMode == ListenTogetherControlMode.EVERYONE)
+    val isStereoSplitMode: Boolean
+        get() = room?.listeningMode == ListenTogetherListeningMode.STEREO_SPLIT
 }

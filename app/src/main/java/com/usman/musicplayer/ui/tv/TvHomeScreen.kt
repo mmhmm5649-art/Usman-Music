@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
@@ -103,6 +104,9 @@ fun TvHomeScreen(
     onOpenAlbum: (AlbumSearchResult) -> Unit = {},
     onOpenArtist: (OnlineArtistResult) -> Unit = { artist -> onSearchCategory(artist.name) },
     onSavePlaylistToLibrary: (String, List<Song>, (Boolean, String) -> Unit) -> Unit = { _, _, _ -> },
+    onOpenListenTogether: () -> Unit = {},
+    listenTogetherRoomCode: String? = null,
+    onOpenSongOptions: ((Song) -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState()
 ) {
@@ -227,7 +231,14 @@ fun TvHomeScreen(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TvFocusButton(
+                        label = if (!listenTogetherRoomCode.isNullOrBlank()) "Room $listenTogetherRoomCode" else "Listen Together",
+                        icon = Icons.Default.Groups,
+                        isPrimary = !listenTogetherRoomCode.isNullOrBlank(),
+                        onClick = onOpenListenTogether,
+                        testTag = "tv_home_listen_together_button"
+                    )
                     TvFocusButton(
                         label = "Search",
                         icon = Icons.Default.Search,
@@ -318,7 +329,8 @@ fun TvHomeScreen(
                 onPlaySong = onPlayQueue,
                 onOpenAlbum = onOpenAlbum,
                 onOpenArtist = onOpenArtist,
-                onOpenPlaylist = onOpenCuratedPlaylist
+                onOpenPlaylist = onOpenCuratedPlaylist,
+                onOpenSongOptions = onOpenSongOptions
             )
         }
     }
@@ -528,7 +540,8 @@ private fun TvHomeDiscoverySectionRow(
     onPlaySong: (Song, List<Song>) -> Unit,
     onOpenAlbum: (AlbumSearchResult) -> Unit,
     onOpenArtist: (OnlineArtistResult) -> Unit,
-    onOpenPlaylist: (CuratedPlaylist) -> Unit
+    onOpenPlaylist: (CuratedPlaylist) -> Unit,
+    onOpenSongOptions: ((Song) -> Unit)? = null
 ) {
     LaunchedEffect(section.id) {
         if (!section.hasAttemptedLoad && !section.isLoading) {
@@ -599,7 +612,8 @@ private fun TvHomeDiscoverySectionRow(
                     ) { song ->
                         TvSongCard(
                             song = song,
-                            onClick = { onPlaySong(song, section.songs) }
+                            onClick = { onPlaySong(song, section.songs) },
+                            onMoreOptions = onOpenSongOptions?.let { cb -> { cb(song) } }
                         )
                     }
                 }
