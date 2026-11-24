@@ -216,9 +216,14 @@ export class RoomManager {
         this._handleUpdateQuality(ws, msg);
         break;
       case 'set_listening_mode':
+      case 'change_listening_mode':
+      case 'listening_mode':
+      case 'set_mode':
         this._handleSetListeningMode(ws, msg);
         break;
       case 'assign_speaker_role':
+      case 'set_speaker_role':
+      case 'assign_role':
         this._handleAssignSpeakerRole(ws, msg);
         break;
       case 'sync_request':
@@ -664,7 +669,8 @@ export class RoomManager {
       return;
     }
 
-    const nextMode = msg.listeningMode;
+    const rawMode = msg.listeningMode || msg.mode || msg.listening_mode;
+    const nextMode = typeof rawMode === 'string' ? rawMode.toUpperCase().trim() : '';
     if (nextMode !== LISTENING_MODES.NORMAL && nextMode !== LISTENING_MODES.STEREO_SPLIT) {
       this._sendError(ws, 'INVALID_LISTENING_MODE', 'Listening mode must be NORMAL or STEREO_SPLIT');
       return;
@@ -722,7 +728,8 @@ export class RoomManager {
       return;
     }
 
-    const requestedRole = msg.speakerRole;
+    const rawRole = msg.speakerRole || msg.role || msg.channel;
+    const requestedRole = typeof rawRole === 'string' ? rawRole.toUpperCase().trim() : '';
     if (requestedRole !== SPEAKER_ROLES.LEFT && requestedRole !== SPEAKER_ROLES.RIGHT) {
       this._sendError(ws, 'INVALID_SPEAKER_ROLE', 'Speaker role must be LEFT or RIGHT');
       return;
@@ -732,7 +739,9 @@ export class RoomManager {
       ? msg.targetParticipantId.trim()
       : (typeof msg.participantId === 'string' && msg.participantId.trim()
         ? msg.participantId.trim()
-        : participant.participantId);
+        : (typeof msg.targetId === 'string' && msg.targetId.trim()
+          ? msg.targetId.trim()
+          : participant.participantId));
     const target = room.participants.get(rawTargetId);
     if (!target) {
       this._sendError(ws, 'PARTICIPANT_NOT_FOUND', 'Target speaker device is not in this room');
@@ -743,8 +752,10 @@ export class RoomManager {
       (member) => member.participantId !== target.participantId && member.speakerRole === requestedRole
     );
 
+    const isSwap = msg.swap === true || msg.swap === 'true';
+
     if (otherHoldingRole) {
-      if (msg.swap === true) {
+      if (isSwap) {
         const oppositeRole = requestedRole === SPEAKER_ROLES.LEFT
           ? SPEAKER_ROLES.RIGHT
           : SPEAKER_ROLES.LEFT;

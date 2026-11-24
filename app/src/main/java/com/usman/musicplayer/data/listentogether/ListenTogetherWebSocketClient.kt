@@ -482,7 +482,7 @@ class ListenTogetherWebSocketClient(
                 )
             }
 
-            "playback_state", "room_state", "participant_updated" -> {
+            "playback_state", "room_state", "participant_updated", "listening_mode_updated", "speaker_role_updated" -> {
                 val roomObj = json.optObject("room") ?: return
                 _events.tryEmit(
                     ListenTogetherServerEvent.RoomStateUpdated(

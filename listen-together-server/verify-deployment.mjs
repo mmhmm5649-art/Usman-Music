@@ -155,14 +155,14 @@ async function main() {
   console.log('');
 
   // 1. Health Check
-  console.log('[1/6] Checking /health endpoint...');
+  console.log('[1/7] Checking /health endpoint...');
   const health = await fetchHealthWithWakeup(healthUrl);
   assert.equal(health.status, 'ok', 'Expected health.status === "ok"');
   assert.equal(health.service, 'usman-music-listen-together', 'Unexpected service identifier');
   console.log(`  OK — uptime: ${health.uptimeSec}s, activeRooms: ${health.stats?.activeRooms ?? 0}`);
 
   // 2. Open two concurrent WebSocket clients
-  console.log('[2/6] Opening two real WebSocket connections (Host A & Guest B)...');
+  console.log('[2/7] Opening two real WebSocket connections (Host A & Guest B)...');
   const host = new VerifyWsClient(wsUrl);
   const guest = new VerifyWsClient(wsUrl);
   try {
@@ -170,7 +170,7 @@ async function main() {
     console.log('  OK — Both WebSocket connections established.');
 
     // 3. Create Room
-    console.log('[3/6] Creating room as Host A...');
+    console.log('[3/7] Creating room as Host A...');
     host.send({ type: 'create_room', displayName: 'Verify Host', qualityLabel: 'HD' });
     const created = await host.nextMessage((m) => m.type === 'room_joined');
     const roomCode = created.room.roomCode;
@@ -183,7 +183,7 @@ async function main() {
     console.log(`  OK — Created live room ${roomCode} (verified via HTTP status API).`);
 
     // 4. Join Room from Guest B
-    console.log('[4/6] Joining room as Guest B...');
+    console.log('[4/7] Joining room as Guest B...');
     guest.send({ type: 'join_room', roomCode, displayName: 'Verify Guest', qualityLabel: 'Data Saver' });
     const [guestJoined, hostNotified] = await Promise.all([
       guest.nextMessage((m) => m.type === 'room_joined'),
@@ -194,7 +194,7 @@ async function main() {
     console.log('  OK — Guest B joined room and Host A received participant presence update.');
 
     // 5. NTP Clock Sync + RTT measurement
-    console.log('[5/6] Measuring NTP clock sync RTT...');
+    console.log('[5/7] Measuring NTP clock sync RTT...');
     const t0 = Date.now();
     guest.send({ type: 'time_sync_ping', clientSendTimeMs: t0 });
     const pong = await guest.nextMessage((m) => m.type === 'time_sync_pong');
@@ -204,8 +204,8 @@ async function main() {
     assert.ok(typeof pong.serverReceiveTimeMs === 'number' && typeof pong.serverSendTimeMs === 'number');
     console.log(`  OK — Clock sync succeeded (RTT: ${rttMs} ms).`);
 
-    // 6. Synchronized Playback Broadcast + Host End Room cleanup
-    console.log('[6/6] Verifying synchronized playback broadcast and clean end_room teardown...');
+    // 6. Synchronized Playback Broadcast
+    console.log('[6/7] Verifying synchronized playback broadcast...');
     host.send({
       type: 'playback_command',
       commandId: `verify_${Date.now()}`,
@@ -226,7 +226,62 @@ async function main() {
     assert.equal(guestSync.room.currentTrack?.trackId, 'verify_track_001');
     assert.equal(guestSync.room.playback.isPlaying, true);
     assert.ok(guestSync.room.playback.scheduledStartServerTimeMs > 0);
+    console.log('  OK — Synchronized playback broadcast verified.');
 
+    // 7. Stereo Split Speaker Mode Protocol Verification
+    console.log('[7/7] Verifying Stereo Split Speaker Mode (NORMAL -> STEREO_SPLIT -> L/R -> Swap -> NORMAL)...');
+    host.send({ type: 'set_listening_mode', listeningMode: 'STEREO_SPLIT' });
+    const hostSplitMsg = await host.nextMessage((m) =>
+      m.type === 'error' ||
+      ((m.type === 'room_state' || m.type === 'listening_mode_updated') && m.room?.listeningMode === 'STEREO_SPLIT')
+    );
+    if (hostSplitMsg.type === 'error') {
+      throw new Error(`Server rejected set_listening_mode [${hostSplitMsg.code}]: ${hostSplitMsg.message}`);
+    }
+    const guestSplit = await guest.nextMessage((m) =>
+      (m.type === 'room_state' || m.type === 'listening_mode_updated') && m.room?.listeningMode === 'STEREO_SPLIT'
+    );
+    assert.equal(hostSplitMsg.room.maxParticipants, 2);
+    const hostRole = hostSplitMsg.room.participants.find((p) => p.isHost)?.speakerRole;
+    const guestRole = guestSplit.room.participants.find((p) => !p.isHost)?.speakerRole;
+    assert.equal(hostRole, 'LEFT', 'Expected host to receive LEFT speaker channel');
+    assert.equal(guestRole, 'RIGHT', 'Expected guest to receive RIGHT speaker channel');
+    console.log('  OK — Stereo Split enabled: Host = LEFT, Guest = RIGHT (2 devices max).');
+
+    // Atomic role swap via assign_speaker_role
+    host.send({
+      type: 'assign_speaker_role',
+      targetParticipantId: created.participantId,
+      speakerRole: 'RIGHT',
+      swap: true,
+    });
+    const hostSwapMsg = await host.nextMessage((m) =>
+      m.type === 'error' ||
+      ((m.type === 'room_state' || m.type === 'speaker_role_updated') &&
+        m.room?.participants?.find((p) => p.isHost)?.speakerRole === 'RIGHT')
+    );
+    if (hostSwapMsg.type === 'error') {
+      throw new Error(`Server rejected assign_speaker_role [${hostSwapMsg.code}]: ${hostSwapMsg.message}`);
+    }
+    const guestSwap = await guest.nextMessage((m) =>
+      (m.type === 'room_state' || m.type === 'speaker_role_updated') &&
+      m.room?.participants?.find((p) => !p.isHost)?.speakerRole === 'LEFT'
+    );
+    assert.equal(hostSwapMsg.room.participants.find((p) => p.isHost)?.speakerRole, 'RIGHT');
+    assert.equal(guestSwap.room.participants.find((p) => !p.isHost)?.speakerRole, 'LEFT');
+    console.log('  OK — Atomic role swap verified: Host = RIGHT, Guest = LEFT.');
+
+    // Switch back to Normal Listening Mode
+    host.send({ type: 'set_listening_mode', listeningMode: 'NORMAL' });
+    const [hostNormal, guestNormal] = await Promise.all([
+      host.nextMessage((m) => (m.type === 'room_state' || m.type === 'listening_mode_updated') && m.room?.listeningMode === 'NORMAL'),
+      guest.nextMessage((m) => (m.type === 'room_state' || m.type === 'listening_mode_updated') && m.room?.listeningMode === 'NORMAL'),
+    ]);
+    assert.equal(hostNormal.room.maxParticipants, 10);
+    assert.ok(guestNormal.room.participants.every((p) => p.speakerRole === 'STEREO'), 'All devices restored to STEREO');
+    console.log('  OK — Returned to Normal Listening Mode (up to 10 listeners, full STEREO).');
+
+    // Clean room teardown
     host.send({ type: 'end_room' });
     const [hostEnded, guestEnded] = await Promise.all([
       host.nextMessage((m) => m.type === 'room_ended'),
@@ -235,9 +290,9 @@ async function main() {
     assert.equal(hostEnded.reason, 'HOST_ENDED_ROOM');
     assert.equal(guestEnded.reason, 'HOST_ENDED_ROOM');
 
-    console.log('  OK — Synchronized playback broadcast and clean room teardown verified.');
+    console.log('  OK — Clean room teardown verified.');
     console.log('');
-    console.log('ALL DEPLOYMENT CHECKS PASSED.');
+    console.log('ALL DEPLOYMENT CHECKS PASSED (including Stereo Split Mode protocol).');
     console.log(`Configure this exact URL in USMAN MUSIC on both Android phones:\n  ${wsUrl}`);
   } finally {
     host.close();

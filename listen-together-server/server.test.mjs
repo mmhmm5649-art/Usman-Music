@@ -572,4 +572,47 @@ test('Stereo Split mode enforces 2-device cap, LEFT/RIGHT roles, duplicate preve
   }
 });
 
+test('protocol message aliases and field variations (set_mode, change_listening_mode, assign_role) work seamlessly', async () => {
+  const { instance, wsUrl } = await startTestServer();
+  const host = new TestWsClient(wsUrl);
+  const guest = new TestWsClient(wsUrl);
+
+  try {
+    await Promise.all([host.ready, guest.ready]);
+
+    host.send({ type: 'create_room', displayName: 'Host' });
+    const created = await host.nextMessage((m) => m.type === 'room_joined');
+
+    guest.send({ type: 'join_room', roomCode: created.room.roomCode, displayName: 'Guest' });
+    const guestJoined = await guest.nextMessage((m) => m.type === 'room_joined');
+    await host.nextMessage((m) => m.type === 'participant_updated');
+
+    // Test alias: 'change_listening_mode' with field 'mode: "stereo_split"' (lowercase)
+    host.send({ type: 'change_listening_mode', mode: 'stereo_split' });
+    const hostSplit = await host.nextMessage((m) => m.type === 'room_state');
+    assert.equal(hostSplit.room.listeningMode, 'STEREO_SPLIT');
+
+    // Test alias: 'set_speaker_role' with 'targetId' and 'role'
+    host.send({
+      type: 'set_speaker_role',
+      targetId: guestJoined.participantId,
+      role: 'LEFT',
+      swap: true,
+    });
+    const hostSwapped = await host.nextMessage((m) => m.type === 'room_state');
+    const guestMember = hostSwapped.room.participants.find((p) => p.participantId === guestJoined.participantId);
+    assert.equal(guestMember.speakerRole, 'LEFT');
+
+    // Test alias: 'set_mode' with 'listening_mode: "NORMAL"'
+    host.send({ type: 'set_mode', listening_mode: 'NORMAL' });
+    const hostNormal = await host.nextMessage((m) => m.type === 'room_state');
+    assert.equal(hostNormal.room.listeningMode, 'NORMAL');
+  } finally {
+    host.close();
+    guest.close();
+    await instance.close();
+  }
+});
+
+
 

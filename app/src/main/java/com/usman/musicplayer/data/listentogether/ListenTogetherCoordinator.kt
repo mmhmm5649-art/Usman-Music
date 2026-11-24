@@ -677,7 +677,9 @@ class ListenTogetherCoordinator(
                 clockSyncEngine.seedCoarseOffsetIfUnsynced(event.serverTimeMs)
                 _uiState.update { it.copy(room = event.room, isBusy = false) }
                 syncLocalSpeakerChannelRole(event.room, _uiState.value.participantId)
-                if (event.type == "playback_state" || event.type == "room_state") {
+                if (event.type == "playback_state" || event.type == "room_state" ||
+                    event.type == "listening_mode_updated" || event.type == "speaker_role_updated"
+                ) {
                     applyAuthoritativeRoomState(event.room, forceImmediateSeek = event.room.playback.lastAction == "SEEK")
                 }
             }
@@ -733,7 +735,14 @@ class ListenTogetherCoordinator(
             }
 
             is ListenTogetherServerEvent.ServerError -> {
-                _uiState.update { it.copy(isBusy = false, errorMessage = event.message) }
+                val userFriendlyMessage = when {
+                    event.code == "UNKNOWN_MESSAGE_TYPE" && event.message.contains("set_listening_mode") ->
+                        "The connected backend (${_uiState.value.serverUrl}) does not support Stereo Split Mode yet. Please update the server deployment."
+                    event.code == "UNKNOWN_MESSAGE_TYPE" && event.message.contains("assign_speaker_role") ->
+                        "The connected backend (${_uiState.value.serverUrl}) does not support channel role assignment yet. Please update the server deployment."
+                    else -> event.message
+                }
+                _uiState.update { it.copy(isBusy = false, errorMessage = userFriendlyMessage) }
                 if (event.code == "ROOM_EXPIRED" || event.code == "ROOM_NOT_FOUND") {
                     if (isInRoom) {
                         stopSyncLoops()
