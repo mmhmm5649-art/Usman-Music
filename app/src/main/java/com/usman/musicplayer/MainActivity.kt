@@ -103,6 +103,7 @@ import com.usman.musicplayer.util.DeviceUtils
 import com.usman.musicplayer.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.delay
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : ComponentActivity() {
 
     private val musicViewModel: MusicPlayerViewModel by viewModels()
@@ -125,9 +126,26 @@ class MainActivity : ComponentActivity() {
         handleListenTogetherIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        Log.i("USMAN_TV_AUDIO", "MainActivity onStart (isTv=${DeviceUtils.isTvDevice(this)})")
+    }
+
     override fun onResume() {
         super.onResume()
+        Log.i("USMAN_TV_AUDIO", "MainActivity onResume (isTv=${DeviceUtils.isTvDevice(this)})")
         musicViewModel.onAppForegrounded()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.i("USMAN_TV_AUDIO", "MainActivity onPause (isTv=${DeviceUtils.isTvDevice(this)})")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Log.i("USMAN_TV_AUDIO", "MainActivity onStop (isTv=${DeviceUtils.isTvDevice(this)})")
+        musicViewModel.onAppBackgrounded()
     }
 
     private fun handleListenTogetherIntent(intent: Intent?) {
@@ -137,8 +155,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun configureHighRefreshRateDisplayMode() {
+    internal fun configureHighRefreshRateDisplayMode() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        // On Android TV, mutating preferredDisplayModeId on the foreground window can force
+        // HDMI refresh-rate/clock switching only while the app is open, causing foreground audio
+        // crackling/stuttering that disappears immediately upon minimizing.
+        if (DeviceUtils.isTvDevice(this)) {
+            Log.i("USMAN_TV_AUDIO", "Skipping preferredDisplayModeId override on Android TV")
+            return
+        }
         runCatching {
             val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 display ?: windowManager.defaultDisplay
@@ -191,6 +216,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     val context = LocalContext.current
@@ -266,21 +292,26 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
     }
 
     fun requestRequiredPermissions() {
+        val isTvDevice = DeviceUtils.isTvDevice(context)
         val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
         } else {
             permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
-        permissions.add(Manifest.permission.RECORD_AUDIO)
+        // Only phones mount RainbowAudioVisualizer and require RECORD_AUDIO for FFT capture.
+        if (!isTvDevice) {
+            permissions.add(Manifest.permission.RECORD_AUDIO)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        
+
         multiplePermissionsLauncher.launch(permissions.toTypedArray())
     }
 
     LaunchedEffect(Unit) {
+        val isTvDevice = DeviceUtils.isTvDevice(context)
         val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Manifest.permission.READ_MEDIA_AUDIO
         } else {
@@ -288,15 +319,19 @@ fun UsmanMusicApp(viewModel: MusicPlayerViewModel) {
         }
 
         val hasStorage = ContextCompat.checkSelfPermission(context, storagePermission) == PackageManager.PERMISSION_GRANTED
-        val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val hasAudio = isTvDevice ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val hasNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         } else true
 
         viewModel.onPermissionResult(hasStorage)
-        
+
         if (!hasStorage || !hasAudio || !hasNotification) {
-            val permissions = mutableListOf(storagePermission, Manifest.permission.RECORD_AUDIO)
+            val permissions = mutableListOf(storagePermission)
+            if (!isTvDevice) {
+                permissions.add(Manifest.permission.RECORD_AUDIO)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
             }

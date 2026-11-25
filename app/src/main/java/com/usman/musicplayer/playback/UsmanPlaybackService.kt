@@ -11,9 +11,14 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioTrackBufferSizeProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.usman.musicplayer.MainActivity
+import com.usman.musicplayer.util.DeviceUtils
 
 @UnstableApi
 class UsmanPlaybackService : MediaSessionService() {
@@ -92,6 +97,7 @@ class UsmanPlaybackService : MediaSessionService() {
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, resolvingDataSourceFactory)
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
+        val isTv = DeviceUtils.isTvDevice(this)
         AudioEffectsManager.init(this)
 
         val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
@@ -99,9 +105,11 @@ class UsmanPlaybackService : MediaSessionService() {
                 context: android.content.Context,
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
-            ): androidx.media3.exoplayer.audio.AudioSink {
-                return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                    .setEnableFloatOutput(enableFloatOutput)
+            ): AudioSink {
+                val sinkBuilder = DefaultAudioSink.Builder(context)
+                    // Android TV HDMI HALs can glitch or crackle when software float PCM is resampled
+                    // alongside foreground UI frames; keep clean PCM16 output on TV while preserving phone behavior.
+                    .setEnableFloatOutput(if (isTv) false else enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                     .setAudioProcessors(
                         arrayOf(
@@ -109,7 +117,19 @@ class UsmanPlaybackService : MediaSessionService() {
                             AudioEffectsManager.getAudioProcessor()
                         )
                     )
-                    .build()
+
+                if (isTv) {
+                    // Provide generous AudioTrack PCM buffer headroom on Android TV so foreground
+                    // Compose frames never starve AudioFlinger / cause AudioTrack underruns.
+                    val tvBufferProvider = DefaultAudioTrackBufferSizeProvider.Builder()
+                        .setMinPcmBufferDurationUs(500_000)
+                        .setMaxPcmBufferDurationUs(1_000_000)
+                        .setPcmBufferMultiplicationFactor(4)
+                        .build()
+                    sinkBuilder.setAudioTrackBufferSizeProvider(tvBufferProvider)
+                }
+
+                return sinkBuilder.build()
             }
         }.setEnableDecoderFallback(true)
 
@@ -128,7 +148,7 @@ class UsmanPlaybackService : MediaSessionService() {
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .setUsage(C.USAGE_MEDIA)
                     .build(),
-                true 
+                true
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -136,9 +156,61 @@ class UsmanPlaybackService : MediaSessionService() {
 
         exoPlayer = player
         currentAudioSessionId = player.audioSessionId
+        Log.i(
+            "USMAN_TV_AUDIO",
+            "Service created: isTv=$isTv, initialAudioSessionId=$currentAudioSessionId"
+        )
         if (currentAudioSessionId > 0) {
             AudioEffectsManager.attachAudioSession(this, currentAudioSessionId)
         }
+
+        player.addAnalyticsListener(object : AnalyticsListener {
+            override fun onAudioSessionIdChanged(
+                eventTime: AnalyticsListener.EventTime,
+                audioSessionId: Int
+            ) {
+                Log.i("USMAN_TV_AUDIO", "onAudioSessionIdChanged: sessionId=$audioSessionId")
+            }
+
+            override fun onAudioTrackInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                audioTrackConfig: AudioSink.AudioTrackConfig
+            ) {
+                Log.i(
+                    "USMAN_TV_AUDIO",
+                    "AudioTrack initialized: encoding=${audioTrackConfig.encoding}, sampleRate=${audioTrackConfig.sampleRate}, channelConfig=${audioTrackConfig.channelConfig}, bufferSize=${audioTrackConfig.bufferSize}, offload=${audioTrackConfig.offload}"
+                )
+            }
+
+            override fun onAudioTrackReleased(
+                eventTime: AnalyticsListener.EventTime,
+                audioTrackConfig: AudioSink.AudioTrackConfig
+            ) {
+                Log.i(
+                    "USMAN_TV_AUDIO",
+                    "AudioTrack released: sampleRate=${audioTrackConfig.sampleRate}, bufferSize=${audioTrackConfig.bufferSize}"
+                )
+            }
+
+            override fun onAudioUnderrun(
+                eventTime: AnalyticsListener.EventTime,
+                bufferSize: Int,
+                bufferSizeMs: Long,
+                elapsedSinceLastFeedMs: Long
+            ) {
+                Log.w(
+                    "USMAN_TV_AUDIO",
+                    "AUDIO UNDERRUN detected! bufferSize=$bufferSize, bufferSizeMs=$bufferSizeMs, elapsedSinceLastFeedMs=$elapsedSinceLastFeedMs"
+                )
+            }
+
+            override fun onAudioSinkError(
+                eventTime: AnalyticsListener.EventTime,
+                audioSinkError: Exception
+            ) {
+                Log.e("USMAN_TV_AUDIO", "AudioSink error: ${audioSinkError.message}", audioSinkError)
+            }
+        })
 
         player.addListener(object : Player.Listener {
             private var lastFailedUri: Uri? = null
@@ -270,17 +342,17 @@ class UsmanPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        Log.i("USMAN_TV_AUDIO", "UsmanPlaybackService onDestroy (sessionId=$currentAudioSessionId)")
+        val sessionPlayer = mediaSession?.player
+        mediaSession?.release()
+        mediaSession = null
+        (sessionPlayer ?: exoPlayer)?.release()
+        exoPlayer = null
+
         currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         StereoSplitAudioController.resetToNormalStereo()
         AudioEffectsManager.releaseEffects()
         AudioSpectrumManager.release()
-        mediaSession?.run {
-            player.release()
-            release()
-            mediaSession = null
-        }
-        exoPlayer?.release()
-        exoPlayer = null
         super.onDestroy()
     }
 }

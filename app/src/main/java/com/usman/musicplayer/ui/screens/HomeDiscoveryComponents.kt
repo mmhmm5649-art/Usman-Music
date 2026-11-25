@@ -162,7 +162,7 @@ fun SpotifyStyleHomeHeader(
 @Composable
 internal fun rememberCurrentLocalHour(): Int {
     return remember {
-        java.time.LocalTime.now().hour
+        java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
     }
 }
 

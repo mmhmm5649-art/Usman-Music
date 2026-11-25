@@ -3,22 +3,27 @@ package com.usman.musicplayer.playback
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.audiofx.Visualizer
+import android.util.Log
 import androidx.core.content.ContextCompat
+import com.usman.musicplayer.util.DeviceUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlin.math.hypot
 
 object AudioSpectrumManager {
 
+    private const val TAG = "AudioSpectrumManager"
+
+    private val lock = Any()
     private var visualizer: Visualizer? = null
     private var activeSessionId: Int = -1
     private var visualizerFailed: Boolean = false
+    private var loggedTvSkip: Boolean = false
 
     // 64 frequency bins covering sub-bass, bass, low-mids, high-mids, presence, and brilliance
     const val SPECTRUM_BINS = 64
     private val smoothedFrequencies = FloatArray(SPECTRUM_BINS)
-    
+
     // Reuse buffers to minimize GC churn in high-frequency FFT processing
     private var magnitudesBuffer = FloatArray(0)
     private var currentFrameBuffer = FloatArray(SPECTRUM_BINS)
@@ -26,9 +31,20 @@ object AudioSpectrumManager {
     private val _spectrumFlow = MutableStateFlow(FloatArray(SPECTRUM_BINS))
     val spectrumFlow: StateFlow<FloatArray> = _spectrumFlow.asStateFlow()
 
-    // Flag to stop processing when visualizer is not on screen (conserves CPU/Battery)
     @Volatile
-    var isProcessingEnabled: Boolean = true
+    private var isAppForegrounded: Boolean = true
+
+    // Default false so native AudioFlinger FFT capture is only enabled when RainbowAudioVisualizer
+    // is actually mounted and playing on a phone screen.
+    @Volatile
+    private var _isProcessingEnabled: Boolean = false
+
+    var isProcessingEnabled: Boolean
+        get() = _isProcessingEnabled
+        set(value) {
+            _isProcessingEnabled = value
+            syncVisualizerEnabledLocked()
+        }
 
     // Throttling: only update flow if enough time has passed (targeting ~40fps update)
     private var lastUpdateTime = 0L
@@ -37,13 +53,53 @@ object AudioSpectrumManager {
     // Dynamic peak tracker for Auto-Gain Control (AGC) across varying master volumes
     private var dynamicPeak = 55.0f
 
+    fun setAppForegrounded(foregrounded: Boolean) {
+        isAppForegrounded = foregrounded
+        syncVisualizerEnabledLocked()
+    }
+
+    internal fun isVisualizerAttachedForDiagnostics(): Boolean = synchronized(lock) { visualizer != null }
+
+    internal fun getActiveSessionIdForDiagnostics(): Int = synchronized(lock) { activeSessionId }
+
+    private fun syncVisualizerEnabledLocked() {
+        synchronized(lock) {
+            val vis = visualizer ?: return
+            val shouldEnable = _isProcessingEnabled && isAppForegrounded
+            runCatching {
+                if (vis.enabled != shouldEnable) {
+                    vis.enabled = shouldEnable
+                    Log.d(TAG, "Visualizer enabled=$shouldEnable (sessionId=$activeSessionId)")
+                }
+            }.onFailure { err ->
+                Log.w(TAG, "Failed toggling Visualizer enabled=$shouldEnable: ${err.message}")
+            }
+        }
+    }
+
     fun attachAudioSession(context: Context, audioSessionId: Int) {
+        // Android TV hides RainbowAudioVisualizer; attaching a native AudioFlinger Visualizer on
+        // TV HDMI/HAL audio sessions forces software capture/resampling and causes foreground crackling.
+        if (DeviceUtils.isTvDevice(context)) {
+            if (!loggedTvSkip) {
+                loggedTvSkip = true
+                Log.i(TAG, "Skipping native Visualizer attachment on Android TV (sessionId=$audioSessionId)")
+            }
+            if (isVisualizerAttachedForDiagnostics()) {
+                release()
+            }
+            return
+        }
+
         // If Visualizer previously failed due to hardware/emulator limitation,
         // do not repeatedly call native AudioFlinger / set() to avoid log spam
         if (visualizerFailed) return
 
         // Audio session must be a valid positive ID
-        if (audioSessionId <= 0 || audioSessionId == activeSessionId) return
+        if (audioSessionId <= 0) return
+        synchronized(lock) {
+            if (audioSessionId == activeSessionId && visualizer != null) return
+        }
 
         // Check if RECORD_AUDIO is granted before creating native visualizer
         val hasPermission = ContextCompat.checkSelfPermission(
@@ -56,53 +112,55 @@ object AudioSpectrumManager {
         }
 
         release()
-        activeSessionId = audioSessionId
+        synchronized(lock) {
+            activeSessionId = audioSessionId
+            try {
+                val vis = Visualizer(audioSessionId).apply {
+                    val range = Visualizer.getCaptureSizeRange()
+                    if (range != null && range.size >= 2) {
+                        captureSize = range[1] // Maximum resolution (typically 1024 bytes -> 512 frequency bins)
+                    }
 
-        try {
-            val vis = Visualizer(audioSessionId).apply {
-                val range = Visualizer.getCaptureSizeRange()
-                if (range != null && range.size >= 2) {
-                    captureSize = range[1] // Maximum resolution (typically 1024 bytes -> 512 frequency bins)
-                }
-                
-                // Initialize magnitudes buffer once based on capture size
-                magnitudesBuffer = FloatArray(captureSize / 2)
+                    // Initialize magnitudes buffer once based on capture size
+                    magnitudesBuffer = FloatArray(captureSize / 2)
 
-                setDataCaptureListener(
-                    object : Visualizer.OnDataCaptureListener {
-                        override fun onWaveFormDataCapture(
-                            visualizer: Visualizer?,
-                            waveform: ByteArray?,
-                            samplingRate: Int
-                        ) {}
+                    setDataCaptureListener(
+                        object : Visualizer.OnDataCaptureListener {
+                            override fun onWaveFormDataCapture(
+                                visualizer: Visualizer?,
+                                waveform: ByteArray?,
+                                samplingRate: Int
+                            ) {}
 
-                        override fun onFftDataCapture(
-                            visualizer: Visualizer?,
-                            fft: ByteArray?,
-                            samplingRate: Int
-                        ) {
-                            if (fft != null && isProcessingEnabled) {
-                                processFftData(fft)
+                            override fun onFftDataCapture(
+                                visualizer: Visualizer?,
+                                fft: ByteArray?,
+                                samplingRate: Int
+                            ) {
+                                if (fft != null && _isProcessingEnabled && isAppForegrounded) {
+                                    processFftData(fft)
+                                }
                             }
-                        }
-                    },
-                    Visualizer.getMaxCaptureRate(), // Maximum capture rate for fluid response
-                    false,
-                    true
-                )
-                enabled = true
+                        },
+                        Visualizer.getMaxCaptureRate(), // Maximum capture rate for fluid response
+                        false,
+                        true
+                    )
+                    enabled = _isProcessingEnabled && isAppForegrounded
+                }
+                visualizer = vis
+                Log.i(TAG, "Attached Visualizer to sessionId=$audioSessionId (enabled=${vis.enabled})")
+            } catch (e: Exception) {
+                Log.w(TAG, "Visualizer attach failed for sessionId=$audioSessionId: ${e.message}")
+                visualizerFailed = true
+                activeSessionId = -1
+                visualizer = null
+            } catch (e: Error) {
+                Log.w(TAG, "Visualizer attach error for sessionId=$audioSessionId: ${e.message}")
+                visualizerFailed = true
+                activeSessionId = -1
+                visualizer = null
             }
-            visualizer = vis
-        } catch (e: Exception) {
-            e.printStackTrace()
-            visualizerFailed = true
-            activeSessionId = -1
-            visualizer = null
-        } catch (e: Error) {
-            e.printStackTrace()
-            visualizerFailed = true
-            activeSessionId = -1
-            visualizer = null
         }
     }
 
@@ -210,14 +268,21 @@ object AudioSpectrumManager {
     }
 
     fun release() {
-        try {
-            visualizer?.enabled = false
-            visualizer?.release()
-        } catch (e: Throwable) {
-            // Ignore
+        synchronized(lock) {
+            val prevSession = activeSessionId
+            val hadVisualizer = visualizer != null
+            try {
+                visualizer?.enabled = false
+                visualizer?.release()
+            } catch (e: Throwable) {
+                // Ignore
+            }
+            visualizer = null
+            activeSessionId = -1
+            if (hadVisualizer) {
+                Log.i(TAG, "Released Visualizer for sessionId=$prevSession")
+            }
         }
-        visualizer = null
-        activeSessionId = -1
         clearSpectrum()
     }
 }

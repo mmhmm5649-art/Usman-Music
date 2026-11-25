@@ -30,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
  * latency-aware playback scheduling, drift correction, independent per-device
  * streaming quality resolution, and Media3 playback bridge integration.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class ListenTogetherCoordinator(
     context: Context,
     private val scope: CoroutineScope,

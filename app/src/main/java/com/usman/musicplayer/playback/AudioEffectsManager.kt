@@ -72,31 +72,40 @@ object AudioEffectsManager {
     fun getAudioProcessor(): StudioFeelAudioProcessor = audioProcessor
 
     fun init(context: Context) {
+        var didInitialize = false
         synchronized(sessionLock) {
             if (prefs == null) {
                 prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 loadSavedStateLocked()
+                didInitialize = true
             }
         }
-        audioProcessor.updateState(_effectsState.value)
+        if (didInitialize) {
+            audioProcessor.updateState(_effectsState.value)
+            Log.i(TAG, "Initialized Studio Feel audio engine (masterEnabled=${_effectsState.value.masterEnabled}, preset=${_effectsState.value.currentPresetName})")
+        }
     }
 
     /**
      * Attaches cleanly to an active Media3 ExoPlayer audio session ID without artificial delays.
-     * Deduplicates repeated attachments for the same session ID.
+     * Strictly idempotent: repeated calls for the same session ID do not bump DSP config or flush.
      */
     fun attachAudioSession(context: Context, audioSessionId: Int) {
         init(context)
         if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId <= 0) return
 
+        val previousSessionId: Int
         synchronized(sessionLock) {
             if (currentAudioSessionId == audioSessionId) {
                 return
             }
+            previousSessionId = currentAudioSessionId
             currentAudioSessionId = audioSessionId
         }
 
-        // Push active state immediately to the live DSP processor
+        Log.i(TAG, "Attached audio session $audioSessionId (previous=$previousSessionId, identityBypass=${audioProcessor.isIdentityBypassForDiagnostics()})")
+
+        // Push active state immediately to the live DSP processor for the new session
         audioProcessor.updateState(_effectsState.value)
 
         // Probe hardware AudioEffect capabilities off the main thread without blocking
@@ -144,9 +153,12 @@ object AudioEffectsManager {
     }
 
     fun releaseEffects() {
+        val releasedSessionId: Int
         synchronized(sessionLock) {
+            releasedSessionId = currentAudioSessionId
             currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         }
+        Log.i(TAG, "Releasing audio effects for sessionId=$releasedSessionId")
         audioProcessor.flush()
         _effectsState.update { state ->
             state.copy(

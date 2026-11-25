@@ -35,6 +35,10 @@ class StudioFeelAudioProcessor(
 
     fun getLastPeakReductionDb(): Float = pipeline?.lastPeakReductionDb ?: 0f
 
+    internal fun getTargetVersionForDiagnostics(): Long = targetVersion.get()
+
+    internal fun isIdentityBypassForDiagnostics(): Boolean = pipeline?.isIdentityBypass ?: true
+
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         val enc = inputAudioFormat.encoding
         val ch = inputAudioFormat.channelCount
@@ -74,7 +78,7 @@ class StudioFeelAudioProcessor(
 
         val outBuffer = replaceOutputBuffer(remaining)
 
-        if (currentPipeline == null || !currentState.masterEnabled) {
+        if (currentPipeline == null || !currentState.masterEnabled || currentPipeline.isIdentityBypass) {
             outBuffer.put(inputBuffer)
             outBuffer.flip()
             return
@@ -96,17 +100,17 @@ class StudioFeelAudioProcessor(
                 for (i in 0 until frameCount) {
                     val inL = inputBuffer.getShort().toDouble() * scaleIn
                     val inR = inputBuffer.getShort().toDouble() * scaleIn
-                    val out = currentPipeline.processStereoSample(inL, inR)
-                    val sL = (out.first * scaleOut).toInt().coerceIn(-32768, 32767).toShort()
-                    val sR = (out.second * scaleOut).toInt().coerceIn(-32768, 32767).toShort()
+                    currentPipeline.processStereoFrame(inL, inR)
+                    val sL = (currentPipeline.outL * scaleOut).toInt().coerceIn(-32768, 32767).toShort()
+                    val sR = (currentPipeline.outR * scaleOut).toInt().coerceIn(-32768, 32767).toShort()
                     outBuffer.putShort(sL)
                     outBuffer.putShort(sR)
                 }
             } else {
                 for (i in 0 until frameCount) {
                     val inM = inputBuffer.getShort().toDouble() * scaleIn
-                    val out = currentPipeline.processStereoSample(inM, inM)
-                    val mono = ((out.first + out.second) * 0.5 * scaleOut)
+                    currentPipeline.processStereoFrame(inM, inM)
+                    val mono = ((currentPipeline.outL + currentPipeline.outR) * 0.5 * scaleOut)
                         .toInt()
                         .coerceIn(-32768, 32767)
                         .toShort()
@@ -124,15 +128,15 @@ class StudioFeelAudioProcessor(
                 for (i in 0 until frameCount) {
                     val inL = inputBuffer.getFloat().toDouble()
                     val inR = inputBuffer.getFloat().toDouble()
-                    val out = currentPipeline.processStereoSample(inL, inR)
-                    outBuffer.putFloat(out.first.toFloat())
-                    outBuffer.putFloat(out.second.toFloat())
+                    currentPipeline.processStereoFrame(inL, inR)
+                    outBuffer.putFloat(currentPipeline.outL.toFloat())
+                    outBuffer.putFloat(currentPipeline.outR.toFloat())
                 }
             } else {
                 for (i in 0 until frameCount) {
                     val inM = inputBuffer.getFloat().toDouble()
-                    val out = currentPipeline.processStereoSample(inM, inM)
-                    outBuffer.putFloat(((out.first + out.second) * 0.5).toFloat())
+                    currentPipeline.processStereoFrame(inM, inM)
+                    outBuffer.putFloat(((currentPipeline.outL + currentPipeline.outR) * 0.5).toFloat())
                 }
             }
             while (inputBuffer.hasRemaining()) {

@@ -35,6 +35,9 @@ class StereoBiquadFilter {
     private var ry1 = 0.0
     private var ry2 = 0.0
 
+    var isBypass: Boolean = true
+        private set
+
     fun reset() {
         lx1 = 0.0; lx2 = 0.0; ly1 = 0.0; ly2 = 0.0
         rx1 = 0.0; rx2 = 0.0; ry1 = 0.0; ry2 = 0.0
@@ -42,6 +45,7 @@ class StereoBiquadFilter {
 
     fun setBypass() {
         b0 = 1.0; b1 = 0.0; b2 = 0.0; a1 = 0.0; a2 = 0.0
+        isBypass = true
     }
 
     fun configurePeaking(sampleRate: Double, freqHz: Double, q: Double, gainDb: Double) {
@@ -150,6 +154,7 @@ class StereoBiquadFilter {
         b2 = rb2 * invA0
         a1 = ra1 * invA0
         a2 = ra2 * invA0
+        isBypass = false
     }
 
     fun processLeft(x: Double): Double {
@@ -264,6 +269,8 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
     private var preDelaySamples = (sampleRate * 0.018).toInt().coerceIn(8, preDelayMax - 1)
     private val erTapsL = IntArray(4)
     private val erTapsR = IntArray(4)
+    private val erBaseMs = doubleArrayOf(9.0, 17.0, 26.0, 38.0)
+    private val tapWeights = floatArrayOf(0.42f, 0.28f, 0.18f, 0.12f)
     private val combFeedbacks = FloatArray(4)
     private var damp1 = 0.35f
     private var damp2 = 0.65f
@@ -272,6 +279,11 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
     private var wetMix = 0.25f
     private var dryMix = 0.95f
     private var widthCoeff = 0.8f
+
+    var outL: Double = 0.0
+        private set
+    var outR: Double = 0.0
+        private set
 
     fun reset() {
         preDelayL.fill(0f)
@@ -308,7 +320,6 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
         preDelaySamples = (sampleRate * (0.006 + depthNorm * 0.042)).toInt().coerceIn(8, preDelayMax - 1)
 
         // Early Reflections tap positions scaled by Hall Size
-        val erBaseMs = doubleArrayOf(9.0, 17.0, 26.0, 38.0)
         for (i in 0 until 4) {
             val lSamp = (sampleRate * (erBaseMs[i] * sizeFactor / 1000.0)).toInt().coerceIn(8, erMax - 1)
             val rSamp = (sampleRate * ((erBaseMs[i] + 3.2) * sizeFactor / 1000.0)).toInt().coerceIn(8, erMax - 1)
@@ -336,7 +347,10 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
         widthCoeff = (state.stereoWidth.coerceIn(0, 100) / 100f)
     }
 
-    fun processStereo(dryL: Double, dryR: Double): Pair<Double, Double> {
+    /**
+     * Zero-allocation stereo reverb frame processor writing results into [outL] and [outR].
+     */
+    fun processStereoFrame(dryL: Double, dryR: Double) {
         // High-pass input to reverb tank so bass & sub never turn boomy in hall
         val tankInL = inputHpf.processLeft(dryL).toFloat()
         val tankInR = inputHpf.processRight(dryR).toFloat()
@@ -347,12 +361,12 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
 
         var earlyL = 0f
         var earlyR = 0f
-        val tapWeights = floatArrayOf(0.42f, 0.28f, 0.18f, 0.12f)
         for (i in 0 until 4) {
             val idxL = (erIdx - erTapsL[i] + erMax) % erMax
             val idxR = (erIdx - erTapsR[i] + erMax) % erMax
-            earlyL += erBufL[idxL] * tapWeights[i]
-            earlyR += erBufR[idxR] * tapWeights[i]
+            val weight = tapWeights[i]
+            earlyL += erBufL[idxL] * weight
+            earlyR += erBufR[idxR] * weight
         }
         erIdx++
         if (erIdx >= erMax) erIdx = 0
@@ -392,8 +406,12 @@ class ConcertHallReverbDsp(private val sampleRate: Int) {
         val wetL = wetMid + wetSide
         val wetR = wetMid - wetSide
 
-        val outL = dryL * dryMix + wetL * wetMix
-        val outR = dryR * dryMix + wetR * wetMix
+        outL = dryL * dryMix + wetL * wetMix
+        outR = dryR * dryMix + wetR * wetMix
+    }
+
+    fun processStereo(dryL: Double, dryR: Double): Pair<Double, Double> {
+        processStereoFrame(dryL, dryR)
         return Pair(outL, outR)
     }
 }
@@ -477,8 +495,20 @@ class StudioDspPipeline(val sampleRate: Int) {
     private var spatialDelaySamples = 12
 
     private var concertHallEnabled = false
+    private var loudnessActive = false
+    private var eqHasActiveBand = false
     private var limiterEnabled = true
     private var limiterCeilingLinear = 0.944 // -0.5 dBFS
+
+    // True when current DSP configuration is unity/neutral (allows zero-CPU bit-identical passthrough)
+    var isIdentityBypass: Boolean = true
+        private set
+
+    // Zero-allocation primitive stereo outputs populated by processStereoFrame()
+    var outL: Double = 0.0
+        private set
+    var outR: Double = 0.0
+        private set
 
     fun resetState() {
         eqBands.forEach { it.reset() }
@@ -522,6 +552,7 @@ class StudioDspPipeline(val sampleRate: Int) {
 
         // 1. 10-Band EQ weighted by EQ Strength (0..150%)
         val strengthScale = (state.eqStrengthPercent.coerceIn(0, 150) / 100.0)
+        var anyEqActive = false
         for (i in 0 until 10) {
             val band = state.bands.getOrNull(i)
             val freq = band?.centerFreqHz?.toDouble() ?: StudioEffectDefaults.BAND_FREQUENCIES_HZ[i].toDouble()
@@ -531,7 +562,11 @@ class StudioDspPipeline(val sampleRate: Int) {
                 9 -> eqBands[i].configureHighShelf(sr, freq, 0.9, gainDb)
                 else -> eqBands[i].configurePeaking(sr, freq, 1.41, gainDb)
             }
+            if (!eqBands[i].isBypass) {
+                anyEqActive = true
+            }
         }
+        eqHasActiveBand = anyEqActive
 
         // 2. Deep Punchy Bass Engine + BassBoost compatibility knob
         val be = state.bassEngine
@@ -599,7 +634,8 @@ class StudioDspPipeline(val sampleRate: Int) {
         }
 
         // 4. Loudness Control (ISO Fletcher-Munson contour)
-        if (state.utilities.loudnessEnabled && state.utilities.loudnessGain > 0) {
+        loudnessActive = state.utilities.loudnessEnabled && state.utilities.loudnessGain > 0
+        if (loudnessActive) {
             val lNorm = state.utilities.loudnessGain.coerceIn(0, 100) / 100.0
             loudnessLowShelf.configureLowShelf(sr, 75.0, 0.75, lNorm * 4.5)
             loudnessHighShelf.configureHighShelf(sr, 10500.0, 0.75, lNorm * 3.0)
@@ -652,27 +688,56 @@ class StudioDspPipeline(val sampleRate: Int) {
         limiterEnabled = state.utilities.limiterEnabled
         val ceilingDb = state.utilities.limiterThresholdDb.coerceIn(-6.0f, -0.1f).toDouble()
         limiterCeilingLinear = dbToLinear(ceilingDb)
+
+        val wasIdentityBypass = isIdentityBypass
+        val neutralGain = abs(preampLinear - 1.0) < 1e-4 &&
+            abs(outputGainLinear - 1.0) < 1e-4 &&
+            abs(leftBalanceGain - 1.0) < 1e-4 &&
+            abs(rightBalanceGain - 1.0) < 1e-4
+        val customTightLimiter = limiterEnabled && ceilingDb < -0.55
+        isIdentityBypass = !masterEnabled || (
+            !eqHasActiveBand &&
+                !bassEngineEnabled &&
+                !crystalEnabled &&
+                !loudnessActive &&
+                !surroundEnabled &&
+                !concertHallEnabled &&
+                neutralGain &&
+                !customTightLimiter
+            )
+        if (isIdentityBypass) {
+            if (!wasIdentityBypass) {
+                resetState()
+            } else {
+                lastPeakReductionDb = 0f
+            }
+        }
     }
 
     /**
-     * Process a single stereo sample pair [inL, inR] -> (outL, outR).
-     * Zero allocations; suitable for real-time ExoPlayer audio thread.
+     * Process a single stereo sample pair [inL, inR] -> ([outL], [outR]).
+     * Strictly zero heap allocations; safe for ExoPlayer's real-time audio thread on Android TV & phone.
      */
-    fun processStereoSample(inL: Double, inR: Double): Pair<Double, Double> {
-        if (!masterEnabled) {
+    fun processStereoFrame(inL: Double, inR: Double) {
+        if (!masterEnabled || isIdentityBypass) {
             lastPeakReductionDb = 0f
-            return Pair(inL, inR)
+            outL = inL
+            outR = inR
+            return
         }
 
         // Preamp
         var l = inL * preampLinear
         var r = inR * preampLinear
 
-        // 1. 10-Band EQ
-        if (eqEnabled) {
+        // 1. 10-Band EQ (skip bypassed flat bands)
+        if (eqHasActiveBand) {
             for (i in 0 until 10) {
-                l = eqBands[i].processLeft(l)
-                r = eqBands[i].processRight(r)
+                val band = eqBands[i]
+                if (!band.isBypass) {
+                    l = band.processLeft(l)
+                    r = band.processRight(r)
+                }
             }
         }
 
@@ -741,8 +806,10 @@ class StudioDspPipeline(val sampleRate: Int) {
         }
 
         // 4. Loudness Control
-        l = loudnessHighShelf.processLeft(loudnessLowShelf.processLeft(l))
-        r = loudnessHighShelf.processRight(loudnessLowShelf.processRight(r))
+        if (loudnessActive) {
+            l = loudnessHighShelf.processLeft(loudnessLowShelf.processLeft(l))
+            r = loudnessHighShelf.processRight(loudnessLowShelf.processRight(r))
+        }
 
         // 5. Mono-Compatible 3D Surround & Spatial Expansion
         // Math: M = (L + R)/2, S = (L - R)/2 -> processed outL = M + S', outR = M - S'.
@@ -769,9 +836,9 @@ class StudioDspPipeline(val sampleRate: Int) {
 
         // 6. Pure Concert Hall Stereo Reverb
         if (concertHallEnabled) {
-            val hallOut = concertHall.processStereo(l, r)
-            l = hallOut.first
-            r = hallOut.second
+            concertHall.processStereoFrame(l, r)
+            l = concertHall.outL
+            r = concertHall.outR
         }
 
         // 7. Output Gain & Balance L/R
@@ -807,7 +874,17 @@ class StudioDspPipeline(val sampleRate: Int) {
             r = r.coerceIn(-1.0, 1.0)
         }
 
-        return Pair(l, r)
+        outL = l
+        outR = r
+    }
+
+    /**
+     * Convenience wrapper returning a Pair for tests and offline callers.
+     * Real-time audio threads MUST call [processStereoFrame] and read [outL]/[outR].
+     */
+    fun processStereoSample(inL: Double, inR: Double): Pair<Double, Double> {
+        processStereoFrame(inL, inR)
+        return Pair(outL, outR)
     }
 
     private fun softClamp(x: Double, ceiling: Double): Double {

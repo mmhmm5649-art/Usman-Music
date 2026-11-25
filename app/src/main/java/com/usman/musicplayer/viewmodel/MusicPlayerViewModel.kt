@@ -3563,10 +3563,16 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
         _uiState.update { it.copy(dominantListeningMood = updatedProfile.dominantMood) }
     }
 
+    @Volatile
+    private var isAppInForeground: Boolean = true
+
     private fun startProgressTracker() {
         progressTrackingJob?.cancel()
+        if (!isAppInForeground) return
+        val isTvDevice = com.usman.musicplayer.util.DeviceUtils.isTvDevice(getApplication())
+        val pollIntervalMs = if (isTvDevice) 120L else 50L
         progressTrackingJob = viewModelScope.launch {
-            while (isActive && _uiState.value.isPlaying) {
+            while (isActive && isAppInForeground && _uiState.value.isPlaying) {
                 val controller = mediaController
                 val currentPos = controller?.currentPosition ?: _uiState.value.currentPositionMs
                 val duration = controller?.duration?.takeIf { it > 0 } ?: _uiState.value.durationMs
@@ -3576,7 +3582,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                 val isBuffering = controller?.playbackState == Player.STATE_BUFFERING
                 val speed = controller?.playbackParameters?.speed ?: 1.0f
 
-                // Update specialized progress flow (high-frequency)
+                // Update specialized progress flow (NowPlaying & Lyrics smoothly interpolate between anchors)
                 _playbackProgress.update {
                     it.copy(
                         currentPositionMs = currentPos.coerceAtLeast(0L),
@@ -3590,7 +3596,7 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
                     )
                 }
 
-                delay(50)
+                delay(pollIntervalMs)
             }
         }
     }
@@ -3821,7 +3827,20 @@ class MusicPlayerViewModel @androidx.annotation.VisibleForTesting internal const
     }
 
     fun onAppForegrounded() {
+        isAppInForeground = true
+        AudioSpectrumManager.setAppForegrounded(true)
         listenTogetherCoordinator.onAppForegrounded()
+        if (_uiState.value.isPlaying) {
+            startProgressTracker()
+        }
+    }
+
+    fun onAppBackgrounded() {
+        isAppInForeground = false
+        // Pause UI-only IPC polling & visualizer capture without touching ExoPlayer or AudioEffectsManager.
+        AudioSpectrumManager.setAppForegrounded(false)
+        progressTrackingJob?.cancel()
+        progressTrackingJob = null
     }
 
     override fun onCleared() {
